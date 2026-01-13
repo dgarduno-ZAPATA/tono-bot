@@ -16,9 +16,10 @@ REGLAS OBLIGATORIAS:
 - Si el cliente pide fotos: responde "Claro" y pide cuál opción (1 o 2) si no está definida.
 """
 
-def generate_reply(user_text: str, inventory_rows: list[dict]) -> str:
+def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) -> str:
     payload = {
         "mensaje_cliente": user_text,
+        "contexto": context,
         "inventario": inventory_rows[:50],
     }
 
