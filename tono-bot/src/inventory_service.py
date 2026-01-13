@@ -12,7 +12,7 @@ class InventoryService:
             self.items = []
             return
 
-        with open(self.path, newline="", encoding="utf-8") as f:
+        with open(self.path, newline="", encoding="latin-1") as f:
             reader = csv.DictReader(f)
             self.items = list(reader)
 
@@ -26,3 +26,4 @@ class InventoryService:
             results = [i for i in results if (i.get("condition") or "").strip().lower() == condition.lower()]
 
         return results[:limit]
+
