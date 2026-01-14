@@ -29,13 +29,11 @@ def twiml(message: str) -> str:
 
 @app.post("/twilio/whatsapp")
 async def whatsapp_webhook(request: Request):
-    # Twilio manda form-data
     form = await request.form()
 
     from_number = (form.get("From") or "").strip()
     user_message = (form.get("Body") or "").strip()
 
-    # Seguridad mínima (si llega vacío)
     if not from_number:
         return Response(content=twiml("No pude identificar el número. Intenta de nuevo."), media_type="application/xml")
 
@@ -44,34 +42,25 @@ async def whatsapp_webhook(request: Request):
     state = session.get("state", "start")
     context = session.get("context", {}) or {}
 
-    # 2) Responder (con guardrails desde conversation_logic)
+    # 2) Procesar
     try:
         result = handle_message(user_message, inventory, state, context)
     except Exception:
-        # Fallback si algo truena (OpenAI o lo que sea)
-        result = {
-            "reply": "Tuve un detalle técnico 🙏 ¿Buscas auto, pickup/camioneta o camión?",
-            "new_state": state,
-            "context": context
-        }
+        result = {"reply": "Tuve un detalle técnico 🙏 ¿Buscas auto, pickup/camioneta o camión?", "new_state": state, "context": context}
 
-    # 3) Asegurar formato correcto
-    if isinstance(result, str):
-        # Si por alguna razón regresa texto directo
-        reply_text = result
-        new_state = state
-        new_context = context
-    elif isinstance(result, dict):
+    # 3) Asegurar salida
+    if isinstance(result, dict):
         reply_text = (result.get("reply") or "").strip() or "¿Buscas auto, pickup/camioneta o camión?"
         new_state = result.get("new_state", state)
         new_context = result.get("context", context) or context
     else:
+        # Nunca mandamos JSON aunque llegue algo raro
         reply_text = "¿Buscas auto, pickup/camioneta o camión?"
         new_state = state
         new_context = context
 
-    # 4) Guardar memoria (solo 1 vez)
+    # 4) Guardar memoria
     store.upsert(from_number, str(new_state), dict(new_context))
 
-    # 5) Responder a Twilio (solo texto, no JSON)
+    # 5) Responder a Twilio (SOLO TEXTO)
     return Response(content=twiml(reply_text), media_type="application/xml")
