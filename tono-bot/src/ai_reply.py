@@ -26,11 +26,11 @@ SALIDA OBLIGATORIA: JSON válido con llaves:
 - new_state: string corto (ej. greeting/show_options/detail/booking)
 """
 
-def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) -> str:
+def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) -> dict:
     payload = {
         "mensaje_cliente": user_text,
         "contexto": context,
-        "inventario": inventory_rows[:50],
+        "inventario": inventory_rows[:80],
     }
 
     resp = client.responses.create(
@@ -41,4 +41,31 @@ def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) ->
         ],
         temperature=0.2,
     )
-    return resp.output_text.strip()
+
+    text = (resp.output_text or "").strip()
+
+    # Intento 1: parseo directo
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict) and "reply" in obj:
+            return obj
+    except Exception:
+        pass
+
+    # Intento 2: por si el modelo envió texto alrededor, extraemos el JSON
+    try:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            obj = json.loads(text[start:end+1])
+            if isinstance(obj, dict) and "reply" in obj:
+                return obj
+    except Exception:
+        pass
+
+    # Fallback seguro (nunca enviamos JSON al usuario)
+    return {
+        "reply": "¿Qué modelo te interesa o buscas auto, pickup/camioneta o camión?",
+        "selected_indexes": [],
+        "new_state": context.get("state", "active")
+    }
