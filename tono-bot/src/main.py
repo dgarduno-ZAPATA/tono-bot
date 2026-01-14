@@ -29,34 +29,49 @@ def twiml(message: str) -> str:
 
 @app.post("/twilio/whatsapp")
 async def whatsapp_webhook(request: Request):
+    # Twilio manda form-data
     form = await request.form()
 
-    # 1️⃣ QUIÉN ES (número de WhatsApp)
     from_number = (form.get("From") or "").strip()
     user_message = (form.get("Body") or "").strip()
 
-    # 2️⃣ BUSCAR SU MEMORIA
+    # Seguridad mínima (si llega vacío)
+    if not from_number:
+        return Response(content=twiml("No pude identificar el número. Intenta de nuevo."), media_type="application/xml")
+
+    # 1) Cargar memoria
     session = store.get(from_number) or {"state": "start", "context": {}}
     state = session.get("state", "start")
-    context = session.get("context", {})
+    context = session.get("context", {}) or {}
 
-    # 3️⃣ RESPUESTA (IA + CONTEXTO)
-    reply = handle_message(user_message, inventory, state, context)
+    # 2) Responder (con guardrails desde conversation_logic)
+    try:
+        result = handle_message(user_message, inventory, state, context)
+    except Exception:
+        # Fallback si algo truena (OpenAI o lo que sea)
+        result = {
+            "reply": "Tuve un detalle técnico 🙏 ¿Buscas auto, pickup/camioneta o camión?",
+            "new_state": state,
+            "context": context
+        }
 
-    # 4️⃣ ACTUALIZAR MEMORIA (muy simple)
-    new_state = state
-    new_context = context
+    # 3) Asegurar formato correcto
+    if isinstance(result, str):
+        # Si por alguna razón regresa texto directo
+        reply_text = result
+        new_state = state
+        new_context = context
+    elif isinstance(result, dict):
+        reply_text = (result.get("reply") or "").strip() or "¿Buscas auto, pickup/camioneta o camión?"
+        new_state = result.get("new_state", state)
+        new_context = result.get("context", context) or context
+    else:
+        reply_text = "¿Buscas auto, pickup/camioneta o camión?"
+        new_state = state
+        new_context = context
 
-    txt = user_message.lower()
+    # 4) Guardar memoria (solo 1 vez)
+    store.upsert(from_number, str(new_state), dict(new_context))
 
-    if state == "start":
-        new_state = "active"
-
-    if "cita" in txt or "viernes" in txt or "mañana" in txt or "hoy" in txt:
-        new_state = "booking"
-        new_context["requested_appointment"] = user_message
-
-    # 5️⃣ GUARDAR MEMORIA
-    store.upsert(from_number, new_state, new_context)
-
-    return Response(content=twiml(reply), media_type="application/xml")
+    # 5) Responder a Twilio (solo texto, no JSON)
+    return Response(content=twiml(reply_text), media_type="application/xml")
