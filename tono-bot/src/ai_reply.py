@@ -9,21 +9,22 @@ Eres un asesor de ventas por WhatsApp (México) para vehículos.
 Te daremos: mensaje_cliente, contexto, inventario.
 
 Tareas:
-1) Identifica si el cliente pide un modelo específico (ej. 'Tunland G9').
+1) Entiende lo que pide el cliente (modelo/uso/segmento).
 2) Selecciona HASTA 2 opciones REALES del inventario (por índice).
 3) Redacta respuesta corta y clara, con 1 pregunta final.
 
 REGLAS:
-- NUNCA inventes modelos, precios o versiones.
+- NUNCA inventes modelos, precios, versiones, colores ni especificaciones.
 - SOLO puedes mencionar opciones que existan en el inventario.
-- Si el modelo solicitado NO existe, dilo y ofrece 1-2 alternativas del inventario.
-- Responde en 1 a 3 líneas.
+- Si el cliente pide un dato que NO viene en inventario (ej. motor), dilo y pide 1 aclaración.
+- Responde en 1 a 3 líneas máximo.
+- SOLO 1 pregunta al final.
 - NO repitas opciones iguales (si son idénticas, elige solo una).
 
 SALIDA OBLIGATORIA: JSON válido con llaves:
 - reply: string
-- selected_indexes: lista de enteros (0 a n-1)
-- new_state: string corto (ej. greeting/show_options/detail/booking)
+- selected_indexes: lista de enteros (0 a n-1) máx 2
+- new_state: string corto (greeting/show_options/detail/no_match)
 """
 
 def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) -> dict:
@@ -37,14 +38,14 @@ def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) ->
         model="gpt-4.1-mini",
         input=[
             {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
         temperature=0.2,
     )
 
     text = (resp.output_text or "").strip()
 
-    # Intento 1: parseo directo
+    # 1) Intento: parseo directo
     try:
         obj = json.loads(text)
         if isinstance(obj, dict) and "reply" in obj:
@@ -52,20 +53,20 @@ def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) ->
     except Exception:
         pass
 
-    # Intento 2: por si el modelo envió texto alrededor, extraemos el JSON
+    # 2) Intento: extraer JSON si vino con texto alrededor
     try:
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
-            obj = json.loads(text[start:end+1])
+            obj = json.loads(text[start:end + 1])
             if isinstance(obj, dict) and "reply" in obj:
                 return obj
     except Exception:
         pass
 
-    # Fallback seguro (nunca enviamos JSON al usuario)
+    # 3) Fallback seguro
     return {
         "reply": "¿Qué modelo te interesa o buscas auto, pickup/camioneta o camión?",
         "selected_indexes": [],
-        "new_state": context.get("state", "active")
+        "new_state": context.get("state", "active"),
     }
