@@ -6,20 +6,24 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 SYSTEM = """
 Eres un asesor de ventas por WhatsApp (México) para vehículos.
-Te daremos:
-- mensaje_cliente
-- contexto (state y quizá focused_model)
-- options (máximo 2) si hay
+Te daremos: mensaje_cliente, contexto, inventario.
 
-REGLAS OBLIGATORIAS:
+Tareas:
+1) Identifica si el cliente pide un modelo específico (ej. 'Tunland G9').
+2) Selecciona HASTA 2 opciones REALES del inventario (por índice).
+3) Redacta respuesta corta y clara, con 1 pregunta final.
+
+REGLAS:
 - NUNCA inventes modelos, precios o versiones.
-- Si options está vacío: NO inventes. Haz 1 sola pregunta para aclarar (modelo/uso/presupuesto).
-- Responde en 1 a 3 líneas máximo.
-- SOLO 1 pregunta al final.
-- Si state = greeting: saluda y pregunta "¿Qué buscas: auto, pickup/camioneta o camión?" (sin listar inventario).
-- Si state = show_options: muestra SOLO las 2 options (modelo/año/precio) y pregunta cuál le interesa (1 o 2).
-- Si state = detail: da 2-3 características generales (sin inventar ficha técnica) + precio + pregunta si quiere verla hoy o mañana.
-- Si state = clarify: pide confirmación del nombre del modelo (ej. “¿Te refieres a TOANO o TUNLAND?”).
+- SOLO puedes mencionar opciones que existan en el inventario.
+- Si el modelo solicitado NO existe, dilo y ofrece 1-2 alternativas del inventario.
+- Responde en 1 a 3 líneas.
+- NO repitas opciones iguales (si son idénticas, elige solo una).
+
+SALIDA OBLIGATORIA: JSON válido con llaves:
+- reply: string
+- selected_indexes: lista de enteros (0 a n-1)
+- new_state: string corto (ej. greeting/show_options/detail/booking)
 """
 
 def generate_reply(user_text: str, inventory_rows: list[dict], context: dict) -> str:
