@@ -11,6 +11,10 @@ def _clean_price(value):
     s2 = s.replace("$", "").replace(",", "").strip()
     return s2 if s2 else s
 
+def _clean_cell(v):
+    # convierte cualquier cosa (incluidas listas) a texto
+    return (str(v) if v is not None else "").strip()
+
 class InventoryService:
     def __init__(self, local_path: str, sheet_csv_url: str | None = None, refresh_seconds: int = 300):
         self.local_path = local_path
@@ -26,9 +30,11 @@ class InventoryService:
 
         rows = []
         if self.sheet_csv_url:
-            r = requests.get(self.sheet_csv_url, timeout=20)
+            url = (self.sheet_csv_url or "").strip()
+            r = requests.get(url, timeout=20)
             r.raise_for_status()
             content = r.text
+
             f = StringIO(content)
             reader = csv.DictReader(f)
             rows = list(reader)
@@ -36,26 +42,25 @@ class InventoryService:
             if not os.path.exists(self.local_path):
                 self.items = []
                 return
-            # fallback local
             with open(self.local_path, newline="", encoding="latin-1") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
 
         normalized = []
-        for r in rows:
-            r = {(k or "").strip(): (v or "").strip() for k, v in r.items()}
+        for row in rows:
+            # limpia headers/valores (a prueba de listas)
+            row = { _clean_cell(k): _clean_cell(v) for k, v in (row or {}).items() }
 
-            # status: Disponible/Vendido
-            status = (r.get("status") or "").strip().lower()
+            status = row.get("status", "").lower()
             if status and status not in ["disponible", "available", "1", "si", "sí", "yes"]:
                 continue
 
             item = {
-                "Marca": r.get("Marca", "Foton"),
-                "Modelo": r.get("Modelo", ""),
-                "Año": r.get("Año", r.get("Anio", "")),
-                "Precio": _clean_price(r.get("Precio", r.get("Precio Distribuidor", r.get(" Precio Distribuidor", "")))),
-                "photos": r.get("photos", ""),
+                "Marca": row.get("Marca", "Foton"),
+                "Modelo": row.get("Modelo", ""),
+                "Año": row.get("Año", row.get("Anio", "")),
+                "Precio": _clean_price(row.get("Precio", row.get("Precio Distribuidor", row.get(" Precio Distribuidor", "")))),
+                "photos": row.get("photos", ""),
             }
             normalized.append(item)
 
