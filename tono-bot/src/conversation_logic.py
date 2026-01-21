@@ -8,32 +8,24 @@ logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# === PERSONALIDAD: ADRIAN (ASESOR INTELIGENTE) ===
+# === PERSONALIDAD: ADRIAN (ASESOR EXPERTO) ===
 SYSTEM_PROMPT = """
 Eres "Adrian", Asesor Comercial de 'Tractos y Max'.
-Tu meta es PERFILAR y CERRAR CITA.
 
-UBICACIÓN: Av. de los Camioneros 123.
+OBJETIVO:
+1. Resolver dudas sobre el inventario.
+2. PERFILAR al cliente (Uso y Forma de Pago).
+3. CERRAR LA CITA (Fecha y Hora).
 
-REGLAS DE ORO (COMPORTAMIENTO):
-1. **MEMORIA:** - Si el cliente ya dijo para qué la quiere, NO preguntes de nuevo.
-   - Si el cliente ya dijo su nombre, úsalo pero NO vuelvas a saludar ("Hola...").
-   - Si ya acordaron una hora, solo confirma, no vuelvas a preguntar "¿cuándo?".
+TU BIBLIA (REGLAS INQUEBRANTABLES):
+1. **TIENES TODO EL INVENTARIO:** Si el cliente pide un modelo y está en la lista que te paso, ¡VÉNDELO! No digas que no lo tienes.
+2. **CERO SALUDOS REPETITIVOS:** Si el historial muestra que ya saludaste, NO vuelvas a decir "Hola". Ve directo a la respuesta.
+3. **DIRECCIÓN:** Av. de los Camioneros 123. (DILA SOLO SI TE LA PREGUNTAN o al confirmar cita).
+4. **NO INVENTES:** Si te piden algo que DE VERDAD no está en la lista completa, ofrece una alternativa similar.
 
-2. **CERO SALUDOS REPETITIVOS:**
-   - Si ya hay conversación, ve directo al punto.
-   - MAL: "Hola Jonas, claro que sí..."
-   - BIEN: "Claro Jonas, para ese trabajo te recomiendo..."
-
-3. **BUSCADOR DE OPORTUNIDADES:**
-   - Si preguntan por un modelo específico (ej. "G9") y está en tu lista, OFRÉCELO con precio y un beneficio.
-   - Si NO está, ofrece la alternativa más cercana.
-
-4. **CIERRE DE CITA:**
-   - Objetivo: Fecha y Hora concreta.
-   - Si preguntan ubicación, dales la dirección.
-
-FORMATO: Profesional, amable, corto (máx 3 oraciones).
+ESTILO:
+- Profesional, amable y conciso.
+- Máximo 3 oraciones por respuesta.
 """
 
 def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
@@ -43,49 +35,18 @@ def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
             return str(v).strip()
     return default
 
-def _filter_inventory(inventory_service, user_query: str) -> List[dict]:
+def _build_inventory_text(inventory_service) -> str:
     """
-    FILTRO INTELIGENTE:
-    Si el cliente pide "G9", mueve las G9 al principio de la lista
-    para que Adrian las vea de inmediato.
+    SIN FILTROS: Pasa el inventario COMPLETO a la IA.
+    Son pocas filas (28), así que la IA puede leerlo todo sin problemas.
     """
     items = getattr(inventory_service, "items", None) or []
-    if not items: return []
-    
-    query = user_query.lower()
-    prioritized = []
-    others = []
-
-    for item in items:
-        # Buscamos en todo el contenido del camión
-        full_text = " ".join(str(v).lower() for v in item.values())
-        
-        # Si encuentra palabras clave (ej: "g9", "pickup", "toano")
-        is_relevant = False
-        words = query.split()
-        for w in words:
-            if len(w) > 1 and w in full_text:
-                is_relevant = True
-                break
-        
-        if is_relevant:
-            prioritized.append(item)
-        else:
-            others.append(item)
-
-    return prioritized + others
-
-def _build_inventory_text(inventory_service, user_query: str) -> str:
-    """Construye el inventario priorizando lo que el cliente quiere."""
-    # 1. Obtenemos la lista ordenada (lo relevante primero)
-    sorted_items = _filter_inventory(inventory_service, user_query)
-    
-    if not sorted_items:
+    if not items:
         return "No hay inventario disponible."
 
     lines = []
-    # 2. Le pasamos los primeros 15 a la IA (ahora sí incluirá la G9 si la pidieron)
-    for item in sorted_items[:15]: 
+    # Recorremos TODO el inventario (sin [:15])
+    for item in items: 
         marca = _safe_get(item, ["Marca", "marca"])
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"])
         anio = _safe_get(item, ["Anio", "Año", "anio"])
@@ -94,8 +55,7 @@ def _build_inventory_text(inventory_service, user_query: str) -> str:
         desc = _safe_get(item, ["descripcion_corta", "segmento"], default="")
 
         label = f"{marca} {modelo} {anio}".strip()
-        info = f"- {label}: ${precio} ({status})"
-        if desc: info += f" [{desc}]"
+        info = f"- {label}: ${precio} ({status}) [{desc}]"
         
         lines.append(info)
 
@@ -107,19 +67,16 @@ def _extract_photos_from_item(item: dict) -> List[str]:
     return [u.strip() for u in raw.split("|") if u.strip().startswith("http")]
 
 def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[str]:
+    """Busca fotos coincidiendo palabras clave del modelo."""
     items = getattr(inventory_service, "items", None) or []
     if not items: return []
 
     msg = user_message.lower()
     rep = reply.lower()
     
-    # Palabras clave fuertes para forzar búsqueda de fotos
-    target_keywords = []
-    if "g9" in msg: target_keywords.append("g9")
-    if "g7" in msg: target_keywords.append("g7")
-    if "toano" in msg: target_keywords.append("toano")
-    if "e5" in msg: target_keywords.append("e5")
-    if "miler" in msg: target_keywords.append("miler")
+    # Palabras clave forzadas (para arreglar typos del usuario)
+    # Si el usuario escribe "miller", entendemos "miler"
+    msg = msg.replace("miller", "miler").replace("vanesa", "van")
 
     for item in items:
         urls = _extract_photos_from_item(item)
@@ -127,28 +84,32 @@ def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[s
 
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).lower()
         
-        # 1. Coincidencia directa fuerte
-        for kw in target_keywords:
-            if kw in modelo:
-                return urls
-
-        # 2. Coincidencia general
-        if modelo and len(modelo) > 3 and (modelo in msg or modelo in rep):
-            return urls
+        # Tokenizamos el modelo (ej: "tunland g9" -> "tunland", "g9")
+        parts = modelo.split()
+        
+        # Si alguna parte CLAVE del modelo está en el mensaje, mandamos foto
+        for part in parts:
+            if len(part) < 2 or part in ["foton", "camion"]: continue
+            
+            if part in msg:
+                return urls # Búsqueda directa en lo que dijo el cliente
+            
+            if part in rep:
+                return urls # Búsqueda en lo que respondió la IA
 
     return []
 
 def handle_message(user_message, inventory_service, state, context):
-    # Inventario filtrado por lo que pide el cliente
-    inventory_text = _build_inventory_text(inventory_service, user_message)
+    # 1. Pasamos TODO el inventario
+    inventory_text = _build_inventory_text(inventory_service)
     history = (context.get("history") or "").strip()
 
     context_block = f"""
-INVENTARIO RELEVANTE:
+LISTA COMPLETA DE INVENTARIO:
 {inventory_text}
 
-HISTORIAL:
-{history[-1500:] if history else "Inicio."}
+HISTORIAL DE CHAT:
+{history[-2000:] if history else "Inicio."}
 """
 
     messages = [
@@ -161,16 +122,16 @@ HISTORIAL:
         resp = client.chat.completions.create(
             model="gpt-3.5-turbo", 
             messages=messages,
-            temperature=0.5, 
-            max_tokens=200,
+            temperature=0.4, # Precisión alta
+            max_tokens=250,
         )
         reply = resp.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"Error OpenAI: {e}")
-        reply = "Dame un momento, consulto sistema... (Error técnico)"
+        reply = "Dame un momento... (Error técnico)"
 
-    # Limpiamos si la IA alucina el nombre al principio
-    reply_clean = re.sub(r"^(Adrian|Toño|Asesor|Bot):", "", reply.strip(), flags=re.IGNORECASE).strip()
+    # Limpieza
+    reply_clean = re.sub(r"^(Adrian|Asesor|Bot):", "", reply.strip(), flags=re.IGNORECASE).strip()
     
     media_urls = _pick_media_urls(user_message, reply_clean, inventory_service)
 
@@ -179,6 +140,6 @@ HISTORIAL:
     return {
         "reply": reply_clean,
         "new_state": "chatting",
-        "context": {"history": new_history[-2500:]},
+        "context": {"history": new_history[-3000:]},
         "media_urls": media_urls
     }
