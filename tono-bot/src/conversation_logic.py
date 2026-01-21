@@ -1,89 +1,163 @@
+import os
 import re
-from src.ai_reply import generate_reply
+import logging
+from typing import Dict, Any, List
+from openai import OpenAI
 
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip().lower())
+logger = logging.getLogger(__name__)
 
-def _extract_choice(text: str) -> int | None:
-    t = _norm(text)
-    m = re.search(r"\b(1|2)\b", t)
-    if not m:
-        return None
-    return int(m.group(1)) - 1
+# === CLIENTE OPENAI (SDK NUEVO) ===
+# Asegúrate de tener OPENAI_API_KEY en tus variables de entorno
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def _get_photo_urls(unit: dict) -> list[str]:
-    raw = (unit.get("photos") or "").strip()
+# === PERSONALIDAD "TOÑO" ===
+SYSTEM_PROMPT = """
+Eres "Toño", el vendedor estrella de 'Tractos y Max'.
+Tu objetivo es VENDER camiones.
+
+Personalidad:
+- Camionero experto: "Puro fierro", "Listo para la chamba", "Jala durísimo", "Unidad al 100".
+- Agresivo pero amable: "¿Te lo aparto?", "¿Cuándo vienes?".
+- Visual: usa emojis 🚛🔥🛠️💰.
+
+Reglas:
+1. Si preguntan precio: dalo y pregunta si hacen trato.
+2. Si preguntan "¿qué tienes?": ofrece 2-3 opciones y pregunta cuál le late.
+3. Si no hay lo que piden: "Se me acaba de ir, pero tengo estos otros fierros..."
+4. Respuestas MÁXIMO 3 oraciones. Corto y directo.
+"""
+
+def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
+    """Busca valor en varias llaves posibles para evitar errores."""
+    for k in keys:
+        v = item.get(k)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return default
+
+def _build_inventory_text(inventory_service) -> str:
+    """Convierte el inventario en texto para que la IA lo lea."""
+    items = getattr(inventory_service, "items", None) or []
+    if not items:
+        return "No hay inventario disponible por el momento."
+
+    lines = []
+    # Limitamos a 15 unidades para no gastar demasiados tokens de IA
+    for item in items[:15]: 
+        marca = _safe_get(item, ["Marca", "marca", "BRAND"])
+        modelo = _safe_get(item, ["Modelo", "modelo", "MODEL"])
+        anio = _safe_get(item, ["Anio", "Año", "anio", "year"])
+        precio = _safe_get(item, ["Precio", "precio", "price"])
+        status = _safe_get(item, ["status", "Estado", "disponible"], default="Disponible")
+
+        label = f"{marca} {modelo} {anio}".strip() or "Unidad"
+        
+        if precio:
+            lines.append(f"- {label}: ${precio} ({status})")
+        else:
+            lines.append(f"- {label} ({status})")
+
+    return "\n".join(lines)
+
+def _trim_to_3_sentences(text: str) -> str:
+    """Recorta la respuesta para que no sea una biblia de texto."""
+    text = (text or "").strip()
+    if not text: return ""
+    
+    # Divide por puntos o signos de cierre
+    parts = re.split(r'(?<=[.!?])\s+', text)
+    trimmed = " ".join(parts[:3]).strip()
+    
+    # Corte de seguridad
+    if len(trimmed) > 400:
+        trimmed = trimmed[:400].rstrip() + "..."
+    return trimmed
+
+def _extract_photos_from_item(item: dict) -> List[str]:
+    """Extrae fotos soportando múltiples links separados por '|'."""
+    raw = _safe_get(item, ["photos", "photo", "foto", "imagen", "imagenes"])
     if not raw:
         return []
-    urls = [u.strip() for u in raw.split("|") if u.strip()]
-    return urls[:3]
+    
+    # Aquí está la magia que recuperamos de tu código anterior:
+    # Separa por '|', limpia espacios y filtra solo lo que parezca link.
+    urls = [u.strip() for u in raw.split("|") if u.strip().startswith("http")]
+    return urls
 
-def handle_message(message, inventory_service, state, context):
-    inv = inventory_service.items if hasattr(inventory_service, "items") else []
-    context = context or {}
-    state = state or "start"
+def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[str]:
+    """
+    Busca fotos inteligentes. 
+    Si el usuario o el bot mencionan un modelo, devolvemos SUS fotos.
+    """
+    items = getattr(inventory_service, "items", None) or []
+    if not items: return []
 
-    user_text = (message or "").strip()
-    t = _norm(user_text)
+    msg = user_message.lower()
+    rep = reply.lower()
+    
+    for item in items:
+        # Extraemos las URLs de este camión
+        urls = _extract_photos_from_item(item)
+        if not urls: continue
 
-    # Si eligió opción 1/2, enfoca esa opción
-    choice = _extract_choice(user_text)
-    if choice is not None and isinstance(context.get("last_options"), list):
-        last_options = context["last_options"]
-        if 0 <= choice < len(last_options):
-            context["focused_model"] = last_options[choice]
-            state = "detail"
+        modelo = _safe_get(item, ["Modelo", "modelo"]).lower()
+        marca = _safe_get(item, ["Marca", "marca"]).lower()
 
-    focused = context.get("focused_model")
+        # LOGICA DE COINCIDENCIA:
+        # Si el modelo (ej: "t680", "cascadia") aparece en lo que escribió el cliente
+        # O en lo que contestó el bot, asumimos que estamos hablando de ese camión.
+        if modelo and len(modelo) > 2:
+            if modelo in msg or modelo in rep:
+                return urls # Devolvemos TODAS las fotos de ese camión (lista)
 
-    # Fotos
-    wants_photos = any(w in t for w in ["foto", "fotos", "imagen", "imagenes", "imágenes"])
-    if wants_photos:
-        if focused:
-            urls = _get_photo_urls(focused)
-            if urls:
-                return {
-                    "reply": "Claro ✅ Te comparto fotos. ¿Quieres verla hoy o mañana?",
-                    "new_state": "photos",
-                    "context": context,
-                    "media_urls": urls
-                }
-            return {
-                "reply": "Aún no tengo fotos cargadas de esa unidad 🙏 ¿Quieres que te comparta otras opciones?",
-                "new_state": "no_photos",
-                "context": context
-            }
-        return {
-            "reply": "Claro ✅ ¿De cuál opción quieres fotos? (responde 1 o 2)",
-            "new_state": "need_photo_choice",
-            "context": context
-        }
+    return []
 
-    # Saludo corto
-    if any(w in t for w in ["hola", "buenas", "buen día", "buen dia", "buenas tardes", "buenas noches", "que tal", "qué tal"]):
-        return {"reply": "¡Hola! ¿Qué modelo te interesa o qué buscas?", "new_state": "greeting", "context": context}
+def handle_message(user_message, inventory_service, state, context):
+    # 1. Preparamos el contexto
+    inventory_text = _build_inventory_text(inventory_service)
+    history = (context.get("history") or "").strip()
 
-    # IA
-    result = generate_reply(user_text, inv, {"state": state, **context})
-    if not isinstance(result, dict):
-        return {"reply": "¿Qué modelo te interesa o qué buscas?", "new_state": "no_match", "context": context}
+    # Contexto para la IA (separado de las instrucciones para evitar hackeos)
+    context_block = f"""
+INVENTARIO ACTUAL:
+{inventory_text}
 
-    reply = (result.get("reply") or "").strip()
-    idxs = result.get("selected_indexes") or []
-    new_state = result.get("new_state") or state
+HISTORIAL DE CHARLA:
+{history[-1000:] if history else "Inicio."}
+"""
 
-    # Construir opciones reales
-    options = []
-    for i in idxs[:2]:
-        if isinstance(i, int) and 0 <= i < len(inv):
-            options.append(inv[i])
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": context_block}, 
+        {"role": "user", "content": user_message}
+    ]
 
-    if options:
-        context["last_options"] = options
-        context["focused_model"] = options[0]
+    # 2. Llamada a OpenAI
+    try:
+        # Usamos gpt-3.5-turbo (o gpt-4o-mini si prefieres)
+        resp = client.chat.completions.create(
+            model="gpt-3.5-turbo", 
+            messages=messages,
+            temperature=0.7,
+            max_tokens=250,
+        )
+        reply = resp.choices[0].message.content or ""
+    except Exception as e:
+        logger.error(f"Error OpenAI: {e}")
+        reply = "Dame un segundo, se me cayó la señal... 📶 (Error técnico)"
 
-    if not reply:
-        reply = "¿Qué modelo te interesa o qué buscas?"
-        new_state = "no_match"
+    # 3. Post-procesamiento
+    reply_clean = _trim_to_3_sentences(reply)
+    
+    # Aquí buscamos las fotos (soporta múltiples)
+    media_urls = _pick_media_urls(user_message, reply_clean, inventory_service)
 
-    return {"reply": reply, "new_state": str(new_state), "context": context}
+    # 4. Actualizar historial
+    new_history = history + f"\nC: {user_message}\nT: {reply_clean}"
+    
+    return {
+        "reply": reply_clean,
+        "new_state": "chatting",
+        "context": {"history": new_history[-2000:]}, 
+        "media_urls": media_urls
+    }
