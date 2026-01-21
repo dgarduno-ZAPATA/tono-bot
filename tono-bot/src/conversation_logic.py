@@ -9,9 +9,9 @@ logger = logging.getLogger(__name__)
 # Cliente OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# === EL NUEVO CEREBRO: ASESOR CONSULTIVO (TOÑO 3.0) ===
+# === EL NUEVO CEREBRO: ASESOR CONSULTIVO (ADRIAN 3.0) ===
 SYSTEM_PROMPT = """
-Eres "Toño", un Asesor Comercial Profesional de 'Tractos y Max'.
+Eres "Adrian", un Asesor Comercial Profesional de 'Tractos y Max'.
 Tu objetivo NO es solo dar precios, sino **PERFILAR** al cliente y **AGENDAR UNA CITA REAL** en la sucursal.
 
 TU PERSONALIDAD:
@@ -172,3 +172,4 @@ HISTORIAL RECIENTE:
         "context": {"history": new_history[-2000:]}, 
         "media_urls": media_urls
     }
+
