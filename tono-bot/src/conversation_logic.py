@@ -6,25 +6,40 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
-# === CLIENTE OPENAI (SDK NUEVO) ===
-# Asegúrate de tener OPENAI_API_KEY en tus variables de entorno
+# Cliente OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# === PERSONALIDAD "TOÑO" ===
+# === EL NUEVO CEREBRO: ASESOR CONSULTIVO (TOÑO 3.0) ===
 SYSTEM_PROMPT = """
-Eres "Toño", el vendedor estrella de 'Tractos y Max'.
-Tu objetivo es VENDER camiones.
+Eres "Toño", un Asesor Comercial Profesional de 'Tractos y Max'.
+Tu objetivo NO es solo dar precios, sino **PERFILAR** al cliente y **AGENDAR UNA CITA REAL** en la sucursal.
 
-Personalidad:
-- Camionero experto: "Puro fierro", "Listo para la chamba", "Jala durísimo", "Unidad al 100".
-- Agresivo pero amable: "¿Te lo aparto?", "¿Cuándo vienes?".
-- Visual: usa emojis 🚛🔥🛠️💰.
+TU PERSONALIDAD:
+- Profesional y confiable (NO uses frases de marketing barato como "vendedor estrella").
+- Directo y servicial.
+- Usas emojis con moderación (MÁXIMO 1 por mensaje).
 
-Reglas:
-1. Si preguntan precio: dalo y pregunta si hacen trato.
-2. Si preguntan "¿qué tienes?": ofrece 2-3 opciones y pregunta cuál le late.
-3. Si no hay lo que piden: "Se me acaba de ir, pero tengo estos otros fierros..."
-4. Respuestas MÁXIMO 3 oraciones. Corto y directo.
+TU PROCESO DE VENTA (Sigue este orden lógico):
+
+1. **DIAGNÓSTICO (Vital):** Antes de soltar precios a lo loco o pedir el cierre, intenta saber:
+   - ¿Para qué trabajo la necesitan? (Reparto, carga pesada, personal).
+   - ¿Buscan contado o financiamiento?
+
+2. **PROPUESTA DE VALOR:**
+   - Cuando des un precio, menciona UN beneficio clave basado en su uso.
+   - Ejemplo: "La Toano Panel vale $720k. Por su espacio es ideal para paquetería urbana."
+
+3. **CIERRE DE CITA (Protocolo Estricto):**
+   - Si el cliente muestra interés o dice "voy a ir", NO digas solo "te espero".
+   - **Debes concretar:** "¿Te acomoda mejor por la mañana o por la tarde?"
+   - **Debes pedir datos:** "¿A nombre de quién registro la visita?"
+   - Ubicación: "Estamos en Av. de los Camioneros 123".
+
+REGLAS DE ORO (Constraints):
+- 🚫 PROHIBIDO decir "¿Hacemos trato?" en el primer o segundo mensaje. Eso espanta al cliente.
+- Si preguntan "Precio", dalo, pero termina con una pregunta de perfilado: "¿Este modelo es para uso personal o negocio?".
+- Si el inventario está vacío, ofrece ayuda para buscar la unidad.
+- Respuestas cortas y humanas (máximo 3 oraciones).
 """
 
 def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
@@ -36,41 +51,48 @@ def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
     return default
 
 def _build_inventory_text(inventory_service) -> str:
-    """Convierte el inventario en texto para que la IA lo lea."""
+    """Crea un resumen del inventario con datos útiles para el perfilado."""
     items = getattr(inventory_service, "items", None) or []
     if not items:
         return "No hay inventario disponible por el momento."
 
     lines = []
-    # Limitamos a 15 unidades para no gastar demasiados tokens de IA
+    # Limitamos a 15 para no saturar, pero incluimos Segmento/Descripción si existen
     for item in items[:15]: 
         marca = _safe_get(item, ["Marca", "marca", "BRAND"])
         modelo = _safe_get(item, ["Modelo", "modelo", "MODEL"])
         anio = _safe_get(item, ["Anio", "Año", "anio", "year"])
         precio = _safe_get(item, ["Precio", "precio", "price"])
         status = _safe_get(item, ["status", "Estado", "disponible"], default="Disponible")
+        
+        # Intentamos buscar info extra para que el bot tenga "micro-valor"
+        desc = _safe_get(item, ["descripcion_corta", "segmento", "Descripcion"], default="")
 
         label = f"{marca} {modelo} {anio}".strip() or "Unidad"
         
-        if precio:
-            lines.append(f"- {label}: ${precio} ({status})")
-        else:
-            lines.append(f"- {label} ({status})")
+        info_line = f"- {label}: ${precio} ({status})"
+        if desc:
+            info_line += f" [Ideal para: {desc}]"
+            
+        lines.append(info_line)
 
     return "\n".join(lines)
 
-def _trim_to_3_sentences(text: str) -> str:
-    """Recorta la respuesta para que no sea una biblia de texto."""
+def _trim_response(text: str) -> str:
+    """Limpieza de respuesta para WhatsApp."""
     text = (text or "").strip()
     if not text: return ""
     
-    # Divide por puntos o signos de cierre
+    # Si la IA genera bloques de "T:", "Toño:", los quitamos
+    text = re.sub(r"^(Toño|T|Bot):", "", text, flags=re.IGNORECASE).strip()
+
+    # Divide por puntos para no mandar biblias
     parts = re.split(r'(?<=[.!?])\s+', text)
-    trimmed = " ".join(parts[:3]).strip()
-    
-    # Corte de seguridad
-    if len(trimmed) > 400:
-        trimmed = trimmed[:400].rstrip() + "..."
+    if len(parts) > 3:
+        trimmed = " ".join(parts[:3]).strip()
+    else:
+        trimmed = text
+        
     return trimmed
 
 def _extract_photos_from_item(item: dict) -> List[str]:
@@ -78,17 +100,11 @@ def _extract_photos_from_item(item: dict) -> List[str]:
     raw = _safe_get(item, ["photos", "photo", "foto", "imagen", "imagenes"])
     if not raw:
         return []
-    
-    # Aquí está la magia que recuperamos de tu código anterior:
-    # Separa por '|', limpia espacios y filtra solo lo que parezca link.
     urls = [u.strip() for u in raw.split("|") if u.strip().startswith("http")]
     return urls
 
 def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[str]:
-    """
-    Busca fotos inteligentes. 
-    Si el usuario o el bot mencionan un modelo, devolvemos SUS fotos.
-    """
+    """Busca fotos si el contexto lo amerita."""
     items = getattr(inventory_service, "items", None) or []
     if not items: return []
 
@@ -96,19 +112,15 @@ def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[s
     rep = reply.lower()
     
     for item in items:
-        # Extraemos las URLs de este camión
         urls = _extract_photos_from_item(item)
         if not urls: continue
 
         modelo = _safe_get(item, ["Modelo", "modelo"]).lower()
-        marca = _safe_get(item, ["Marca", "marca"]).lower()
-
-        # LOGICA DE COINCIDENCIA:
-        # Si el modelo (ej: "t680", "cascadia") aparece en lo que escribió el cliente
-        # O en lo que contestó el bot, asumimos que estamos hablando de ese camión.
+        
+        # Si el modelo está en la charla, mandamos foto
         if modelo and len(modelo) > 2:
             if modelo in msg or modelo in rep:
-                return urls # Devolvemos TODAS las fotos de ese camión (lista)
+                return urls 
 
     return []
 
@@ -117,13 +129,13 @@ def handle_message(user_message, inventory_service, state, context):
     inventory_text = _build_inventory_text(inventory_service)
     history = (context.get("history") or "").strip()
 
-    # Contexto para la IA (separado de las instrucciones para evitar hackeos)
+    # Contexto separado para evitar inyección de prompt
     context_block = f"""
-INVENTARIO ACTUAL:
+INVENTARIO DISPONIBLE (Úsalo para recomendar):
 {inventory_text}
 
-HISTORIAL DE CHARLA:
-{history[-1000:] if history else "Inicio."}
+HISTORIAL RECIENTE:
+{history[-1000:] if history else "Inicio de conversación."}
 """
 
     messages = [
@@ -134,26 +146,25 @@ HISTORIAL DE CHARLA:
 
     # 2. Llamada a OpenAI
     try:
-        # Usamos gpt-3.5-turbo (o gpt-4o-mini si prefieres)
+        # Recomendación: Usar gpt-4o-mini si es posible, sigue mejor las instrucciones de perfilado
+        # Si no, gpt-3.5-turbo está bien.
         resp = client.chat.completions.create(
             model="gpt-3.5-turbo", 
             messages=messages,
-            temperature=0.7,
+            temperature=0.6, # Bajamos temperatura para que sea más serio/obediente
             max_tokens=250,
         )
         reply = resp.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"Error OpenAI: {e}")
-        reply = "Dame un segundo, se me cayó la señal... 📶 (Error técnico)"
+        reply = "Dame un momento, estoy verificando la información... (Error de sistema)"
 
     # 3. Post-procesamiento
-    reply_clean = _trim_to_3_sentences(reply)
-    
-    # Aquí buscamos las fotos (soporta múltiples)
+    reply_clean = _trim_response(reply)
     media_urls = _pick_media_urls(user_message, reply_clean, inventory_service)
 
     # 4. Actualizar historial
-    new_history = history + f"\nC: {user_message}\nT: {reply_clean}"
+    new_history = history + f"\nCliente: {user_message}\nToño: {reply_clean}"
     
     return {
         "reply": reply_clean,
