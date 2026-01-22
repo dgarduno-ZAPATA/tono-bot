@@ -13,11 +13,9 @@ logger = logging.getLogger(__name__)
 # === CONFIGURACIÓN DE IA ===
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Modelo
 MODEL_NAME = "gpt-4o-mini"
 
 
-# === HELPER DE TIEMPO ===
 def get_mexico_time() -> Tuple[datetime, str]:
     """Devuelve la fecha y hora actual en CDMX (datetime y string legible)."""
     try:
@@ -31,6 +29,7 @@ def get_mexico_time() -> Tuple[datetime, str]:
 
 
 # === PERSONALIDAD: ADRIAN (CON RELOJ) ===
+# OJO: Usamos DOBLES LLAVES {{ }} en el ejemplo de JSON para que no choque con .format()
 SYSTEM_PROMPT = """
 Eres "Adrian", Asesor Comercial de 'Tractos y Max'.
 
@@ -49,23 +48,25 @@ REGLAS OBLIGATORIAS:
 2. MODO SILENCIO: Si el usuario escribe "/silencio", confirma brevemente y deja de responder.
 
 3. DETECTAR LEAD (CRÍTICO): Si logras concertar una cita (tienes NOMBRE + DÍA/HORA),
-   debes incluir al final de tu respuesta un JSON oculto en este formato exacto,
+   debes incluir al final de tu respuesta un JSON oculto en este formato exacto (usa dobles llaves),
    dentro de un bloque ```json ... ```:
 
    ```json
-   {
-     "lead_event": {
-       "nombre": "Juan Perez",
-       "interes": "Foton G9",
-       "cita": "Viernes 10am",
-       "pago": "Contado"
-     }
-   }
+   {{
+       "lead_event": {{
+           "nombre": "Juan Perez",
+           "interes": "Foton G9",
+           "cita": "Viernes 10am",
+           "pago": "Contado"
+       }}
+   }}
    ```
 
-4. NO REPETIR: No repitas saludos ("Hola") ni direcciones si ya las diste hace poco.
-5. INVENTARIO: Vende solo lo que ves en la lista. Si no está, ofrece alternativas similares.
-6. MODO GPS: Si te piden ubicación, dales la dirección exacta y una referencia visual, no mandes fotos del inventario.
+NO REPETIR: No repitas saludos ("Hola") ni direcciones si ya las diste hace poco.
+
+INVENTARIO: Vende solo lo que ves en la lista. Si no está, ofrece alternativas similares.
+
+MODO GPS: Si te piden ubicación, dales la dirección exacta y una referencia visual, no mandes fotos del inventario.
 
 ESTILO: Amable, directo y profesional. Máximo 3 oraciones.
 """.strip()
@@ -109,11 +110,11 @@ def _extract_photos_from_item(item: Dict[str, Any]) -> List[str]:
     return [u.strip() for u in raw.split("|") if u.strip().startswith("http")]
 
 
-# === LÓGICA DE FOTOS BLINDADA ===
+# === LÓGICA DE FOTOS BLINDADA (VERSIÓN CORRECTA) ===
 def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[str]:
     msg = (user_message or "").lower()
 
-    # 1) FILTRO GPS: si piden ubicación, PROHIBIDO mandar fotos
+    # 1) FILTRO GPS
     gps_keywords = [
         "ubicacion", "ubicación", "donde estan", "dónde están",
         "direccion", "dirección", "mapa", "donde se ubican"
@@ -138,18 +139,21 @@ def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[s
     msg_norm = norm(user_message)
     rep_norm = norm(reply)
 
-    # 3) REGLA DE ORO: SOLO mandamos fotos si el usuario las pidió explícitamente
+    # 3) REGLA DE ORO (Gatekeeper)
     photo_keywords = [
         "foto", "fotos", "imagen", "imagenes", "imágenes",
-        "ver fotos", "ver imágenes", "ver la foto", "ver las fotos",
+        "ver fotos", "ver imágenes",
         "enseñame", "enséñame", "muestrame", "muéstrame",
-        "mandame fotos", "mándame fotos"
+        "mandame", "mándame", "quiero ver",
+        "verla", "verlo", "ver el", "ver la",
+        "conocerla", "conocerlo"
     ]
-    user_wants_photos = any(k in msg_norm for k in photo_keywords)
-    if not user_wants_photos:
+
+    # 🔥 BLOQUEO TOTAL: Si no hay intención explícita de ver, cortamos aquí.
+    if not any(k in msg_norm for k in photo_keywords):
         return []
 
-    # 4) Si pidió fotos, buscamos a qué unidad se refiere (usuario primero, luego contexto)
+    # 4) Si pidió fotos, buscamos a qué unidad se refiere
     for item in items:
         urls = _extract_photos_from_item(item)
         if not urls:
@@ -166,6 +170,7 @@ def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[s
             for part in parts
             if len(part) >= 3 and part not in ["foton", "camion", "camión"]
         )
+
         match_bot = any(
             part in rep_norm
             for part in parts
@@ -212,6 +217,8 @@ def handle_message(
 
     # === HORA REAL ===
     _, current_time_str = get_mexico_time()
+
+    # Importante: aquí NO truena gracias a las dobles llaves del ejemplo JSON
     formatted_system_prompt = SYSTEM_PROMPT.format(current_time_str=current_time_str)
 
     inventory_text = _build_inventory_text(inventory_service)
@@ -257,7 +264,6 @@ def handle_message(
         logger.error(f"Error OpenAI: {e}")
         reply_clean = "Dame un momento, estoy consultando sistema..."
 
-    # Limpieza de prefijos tipo "Adrian:"
     reply_clean = re.sub(
         r"^(Adrian|Asesor|Bot)\s*:\s*",
         "",
