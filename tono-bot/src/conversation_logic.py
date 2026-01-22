@@ -97,44 +97,84 @@ if not raw:
 return []
 return [u.strip() for u in raw.split("|") if u.strip().startswith("http")]
 
+# === LÓGICA DE FOTOS BLINDADA (SOLO BAJO PETICIÓN) ===
 def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[str]:
-msg = (user_message or "").lower()
+    msg = (user_message or "").lower()
 
-# Si piden ubicación, no mandamos fotos
-if any(
-    x in msg
-    for x in [
+    # 1) FILTRO GPS: si piden ubicación, PROHIBIDO mandar fotos
+    gps_keywords = [
         "ubicacion", "ubicación", "donde estan", "dónde están",
         "direccion", "dirección", "mapa", "donde se ubican"
     ]
-):
-    return []
+    if any(k in msg for k in gps_keywords):
+        return []
 
-items = getattr(inventory_service, "items", None) or []
-if not items:
-    return []
+    items = getattr(inventory_service, "items", None) or []
+    if not items:
+        return []
 
-rep = (reply or "").lower()
+    # 2) NORMALIZACIÓN
+    def norm(text: str) -> str:
+        return (
+            (text or "")
+            .lower()
+            .replace("miller", "miler")
+            .replace("vanesa", "toano")
+            .replace("la e5", "tunland e5")
+        )
 
-# Normalizaciones raras que tú traías
-msg_norm = msg.replace("miller", "miler").replace("vanesa", "toano").replace("la e5", "tunland e5")
-rep_norm = rep.replace("miller", "miler").replace("vanesa", "toano").replace("la e5", "tunland e5")
+    msg_norm = norm(user_message)
+    rep_norm = norm(reply)
 
-for item in items:
-    urls = _extract_photos_from_item(item)
-    if not urls:
-        continue
+    # 3) REGLA DE ORO (El Gatekeeper):
+    # SOLO mandamos fotos si el usuario las pidió explícitamente con estas palabras.
+    photo_keywords = [
+        "foto", "fotos", "imagen", "imagenes", "imágenes",
+        "ver fotos", "ver imágenes",
+        "enseñame", "enséñame", "muestrame", "muéstrame",
+        "mandame", "mándame", "quiero ver", 
+        "verla", "verlo", "ver el", "ver la", "conocerla", "conocerlo"
+    ]
 
-    modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).lower()
-    parts = modelo.split()
+    # 🔥 BLOQUEO TOTAL: Si no hay intención explícita de ver, cortamos aquí.
+    if not any(k in msg_norm for k in photo_keywords):
+        return []  
 
-    for part in parts:
-        if len(part) < 3 or part in ["foton", "camion", "camión"]:
+    # 4) Si pidió fotos, buscamos a qué unidad se refiere
+    for item in items:
+        urls = _extract_photos_from_item(item)
+        if not urls:
             continue
-        if part in msg_norm or part in rep_norm:
+
+        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).lower().strip()
+        if not modelo:
+            continue
+
+        parts = modelo.split()
+
+        # Match por el mensaje del usuario (Prioridad 1)
+        match_user = any(
+            part in msg_norm
+            for part in parts
+            if len(part) >= 3 and part not in ["foton", "camion", "camión"]
+        )
+
+        # Match por contexto del bot (Prioridad 2 - Contexto)
+        match_bot = any(
+            part in rep_norm
+            for part in parts
+            if len(part) >= 3 and part not in ["foton", "camion", "camión"]
+        )
+
+        # A) Si pidió fotos + mencionó modelo -> MANDA
+        if match_user:
             return urls
 
-return []
+        # B) Si pidió fotos pero no dijo cual, usamos lo que el bot estaba ofreciendo -> MANDA
+        if match_bot:
+            return urls
+
+    return []
 def handle_message(
 user_message: str,
 inventory_service,
@@ -234,3 +274,4 @@ return {
     "media_urls": media_urls,
     "lead_info": lead_info,
 }
+
