@@ -8,24 +8,27 @@ logger = logging.getLogger(__name__)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# === PERSONALIDAD: ADRIAN (ASESOR EXPERTO) ===
+# === PERSONALIDAD: ADRIAN (ASESOR HUMANO V5) ===
 SYSTEM_PROMPT = """
 Eres "Adrian", Asesor Comercial de 'Tractos y Max'.
+Tu trabajo es conversar naturalmente, resolver dudas y concretar visitas.
 
-OBJETIVO:
-1. Resolver dudas sobre el inventario.
-2. PERFILAR al cliente (Uso y Forma de Pago).
-3. CERRAR LA CITA (Fecha y Hora).
+DATOS OPERATIVOS (Apréndetelos):
+- **Ubicación:** Av. de los Camioneros 123.
+- **Horario:** Lunes a Viernes de 9:00 AM a 6:00 PM. (Sábados hasta las 2pm).
+- **Si preguntan "¿Por quién pregunto?":** "Pregunta por mí, Adrian".
+- **Si preguntan Fotos:** Di "Claro, aquí tienes la foto" (El sistema la enviará por ti).
 
-TU BIBLIA (REGLAS INQUEBRANTABLES):
-1. **TIENES TODO EL INVENTARIO:** Si el cliente pide un modelo y está en la lista que te paso, ¡VÉNDELO! No digas que no lo tienes.
-2. **CERO SALUDOS REPETITIVOS:** Si el historial muestra que ya saludaste, NO vuelvas a decir "Hola". Ve directo a la respuesta.
-3. **DIRECCIÓN:** Av. de los Camioneros 123. (DILA SOLO SI TE LA PREGUNTAN o al confirmar cita).
-4. **NO INVENTES:** Si te piden algo que DE VERDAD no está en la lista completa, ofrece una alternativa similar.
+REGLAS DE ORO (ANTI-ROBOT):
+1. **PROHIBIDO REPETIR:** Si ya dijiste "Foton Tunland E5 2024 a $300k", en los siguientes mensajes solo di "la camioneta", "la unidad" o "la E5". ¡No repitas el nombre completo y precio en cada respuesta! Cansa al cliente.
+2. **ESCUCHA PRIMERO:**
+   - Si preguntan "¿A qué hora cierran?", responde el HORARIO de cierre (6 PM), no preguntes por la cita.
+   - Si preguntan "¿Con qué banco?", busca en el inventario la columna 'Banco' (ej. Banorte) y díselo.
+   - Si dicen "No tengo banco", ofrece el "Crédito Directo" si el inventario lo menciona.
+3. **NATURALIDAD:** Si el cliente te insulta o se desespera, ofrece disculpas cortas y ve al grano.
+4. **NO SALUDES SIEMPRE:** Si ya están hablando, no digas "Hola" ni "Perfecto" en cada mensaje.
 
-ESTILO:
-- Profesional, amable y conciso.
-- Máximo 3 oraciones por respuesta.
+FORMATO: Respuesta corta y directa.
 """
 
 def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
@@ -37,25 +40,27 @@ def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
 
 def _build_inventory_text(inventory_service) -> str:
     """
-    SIN FILTROS: Pasa el inventario COMPLETO a la IA.
-    Son pocas filas (28), así que la IA puede leerlo todo sin problemas.
+    Pasa TODO el inventario, incluyendo datos de Financiamiento y Bancos.
     """
     items = getattr(inventory_service, "items", None) or []
     if not items:
         return "No hay inventario disponible."
 
     lines = []
-    # Recorremos TODO el inventario (sin [:15])
     for item in items: 
         marca = _safe_get(item, ["Marca", "marca"])
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"])
         anio = _safe_get(item, ["Anio", "Año", "anio"])
         precio = _safe_get(item, ["Precio", "precio"])
         status = _safe_get(item, ["status", "disponible"], default="Disponible")
-        desc = _safe_get(item, ["descripcion_corta", "segmento"], default="")
-
+        
+        # AGREGAMOS DATOS FINANCIEROS CLAVE
+        banco = _safe_get(item, ["Banco", "banco", "Financiera"], default="Varios bancos")
+        tipo_fin = _safe_get(item, ["Tipo de financiamiento", "Financiamiento"], default="Crédito disponible")
+        
         label = f"{marca} {modelo} {anio}".strip()
-        info = f"- {label}: ${precio} ({status}) [{desc}]"
+        # Formato compacto para que la IA entienda todo
+        info = f"- {label}: ${precio} | Banco sugerido: {banco} | Tipo: {tipo_fin}"
         
         lines.append(info)
 
@@ -67,49 +72,43 @@ def _extract_photos_from_item(item: dict) -> List[str]:
     return [u.strip() for u in raw.split("|") if u.strip().startswith("http")]
 
 def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[str]:
-    """Busca fotos coincidiendo palabras clave del modelo."""
     items = getattr(inventory_service, "items", None) or []
     if not items: return []
 
     msg = user_message.lower()
     rep = reply.lower()
     
-    # Palabras clave forzadas (para arreglar typos del usuario)
-    # Si el usuario escribe "miller", entendemos "miler"
-    msg = msg.replace("miller", "miler").replace("vanesa", "van")
+    # Corrección de typos comunes del usuario
+    msg = msg.replace("miller", "miler").replace("vanesa", "toano").replace("la e5", "tunland e5")
 
     for item in items:
         urls = _extract_photos_from_item(item)
         if not urls: continue
 
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).lower()
-        
-        # Tokenizamos el modelo (ej: "tunland g9" -> "tunland", "g9")
         parts = modelo.split()
         
-        # Si alguna parte CLAVE del modelo está en el mensaje, mandamos foto
         for part in parts:
-            if len(part) < 2 or part in ["foton", "camion"]: continue
+            if len(part) < 2 or part in ["foton", "camion", "de", "el", "la"]: continue
             
+            # Si el usuario pide el modelo O si la IA lo menciona en la respuesta
             if part in msg:
-                return urls # Búsqueda directa en lo que dijo el cliente
-            
+                return urls
             if part in rep:
-                return urls # Búsqueda en lo que respondió la IA
+                return urls
 
     return []
 
 def handle_message(user_message, inventory_service, state, context):
-    # 1. Pasamos TODO el inventario
     inventory_text = _build_inventory_text(inventory_service)
     history = (context.get("history") or "").strip()
 
     context_block = f"""
-LISTA COMPLETA DE INVENTARIO:
+INVENTARIO COMPLETO (Con Info Bancaria):
 {inventory_text}
 
-HISTORIAL DE CHAT:
-{history[-2000:] if history else "Inicio."}
+HISTORIAL:
+{history[-2500:] if history else "Inicio."}
 """
 
     messages = [
@@ -122,15 +121,15 @@ HISTORIAL DE CHAT:
         resp = client.chat.completions.create(
             model="gpt-3.5-turbo", 
             messages=messages,
-            temperature=0.4, # Precisión alta
-            max_tokens=250,
+            temperature=0.3, # Temperatura BAJA para que obedezca las reglas de no repetir
+            max_tokens=220,
         )
         reply = resp.choices[0].message.content or ""
     except Exception as e:
         logger.error(f"Error OpenAI: {e}")
         reply = "Dame un momento... (Error técnico)"
 
-    # Limpieza
+    # Limpieza final
     reply_clean = re.sub(r"^(Adrian|Asesor|Bot):", "", reply.strip(), flags=re.IGNORECASE).strip()
     
     media_urls = _pick_media_urls(user_message, reply_clean, inventory_service)
@@ -140,6 +139,6 @@ HISTORIAL DE CHAT:
     return {
         "reply": reply_clean,
         "new_state": "chatting",
-        "context": {"history": new_history[-3000:]},
+        "context": {"history": new_history[-3500:]}, # Más memoria
         "media_urls": media_urls
     }
