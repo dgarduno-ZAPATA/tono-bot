@@ -4,3 +4,4 @@ python-multipart==0.0.9
 openai
 requests==2.32.3
 httpx
+pandas
