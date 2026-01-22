@@ -67,8 +67,9 @@ REGLAS OBLIGATORIAS:
 ESTILO: Amable, directo y profesional. Máximo 3 oraciones.
 """
 
-def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
-"""Devuelve el primer valor no vacío encontrado en item para las llaves dadas."""
+def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:"""
+Devuelve el primer valor no vacío encontrado en item para las llaves dadas.
+"""
 for k in keys:
 v = item.get(k)
 if v is not None and str(v).strip() != "":
@@ -273,3 +274,4 @@ return {
     "media_urls": media_urls,
     "lead_info": lead_info,
 }
+
