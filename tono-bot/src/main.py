@@ -235,20 +235,19 @@ async def process_single_event(data: Dict[str, Any]):
     if not user_message:
         return
 
-    # 2. === COMANDOS DE SILENCIO (HANDOFF) ===
+# 2. === COMANDOS DE SILENCIO (HANDOFF) ===
     if user_message.lower() == "/silencio":
         silenced_users[remote_jid] = True
-        await send_evolution_message(remote_jid, "🔇 Bot desactivado. Puedes escribir manualmente.")
-        return
-
-    if user_message.lower() == "/activar":
-        if remote_jid in silenced_users:
-            del silenced_users[remote_jid]
-        await send_evolution_message(remote_jid, "🔊 Bot reactivado. ¡Listo para trabajar!")
-        return
-
-    if silenced_users.get(remote_jid):
-        logger.info(f"Ignorando mensaje de {remote_jid} (Usuario Silenciado)")
+        
+        # 1. Avisar al cliente
+        await send_evolution_message(remote_jid, "🔇 Bot desactivado. Un asesor humano te atenderá en breve.")
+        
+        # 2. AVISAR AL DUEÑO (¡NUEVO!) 🚨
+        if OWNER_PHONE:
+            clean_client = remote_jid.split("@")[0]
+            alerta = f"⚠️ *HANDOFF ACTIVADO*\n\nEl chat con wa.me/{clean_client} ha sido pausado.\nEl bot NO responderá hasta que envíes '/activar'."
+            await send_evolution_message(OWNER_PHONE, alerta)
+            
         return
 
     # 3. Lógica del Bot (Adrian)
@@ -315,3 +314,4 @@ async def evolution_webhook(request: Request):
             logger.error(f"❌ Error procesando evento: {e}")
 
     return {"status": "success"}
+
