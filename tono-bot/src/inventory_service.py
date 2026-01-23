@@ -51,7 +51,7 @@ class InventoryService:
             # limpia headers/valores (a prueba de listas)
             row = { _clean_cell(k): _clean_cell(v) for k, v in (row or {}).items() }
 
-            status = row.get("status", "").lower()
+            status = (row.get("status", "") or "").strip().lower()
             if status and status not in ["disponible", "available", "1", "si", "sí", "yes"]:
                 continue
 
@@ -69,3 +69,4 @@ class InventoryService:
 
     def ensure_loaded(self):
         self.load(force=False)
+
