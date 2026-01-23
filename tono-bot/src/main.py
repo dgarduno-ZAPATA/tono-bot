@@ -30,13 +30,6 @@ class Settings(BaseSettings):
     SHEET_CSV_URL: Optional[str] = None
     INVENTORY_REFRESH_SECONDS: int = 300
 
-    # === MONDAY (para dedupe persistente) ===
-    # PON ESTAS 3 EN RENDER ENV VARS
-    MONDAY_API_KEY: Optional[str] = None
-    MONDAY_BOARD_ID: Optional[int] = None
-    # Este es el ID interno de la columna donde guardas el msg_id, ej: "text_1"
-    MONDAY_DEDUPE_COLUMN_ID: Optional[str] = None
-
     # Logging del payload (evita logs gigantes)
     LOG_WEBHOOK_PAYLOAD: bool = True
     LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
@@ -68,7 +61,7 @@ class GlobalState:
         self.inventory: Optional[InventoryService] = None
         self.store: Optional[MemoryStore] = None
 
-        # dedupe RAM (bueno pero NO persistente si reinicia Render)
+        # dedupe RAM (si llegan 2 eventos iguales rápido)
         self.processed_message_ids = deque(maxlen=4000)
         self.processed_lead_ids = deque(maxlen=8000)
 
@@ -102,7 +95,7 @@ async def lifespan(app: FastAPI):
 
     try:
         bot_state.inventory.load(force=True)
-        count = len(getattr(bot_state.inventory, "items", []) or [])
+        count = len(getattr(bot_state.inventory, "items", []) or [] )
         logger.info(f"✅ Inventario cargado: {count} items.")
     except Exception as e:
         logger.error(f"⚠️ Error cargando inventario inicial: {e}")
@@ -115,19 +108,9 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
 
-    # D) Verificación Monday env vars (solo warning)
-    if not settings.MONDAY_API_KEY or not settings.MONDAY_BOARD_ID or not settings.MONDAY_DEDUPE_COLUMN_ID:
-        logger.warning(
-            "⚠️ Monday dedupe persistente NO está configurado. "
-            "Para eliminar duplicados al 100% agrega env vars: "
-            "MONDAY_API_KEY, MONDAY_BOARD_ID, MONDAY_DEDUPE_COLUMN_ID"
-        )
-    else:
-        logger.info("✅ Monday dedupe persistente: configurado.")
-
     yield
 
-    # E) Limpieza
+    # D) Limpieza
     logger.info("🛑 Deteniendo aplicación...")
     if bot_state.http_client:
         await bot_state.http_client.aclose()
@@ -281,63 +264,6 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
     await send_evolution_message(settings.OWNER_PHONE, alert_text)
 
 
-# === 6.1 DEDUPE PERSISTENTE EN MONDAY (BUSCAR ANTES DE CREAR) ===
-async def monday_item_exists_by_external_id(external_id: str) -> bool:
-    """
-    Busca si ya existe un item en Monday con external_id (msg_id).
-    Requiere env vars:
-      MONDAY_API_KEY, MONDAY_BOARD_ID, MONDAY_DEDUPE_COLUMN_ID
-    """
-    if not external_id:
-        return False
-    if not settings.MONDAY_API_KEY or not settings.MONDAY_BOARD_ID or not settings.MONDAY_DEDUPE_COLUMN_ID:
-        # Si no está configurado, no podemos buscar. (RAM dedupe seguirá)
-        return False
-
-    url = "https://api.monday.com/v2"
-    headers = {
-        "Authorization": settings.MONDAY_API_KEY,
-        "Content-Type": "application/json",
-    }
-
-    query = """
-    query ($board_id: ID!, $col_id: String!, $val: String!) {
-      items_page_by_column_values (
-        limit: 1,
-        board_id: $board_id,
-        columns: [{column_id: $col_id, column_values: [$val]}]
-      ) {
-        items { id name }
-      }
-    }
-    """
-
-    variables = {
-        "board_id": int(settings.MONDAY_BOARD_ID),
-        "col_id": str(settings.MONDAY_DEDUPE_COLUMN_ID),
-        "val": str(external_id),
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(url, json={"query": query, "variables": variables}, headers=headers)
-        if resp.status_code >= 400:
-            logger.warning(f"⚠️ Monday search HTTP {resp.status_code}: {resp.text[:400]}")
-            return False
-
-        payload = resp.json()
-        items = (
-            payload.get("data", {})
-            .get("items_page_by_column_values", {})
-            .get("items", [])
-        ) or []
-        return len(items) > 0
-
-    except Exception as e:
-        logger.warning(f"⚠️ Monday search error (se ignora para no perder lead): {e}")
-        return False
-
-
 # === 7. PROCESADOR CENTRAL ===
 async def process_single_event(data: Dict[str, Any]):
     key = data.get("key", {}) or {}
@@ -362,7 +288,7 @@ async def process_single_event(data: Dict[str, Any]):
     # Deduplicación general por msg_id (RAM)
     if msg_id:
         if msg_id in bot_state.processed_message_ids:
-            logger.info(f"🔁 Mensaje duplicado (RAM) ignorado: {msg_id}")
+            logger.info(f"🔁 Mensaje duplicado ignorado (RAM): {msg_id}")
             return
         bot_state.processed_message_ids.append(msg_id)
 
@@ -414,7 +340,13 @@ async def process_single_event(data: Dict[str, Any]):
         result = await run_in_threadpool(handle_message, user_message, bot_state.inventory, state, context)
     except Exception as e:
         logger.error(f"❌ Error IA: {e}")
-        result = {"reply": "Dame un momento...", "new_state": state, "context": context, "media_urls": [], "lead_info": None}
+        result = {
+            "reply": "Dame un momento...",
+            "new_state": state,
+            "context": context,
+            "media_urls": [],
+            "lead_info": None
+        }
 
     reply_text = (result.get("reply") or "").strip()
     media_urls = result.get("media_urls") or []
@@ -433,26 +365,20 @@ async def process_single_event(data: Dict[str, Any]):
     # Responder al cliente
     await send_evolution_message(remote_jid, reply_text, media_urls)
 
-    # Leads a Monday (RAM + Persistente)
+    # Leads a Monday (con dedupe fuerte)
     if lead_info:
         try:
-            # Candado RAM
+            # Candado RAM (extra)
             lead_key = f"{remote_jid}|{msg_id}|lead"
             if lead_key in bot_state.processed_lead_ids:
-                logger.info(f"🧱 Lead duplicado (RAM) bloqueado: {lead_key}")
+                logger.info(f"🧱 Lead duplicado bloqueado (RAM): {lead_key}")
                 return
             bot_state.processed_lead_ids.append(lead_key)
-
-            # DEDUPE PERSISTENTE MONDAY (el verdadero candado)
-            # Usamos msg_id como external_id
-            if msg_id and await monday_item_exists_by_external_id(msg_id):
-                logger.info(f"🧲 Lead duplicado (Monday) ignorado por external_id={msg_id}")
-                return
 
             # Teléfono limpio (sin @s.whatsapp.net)
             lead_info["telefono"] = remote_jid.split("@")[0]
 
-            # Guardamos el msg_id para que Monday quede “marcado”
+            # 🔥 ESTA ES LA CLAVE: guardamos msg_id como external_id
             lead_info["external_id"] = msg_id
 
             logger.info(f"🚀 ¡LEAD DETECTADO! Enviando a Monday: {lead_info.get('nombre')}")
@@ -475,9 +401,6 @@ async def health():
         "silenced_chats": len(bot_state.silenced_users),
         "processed_msgs_cache": len(bot_state.processed_message_ids),
         "processed_leads_cache": len(bot_state.processed_lead_ids),
-        "monday_dedupe_configured": bool(
-            settings.MONDAY_API_KEY and settings.MONDAY_BOARD_ID and settings.MONDAY_DEDUPE_COLUMN_ID
-        ),
     }
 
 
