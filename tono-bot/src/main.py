@@ -1,31 +1,44 @@
 import os
-import httpx
 import logging
+from contextlib import asynccontextmanager
 from collections import deque
 from typing import Any, Dict, List, Optional
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
+from pydantic_settings import BaseSettings
 
-# === IMPORTACIONES ===
+# === IMPORTACIONES PROPIAS ===
 from src.inventory_service import InventoryService
 from src.conversation_logic import handle_message
 from src.memory_store import MemoryStore
 from src.monday_service import monday_service
 
-# === 1. CONFIGURACIÓN Y VALIDACIÓN INICIAL ===
-EVO_API_URL = os.getenv("EVOLUTION_API_URL", "").rstrip("/")
-EVO_API_KEY = os.getenv("EVOLUTION_API_KEY")
-OWNER_PHONE = os.getenv("OWNER_PHONE")
 
-if not EVO_API_URL or not EVO_API_KEY:
-    logging.error("❌ FATAL: Faltan EVOLUTION_API_URL o EVOLUTION_API_KEY en variables de entorno.")
+# === 1. CONFIGURACIÓN ROBUSTA (Pydantic) ===
+class Settings(BaseSettings):
+    # Obligatorias
+    EVOLUTION_API_URL: str
+    EVOLUTION_API_KEY: str
 
-EVO_INSTANCE = os.getenv("EVO_INSTANCE", "Tractosymax2")
+    # Opcionales / defaults
+    EVO_INSTANCE: str = "Tractosymax2"
+    OWNER_PHONE: Optional[str] = None
+    SHEET_CSV_URL: Optional[str] = None
+    INVENTORY_REFRESH_SECONDS: int = 300
 
-# ✅ Debug de columnas Monday (solo cuando tú lo actives en Render)
-MONDAY_DEBUG_COLUMNS = os.getenv("MONDAY_DEBUG_COLUMNS", "0").strip() == "1"
-_monday_debug_ran = False  # para que solo imprima una vez por deploy
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
+
+
+try:
+    settings = Settings()
+except Exception as e:
+    print(f"❌ FATAL: Error en configuración de variables de entorno: {e}")
+    raise
+
 
 # Logs
 logging.basicConfig(
@@ -34,147 +47,76 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotTractos")
 
-app = FastAPI()
 
-# === 2. SERVICIOS ===
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INVENTORY_PATH = os.path.join(BASE_DIR, "data", "inventory.csv")
-SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")
-REFRESH_SECONDS = int(os.getenv("INVENTORY_REFRESH_SECONDS", "300"))
+# === 2. ESTADO GLOBAL EN RAM ===
+class GlobalState:
+    def __init__(self):
+        self.http_client: Optional[httpx.AsyncClient] = None
+        self.inventory: Optional[InventoryService] = None
+        self.store: Optional[MemoryStore] = None
 
-inventory = InventoryService(
-    INVENTORY_PATH,
-    sheet_csv_url=SHEET_CSV_URL,
-    refresh_seconds=REFRESH_SECONDS
-)
-
-try:
-    inventory.load(force=True)
-except Exception as e:
-    logger.error(f"⚠️ Error cargando inventario inicial: {e}")
-
-store = MemoryStore()
-store.init()
-
-# === 3. CONTROL DE ESTADO (Deduplicación y Silencio) ===
-processed_message_ids = deque(maxlen=1000)
-silenced_users: Dict[str, bool] = {}  # remote_jid -> True
+        self.processed_message_ids = deque(maxlen=2000)
+        self.processed_lead_ids = deque(maxlen=5000)
+        self.silenced_users: Dict[str, bool] = {}
 
 
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "inventory_count": len(getattr(inventory, "items", []) or []),
-        "silenced_chats": len(silenced_users)
-    }
+bot_state = GlobalState()
 
 
+# === 3. LIFESPAN (INICIO/CIErre) ===
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🚀 Iniciando BotTractos...")
+
+    # A) Cliente HTTP persistente
+    bot_state.http_client = httpx.AsyncClient(
+        base_url=settings.EVOLUTION_API_URL.rstrip("/"),
+        headers={"apikey": settings.EVOLUTION_API_KEY, "Content-Type": "application/json"},
+        timeout=30.0,
+    )
+
+    # B) Inventario
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    INVENTORY_PATH = os.path.join(BASE_DIR, "data", "inventory.csv")
+
+    bot_state.inventory = InventoryService(
+        INVENTORY_PATH,
+        sheet_csv_url=settings.SHEET_CSV_URL,
+        refresh_seconds=settings.INVENTORY_REFRESH_SECONDS,
+    )
+
+    try:
+        bot_state.inventory.load(force=True)
+        count = len(getattr(bot_state.inventory, "items", []) or [])
+        logger.info(f"✅ Inventario cargado: {count} items.")
+    except Exception as e:
+        logger.error(f"⚠️ Error cargando inventario inicial: {e}")
+
+    # C) Memoria
+    bot_state.store = MemoryStore()
+    try:
+        bot_state.store.init()
+        logger.info("✅ MemoryStore inicializado.")
+    except Exception as e:
+        logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
+
+    yield
+
+    # D) Limpieza
+    logger.info("🛑 Deteniendo aplicación...")
+    if bot_state.http_client:
+        await bot_state.http_client.aclose()
+    logger.info("👋 Recursos liberados.")
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+# === 4. UTILIDADES ===
 def _clean_phone_or_jid(value: str) -> str:
-    """
-    Evolution suele aceptar número en formato digits.
-    remote_jid puede venir como '521XXXXXXXXXX@s.whatsapp.net'.
-    """
     if not value:
         return ""
     return "".join([c for c in str(value) if c.isdigit()])
-
-
-# --- ENVÍO DE MENSAJES (CON FIX DE FOTOS) ---
-async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
-    media_urls = media_urls or []
-    text = (text or "").strip()
-
-    # Si no hay nada que enviar, se sale
-    if not text and not media_urls:
-        return
-
-    clean_number = _clean_phone_or_jid(number_or_jid)
-
-    if not clean_number:
-        logger.error(f"❌ No se pudo limpiar número/jid: {number_or_jid}")
-        return
-
-    headers = {
-        "apikey": EVO_API_KEY,
-        "Content-Type": "application/json",
-    }
-
-    async with httpx.AsyncClient(timeout=25.0) as client:
-        try:
-            # CASO 1: Intentar enviar IMAGEN (Si hay)
-            if media_urls:
-                url = f"{EVO_API_URL}/message/sendMedia/{EVO_INSTANCE}"
-
-                caption_full = text or ""  # caption puede ir vacío
-                if len(media_urls) > 1:
-                    caption_full = (caption_full + "\n\n(Más fotos disponibles en inventario)").strip()
-
-                payload = {
-                    "number": clean_number,
-                    "mediatype": "image",
-                    "mimetype": "image/jpeg",
-                    "caption": caption_full,
-                    "media": media_urls[0],
-                }
-
-                response = await client.post(url, json=payload, headers=headers)
-
-                if response.status_code < 400:
-                    logger.info(f"✅ FOTO enviada a {clean_number}")
-                    return
-
-                logger.error(f"⚠️ Falló FOTO (Error {response.status_code}), intentando TEXTO. Body: {response.text}")
-
-            # CASO 2: Enviar SOLO TEXTO (Respaldo o Default)
-            if text:
-                url = f"{EVO_API_URL}/message/sendText/{EVO_INSTANCE}"
-                payload = {"number": clean_number, "text": text}
-                response = await client.post(url, json=payload, headers=headers)
-
-                if response.status_code >= 400:
-                    logger.error(f"❌ Error Evolution Texto {response.status_code}: {response.text}")
-                else:
-                    logger.info(f"✅ TEXTO enviado a {clean_number}")
-
-        except Exception as e:
-            logger.error(f"❌ Excepción enviando mensaje: {e}")
-
-
-# --- ALERTA AL DUEÑO (ACTUALIZADA PARA LEADS) ---
-async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
-    if not OWNER_PHONE:
-        return
-
-    clean_client = _clean_phone_or_jid(user_number_or_jid)
-
-    if is_lead:
-        alert_text = (
-            "🚨 *NUEVO LEAD EN MONDAY* 🚨\n\n"
-            f"Cliente: wa.me/{clean_client}\n"
-            "El bot cerró una cita. ¡Revisa el tablero!"
-        )
-        await send_evolution_message(OWNER_PHONE, alert_text)
-        return
-
-    # Alerta Normal de Interés
-    keywords = [
-        "precio", "cuanto", "cuánto", "interesa", "verlo", "ubicacion", "ubicación",
-        "dónde", "donde", "trato", "comprar", "informes", "info"
-    ]
-
-    msg_lower = (user_message or "").lower()
-    if not any(word in msg_lower for word in keywords):
-        return
-
-    alert_text = (
-        "🔔 *Interés Detectado*\n"
-        f"Cliente: wa.me/{clean_client}\n"
-        f"Dijo: \"{user_message}\"\n"
-        f"Bot: \"{(bot_reply or '')[:60]}...\""
-    )
-
-    await send_evolution_message(OWNER_PHONE, alert_text)
 
 
 def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
@@ -202,85 +144,177 @@ def _ensure_inventory_loaded():
     """
     Compatibilidad con distintas versiones de InventoryService.
     """
+    inv = bot_state.inventory
+    if not inv:
+        return
+
     try:
-        if hasattr(inventory, "ensure_loaded"):
-            inventory.ensure_loaded()
+        if hasattr(inv, "ensure_loaded"):
+            inv.ensure_loaded()
         else:
-            inventory.load(force=False)
+            inv.load(force=False)
     except Exception as e:
         logger.error(f"⚠️ No se pudo refrescar inventario: {e}")
 
 
-# --- PROCESADOR CENTRAL ---
-async def process_single_event(data: Dict[str, Any]):
-    global _monday_debug_ran
+# === 5. ENVÍO DE MENSAJES (OPTIMIZADO) ===
+async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
+    media_urls = media_urls or []
+    text = (text or "").strip()
 
+    if not text and not media_urls:
+        return
+
+    clean_number = _clean_phone_or_jid(number_or_jid)
+    if not clean_number:
+        logger.error(f"❌ No se pudo limpiar número/jid: {number_or_jid}")
+        return
+
+    client = bot_state.http_client
+    if not client:
+        logger.error("❌ Cliente HTTP no inicializado (lifespan).")
+        return
+
+    try:
+        if media_urls:
+            url = f"/message/sendMedia/{settings.EVO_INSTANCE}"
+            caption_full = text
+            if len(media_urls) > 1:
+                caption_full = (caption_full + "\n\n(Más fotos disponibles en inventario)").strip()
+
+            payload = {
+                "number": clean_number,
+                "mediatype": "image",
+                "mimetype": "image/jpeg",
+                "caption": caption_full,
+                "media": media_urls[0],
+            }
+        else:
+            url = f"/message/sendText/{settings.EVO_INSTANCE}"
+            payload = {"number": clean_number, "text": text}
+
+        response = await client.post(url, json=payload)
+
+        # Ojo: en tus logs a veces responde 201. Tomamos <400 como OK.
+        if response.status_code >= 400:
+            logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text} | Payload: {payload}")
+        else:
+            logger.info(f"✅ Enviado a {clean_number} ({'MEDIA' if media_urls else 'TEXT'})")
+
+    except httpx.RequestError as e:
+        logger.error(f"❌ Error de conexión enviando mensaje a {clean_number}: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error inesperado en send_evolution_message: {e}")
+
+
+# === 6. ALERTAS AL DUEÑO ===
+async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
+    if not settings.OWNER_PHONE:
+        return
+
+    clean_client = _clean_phone_or_jid(user_number_or_jid)
+
+    if is_lead:
+        alert_text = (
+            "🚨 *NUEVO LEAD EN MONDAY* 🚨\n\n"
+            f"Cliente: wa.me/{clean_client}\n"
+            "El bot cerró una cita. ¡Revisa el tablero!"
+        )
+        await send_evolution_message(settings.OWNER_PHONE, alert_text)
+        return
+
+    keywords = [
+        "precio", "cuanto", "cuánto", "interesa", "verlo", "ubicacion", "ubicación",
+        "dónde", "donde", "trato", "comprar", "informes", "info"
+    ]
+
+    msg_lower = (user_message or "").lower()
+    if not any(word in msg_lower for word in keywords):
+        return
+
+    alert_text = (
+        "🔔 *Interés Detectado*\n"
+        f"Cliente: wa.me/{clean_client}\n"
+        f"Dijo: \"{user_message}\"\n"
+        f"Bot: \"{(bot_reply or '')[:60]}...\""
+    )
+    await send_evolution_message(settings.OWNER_PHONE, alert_text)
+
+
+# === 7. PROCESADOR CENTRAL ===
+async def process_single_event(data: Dict[str, Any]):
     key = data.get("key", {}) or {}
-    remote_jid = key.get("remoteJid", "")
+    remote_jid = (key.get("remoteJid", "") or "").strip()
     from_me = key.get("fromMe", False)
-    msg_id = key.get("id", "")
+    msg_id = (key.get("id", "") or "").strip()
+
+    # Ignorar basura (tus logs muestran eventos con remote_jid vacío)
+    if not remote_jid:
+        return
 
     logger.info(f"📩 Evento recibido. msg_id={msg_id} remote_jid={remote_jid}")
 
-    # Ignorar mensajes enviados por el mismo bot
+    # Ignorar lo que manda el bot
     if from_me:
         return
 
-    # Ignorar grupos y broadcast
+    # Ignorar grupos/broadcast
     if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
         return
 
-    # ✅ DEBUG MONDAY: imprime columnas una sola vez si activas MONDAY_DEBUG_COLUMNS=1
-    if MONDAY_DEBUG_COLUMNS and not _monday_debug_ran:
-        try:
-            logger.info("🧪 DEBUG: Listando columnas de Monday para obtener MONDAY_PHONE_COLUMN_ID...")
-            await monday_service.debug_list_columns()
-            _monday_debug_ran = True
-            logger.info("🧪 DEBUG: Listado de columnas completado. Revisa Render Logs.")
-        except Exception as e:
-            logger.error(f"❌ Error en debug_list_columns: {e}")
-
-    # Deduplicación
-    if msg_id and msg_id in processed_message_ids:
-        logger.info(f"Mensaje duplicado ignorado: {msg_id}")
-        return
+    # Deduplicación general por msg_id
     if msg_id:
-        processed_message_ids.append(msg_id)
+        if msg_id in bot_state.processed_message_ids:
+            logger.info(f"🔁 Mensaje duplicado ignorado: {msg_id}")
+            return
+        bot_state.processed_message_ids.append(msg_id)
 
-    # 1. Extraer mensaje
+    # Extraer mensaje
     msg_obj = data.get("message", {}) or {}
     user_message = _extract_user_message(msg_obj).strip()
     if not user_message:
         return
 
-    # 2. === COMANDOS DE SILENCIO (HANDOFF) ===
+    # --- comandos ---
     if user_message.lower() == "/silencio":
-        silenced_users[remote_jid] = True
-
-        # 1. Avisar al cliente
+        bot_state.silenced_users[remote_jid] = True
         await send_evolution_message(remote_jid, "🔇 Bot desactivado. Un asesor humano te atenderá en breve.")
 
-        # 2. AVISAR AL DUEÑO 🚨
-        if OWNER_PHONE:
+        if settings.OWNER_PHONE:
             clean_client = remote_jid.split("@")[0]
             alerta = (
-                f"⚠️ *HANDOFF ACTIVADO*\n\n"
+                "⚠️ *HANDOFF ACTIVADO*\n\n"
                 f"El chat con wa.me/{clean_client} ha sido pausado.\n"
-                "El bot NO responderá hasta que envíes '/activar'."
+                "El bot NO responderá hasta que el cliente envíe '/activar'."
             )
-            await send_evolution_message(OWNER_PHONE, alerta)
-
+            await send_evolution_message(settings.OWNER_PHONE, alerta)
         return
 
-    # 3. Lógica del Bot (Adrian)
+    if user_message.lower() == "/activar":
+        bot_state.silenced_users.pop(remote_jid, None)
+        await send_evolution_message(remote_jid, "✅ Bot activado de nuevo. ¿En qué te ayudo?")
+        return
+
+    # Si está silenciado, ya no responde
+    if bot_state.silenced_users.get(remote_jid) is True:
+        return
+
+    # Inventario refresh
     _ensure_inventory_loaded()
+
+    # Estado conversación
+    store = bot_state.store
+    if not store:
+        logger.error("❌ MemoryStore no inicializado.")
+        return
 
     session = store.get(remote_jid) or {"state": "start", "context": {}}
     state = session.get("state", "start")
     context = session.get("context", {}) or {}
 
+    # IA / lógica principal
     try:
-        result = await run_in_threadpool(handle_message, user_message, inventory, state, context)
+        result = await run_in_threadpool(handle_message, user_message, bot_state.inventory, state, context)
     except Exception as e:
         logger.error(f"❌ Error IA: {e}")
         result = {"reply": "Dame un momento...", "new_state": state, "context": context, "media_urls": [], "lead_info": None}
@@ -289,7 +323,7 @@ async def process_single_event(data: Dict[str, Any]):
     media_urls = result.get("media_urls") or []
     lead_info = result.get("lead_info")
 
-    # 4. Actualizar memoria
+    # Guardar memoria
     try:
         store.upsert(
             remote_jid,
@@ -299,15 +333,25 @@ async def process_single_event(data: Dict[str, Any]):
     except Exception as e:
         logger.error(f"⚠️ Error guardando memoria: {e}")
 
-    # 5. Responder al cliente
+    # Responder al cliente
     await send_evolution_message(remote_jid, reply_text, media_urls)
 
-    # 6. GESTIÓN DE LEAD (MONDAY + ALERTAS)
+    # Leads a Monday (con dedupe fuerte)
     if lead_info:
         try:
+            # Candado: mismo msg_id no debe crear lead 2 veces
+            lead_key = f"{remote_jid}|{msg_id}|lead"
+            if lead_key in bot_state.processed_lead_ids:
+                logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
+                return
+            bot_state.processed_lead_ids.append(lead_key)
+
+            # Teléfono limpio (sin @s.whatsapp.net)
             lead_info["telefono"] = remote_jid.split("@")[0]
+
             logger.info(f"🚀 ¡LEAD DETECTADO! Enviando a Monday: {lead_info.get('nombre')}")
             await monday_service.create_lead(lead_info)
+
             await notify_owner(remote_jid, user_message, reply_text, is_lead=True)
         except Exception as e:
             logger.error(f"❌ Error enviando LEAD a Monday: {e}")
@@ -315,10 +359,26 @@ async def process_single_event(data: Dict[str, Any]):
         await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
 
 
-# --- WEBHOOK (ANTI-500 PARA EVOLUTION) ---
+# === 8. ENDPOINTS ===
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "instance": settings.EVO_INSTANCE,
+        "inventory_count": len(getattr(bot_state.inventory, "items", []) or []),
+        "silenced_chats": len(bot_state.silenced_users),
+        "processed_msgs_cache": len(bot_state.processed_message_ids),
+        "processed_leads_cache": len(bot_state.processed_lead_ids),
+    }
+
+
 @app.post("/webhook")
 async def evolution_webhook(request: Request):
-    # ✅ Objetivo: JAMÁS romper con 500, para que Evolution NO reintente 10 veces
+    """
+    Webhook anti-500:
+    Siempre regresa 200 con JSON, aunque internamente haya errores,
+    para evitar reintentos masivos de Evolution (10x).
+    """
     try:
         body = await request.json()
     except Exception as e:
@@ -339,8 +399,6 @@ async def evolution_webhook(request: Request):
                 logger.error(f"❌ Error procesando evento: {e}")
 
         return {"status": "success"}
-
     except Exception as e:
         logger.error(f"❌ webhook: ERROR GENERAL: {e}")
-        # ✅ Importante: 200 aunque haya error interno
         return {"status": "error_but_acked"}
