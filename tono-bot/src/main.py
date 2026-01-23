@@ -23,7 +23,7 @@ if not EVO_API_URL or not EVO_API_KEY:
 
 EVO_INSTANCE = os.getenv("EVO_INSTANCE", "Tractosymax2")
 
-# ✅ NUEVO: debug de columnas Monday (solo cuando tú lo actives en Render)
+# ✅ Debug de columnas Monday (solo cuando tú lo actives en Render)
 MONDAY_DEBUG_COLUMNS = os.getenv("MONDAY_DEBUG_COLUMNS", "0").strip() == "1"
 _monday_debug_ran = False  # para que solo imprima una vez por deploy
 
@@ -220,6 +220,8 @@ async def process_single_event(data: Dict[str, Any]):
     from_me = key.get("fromMe", False)
     msg_id = key.get("id", "")
 
+    logger.info(f"📩 Evento recibido. msg_id={msg_id} remote_jid={remote_jid}")
+
     # Ignorar mensajes enviados por el mismo bot
     if from_me:
         return
@@ -313,24 +315,32 @@ async def process_single_event(data: Dict[str, Any]):
         await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
 
 
-# --- WEBHOOK ---
+# --- WEBHOOK (ANTI-500 PARA EVOLUTION) ---
 @app.post("/webhook")
 async def evolution_webhook(request: Request):
+    # ✅ Objetivo: JAMÁS romper con 500, para que Evolution NO reintente 10 veces
     try:
         body = await request.json()
-    except Exception:
-        return {"status": "error", "message": "Invalid JSON"}
+    except Exception as e:
+        logger.error(f"❌ webhook: JSON inválido: {e}")
+        return {"status": "ignored", "reason": "invalid_json"}
 
-    data_payload = body.get("data")
-    if not data_payload:
-        return {"status": "ignored"}
+    try:
+        data_payload = body.get("data")
+        if not data_payload:
+            return {"status": "ignored", "reason": "no_data"}
 
-    events = data_payload if isinstance(data_payload, list) else [data_payload]
+        events = data_payload if isinstance(data_payload, list) else [data_payload]
 
-    for event in events:
-        try:
-            await process_single_event(event)
-        except Exception as e:
-            logger.error(f"❌ Error procesando evento: {e}")
+        for event in events:
+            try:
+                await process_single_event(event)
+            except Exception as e:
+                logger.error(f"❌ Error procesando evento: {e}")
 
-    return {"status": "success"}
+        return {"status": "success"}
+
+    except Exception as e:
+        logger.error(f"❌ webhook: ERROR GENERAL: {e}")
+        # ✅ Importante: 200 aunque haya error interno
+        return {"status": "error_but_acked"}
