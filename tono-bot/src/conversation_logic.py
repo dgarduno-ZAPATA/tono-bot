@@ -78,7 +78,7 @@ REGLAS OBLIGATORIAS:
    - Si es FUERA de horario, di que la oficina está cerrada y ofrece agendar para mañana.
    
 7) **MODO GPS (HANDOFF):**
-   - Si piden ubicación, envía este enlace EXACTO: [INSERTA_AQUI_TU_LINK_REAL_DE_GOOGLE_MAPS]
+   - Si piden ubicación, envía este enlace EXACTO: [https://maps.app.goo.gl/v9KigGY3QVAxqwV17]
    - Y aclara: "Para recibirte personalmente, es necesario agendar una cita previa. ¿Qué día podrías venir?" (No des la dirección escrita, fuerza la cita).
    
 
@@ -617,4 +617,5 @@ def handle_message(
         "media_urls": media_urls,
         "lead_info": lead_info,
     }
+
 
