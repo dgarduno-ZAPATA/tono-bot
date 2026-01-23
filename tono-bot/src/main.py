@@ -1,5 +1,7 @@
 import os
+import json
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -28,6 +30,17 @@ class Settings(BaseSettings):
     SHEET_CSV_URL: Optional[str] = None
     INVENTORY_REFRESH_SECONDS: int = 300
 
+    # === MONDAY (para dedupe persistente) ===
+    # PON ESTAS 3 EN RENDER ENV VARS
+    MONDAY_API_KEY: Optional[str] = None
+    MONDAY_BOARD_ID: Optional[int] = None
+    # Este es el ID interno de la columna donde guardas el msg_id, ej: "text_1"
+    MONDAY_DEDUPE_COLUMN_ID: Optional[str] = None
+
+    # Logging del payload (evita logs gigantes)
+    LOG_WEBHOOK_PAYLOAD: bool = True
+    LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
+
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -55,20 +68,22 @@ class GlobalState:
         self.inventory: Optional[InventoryService] = None
         self.store: Optional[MemoryStore] = None
 
-        self.processed_message_ids = deque(maxlen=2000)
-        self.processed_lead_ids = deque(maxlen=5000)
+        # dedupe RAM (bueno pero NO persistente si reinicia Render)
+        self.processed_message_ids = deque(maxlen=4000)
+        self.processed_lead_ids = deque(maxlen=8000)
+
         self.silenced_users: Dict[str, bool] = {}
 
 
 bot_state = GlobalState()
 
 
-# === 3. LIFESPAN (INICIO/CIErre) ===
+# === 3. LIFESPAN (INICIO/CIERRE) ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Iniciando BotTractos...")
 
-    # A) Cliente HTTP persistente
+    # A) Cliente HTTP persistente (Evolution)
     bot_state.http_client = httpx.AsyncClient(
         base_url=settings.EVOLUTION_API_URL.rstrip("/"),
         headers={"apikey": settings.EVOLUTION_API_KEY, "Content-Type": "application/json"},
@@ -100,9 +115,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
 
+    # D) Verificación Monday env vars (solo warning)
+    if not settings.MONDAY_API_KEY or not settings.MONDAY_BOARD_ID or not settings.MONDAY_DEDUPE_COLUMN_ID:
+        logger.warning(
+            "⚠️ Monday dedupe persistente NO está configurado. "
+            "Para eliminar duplicados al 100% agrega env vars: "
+            "MONDAY_API_KEY, MONDAY_BOARD_ID, MONDAY_DEDUPE_COLUMN_ID"
+        )
+    else:
+        logger.info("✅ Monday dedupe persistente: configurado.")
+
     yield
 
-    # D) Limpieza
+    # E) Limpieza
     logger.info("🛑 Deteniendo aplicación...")
     if bot_state.http_client:
         await bot_state.http_client.aclose()
@@ -157,6 +182,22 @@ def _ensure_inventory_loaded():
         logger.error(f"⚠️ No se pudo refrescar inventario: {e}")
 
 
+def _safe_log_payload(prefix: str, obj: Any):
+    """
+    Log controlado para no llenar Render de JSON gigantes.
+    """
+    if not settings.LOG_WEBHOOK_PAYLOAD:
+        return
+
+    try:
+        raw = json.dumps(obj, ensure_ascii=False)
+        if len(raw) > settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS:
+            raw = raw[: settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS] + " ...[TRUNCATED]"
+        logger.info(f"{prefix}{raw}")
+    except Exception as e:
+        logger.warning(f"⚠️ No se pudo loggear payload: {e}")
+
+
 # === 5. ENVÍO DE MENSAJES (OPTIMIZADO) ===
 async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
     media_urls = media_urls or []
@@ -195,7 +236,6 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
 
         response = await client.post(url, json=payload)
 
-        # Ojo: en tus logs a veces responde 201. Tomamos <400 como OK.
         if response.status_code >= 400:
             logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text} | Payload: {payload}")
         else:
@@ -241,6 +281,63 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
     await send_evolution_message(settings.OWNER_PHONE, alert_text)
 
 
+# === 6.1 DEDUPE PERSISTENTE EN MONDAY (BUSCAR ANTES DE CREAR) ===
+async def monday_item_exists_by_external_id(external_id: str) -> bool:
+    """
+    Busca si ya existe un item en Monday con external_id (msg_id).
+    Requiere env vars:
+      MONDAY_API_KEY, MONDAY_BOARD_ID, MONDAY_DEDUPE_COLUMN_ID
+    """
+    if not external_id:
+        return False
+    if not settings.MONDAY_API_KEY or not settings.MONDAY_BOARD_ID or not settings.MONDAY_DEDUPE_COLUMN_ID:
+        # Si no está configurado, no podemos buscar. (RAM dedupe seguirá)
+        return False
+
+    url = "https://api.monday.com/v2"
+    headers = {
+        "Authorization": settings.MONDAY_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    query = """
+    query ($board_id: ID!, $col_id: String!, $val: String!) {
+      items_page_by_column_values (
+        limit: 1,
+        board_id: $board_id,
+        columns: [{column_id: $col_id, column_values: [$val]}]
+      ) {
+        items { id name }
+      }
+    }
+    """
+
+    variables = {
+        "board_id": int(settings.MONDAY_BOARD_ID),
+        "col_id": str(settings.MONDAY_DEDUPE_COLUMN_ID),
+        "val": str(external_id),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json={"query": query, "variables": variables}, headers=headers)
+        if resp.status_code >= 400:
+            logger.warning(f"⚠️ Monday search HTTP {resp.status_code}: {resp.text[:400]}")
+            return False
+
+        payload = resp.json()
+        items = (
+            payload.get("data", {})
+            .get("items_page_by_column_values", {})
+            .get("items", [])
+        ) or []
+        return len(items) > 0
+
+    except Exception as e:
+        logger.warning(f"⚠️ Monday search error (se ignora para no perder lead): {e}")
+        return False
+
+
 # === 7. PROCESADOR CENTRAL ===
 async def process_single_event(data: Dict[str, Any]):
     key = data.get("key", {}) or {}
@@ -248,7 +345,7 @@ async def process_single_event(data: Dict[str, Any]):
     from_me = key.get("fromMe", False)
     msg_id = (key.get("id", "") or "").strip()
 
-    # Ignorar basura (tus logs muestran eventos con remote_jid vacío)
+    # Ignorar basura
     if not remote_jid:
         return
 
@@ -262,10 +359,10 @@ async def process_single_event(data: Dict[str, Any]):
     if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
         return
 
-    # Deduplicación general por msg_id
+    # Deduplicación general por msg_id (RAM)
     if msg_id:
         if msg_id in bot_state.processed_message_ids:
-            logger.info(f"🔁 Mensaje duplicado ignorado: {msg_id}")
+            logger.info(f"🔁 Mensaje duplicado (RAM) ignorado: {msg_id}")
             return
         bot_state.processed_message_ids.append(msg_id)
 
@@ -336,18 +433,27 @@ async def process_single_event(data: Dict[str, Any]):
     # Responder al cliente
     await send_evolution_message(remote_jid, reply_text, media_urls)
 
-    # Leads a Monday (con dedupe fuerte)
+    # Leads a Monday (RAM + Persistente)
     if lead_info:
         try:
-            # Candado: mismo msg_id no debe crear lead 2 veces
+            # Candado RAM
             lead_key = f"{remote_jid}|{msg_id}|lead"
             if lead_key in bot_state.processed_lead_ids:
-                logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
+                logger.info(f"🧱 Lead duplicado (RAM) bloqueado: {lead_key}")
                 return
             bot_state.processed_lead_ids.append(lead_key)
 
+            # DEDUPE PERSISTENTE MONDAY (el verdadero candado)
+            # Usamos msg_id como external_id
+            if msg_id and await monday_item_exists_by_external_id(msg_id):
+                logger.info(f"🧲 Lead duplicado (Monday) ignorado por external_id={msg_id}")
+                return
+
             # Teléfono limpio (sin @s.whatsapp.net)
             lead_info["telefono"] = remote_jid.split("@")[0]
+
+            # Guardamos el msg_id para que Monday quede “marcado”
+            lead_info["external_id"] = msg_id
 
             logger.info(f"🚀 ¡LEAD DETECTADO! Enviando a Monday: {lead_info.get('nombre')}")
             await monday_service.create_lead(lead_info)
@@ -369,21 +475,38 @@ async def health():
         "silenced_chats": len(bot_state.silenced_users),
         "processed_msgs_cache": len(bot_state.processed_message_ids),
         "processed_leads_cache": len(bot_state.processed_lead_ids),
+        "monday_dedupe_configured": bool(
+            settings.MONDAY_API_KEY and settings.MONDAY_BOARD_ID and settings.MONDAY_DEDUPE_COLUMN_ID
+        ),
     }
+
+
+async def _background_process_events(events: List[Dict[str, Any]]):
+    """
+    Procesa eventos en background para que /webhook siempre responda rápido (ACK inmediato).
+    """
+    for event in events:
+        try:
+            await process_single_event(event)
+        except Exception as e:
+            logger.error(f"❌ Error procesando evento en background: {e}")
 
 
 @app.post("/webhook")
 async def evolution_webhook(request: Request):
     """
-    Webhook anti-500:
-    Siempre regresa 200 con JSON, aunque internamente haya errores,
-    para evitar reintentos masivos de Evolution (10x).
+    Webhook anti-reintentos:
+    - SIEMPRE responde 200 rápido (ACK inmediato)
+    - Procesa en background para que Evolution no reintente y no haya duplicados
     """
     try:
         body = await request.json()
     except Exception as e:
         logger.error(f"❌ webhook: JSON inválido: {e}")
         return {"status": "ignored", "reason": "invalid_json"}
+
+    # Log del payload (controlado)
+    _safe_log_payload("🧾 WEBHOOK PAYLOAD: ", body)
 
     try:
         data_payload = body.get("data")
@@ -392,13 +515,10 @@ async def evolution_webhook(request: Request):
 
         events = data_payload if isinstance(data_payload, list) else [data_payload]
 
-        for event in events:
-            try:
-                await process_single_event(event)
-            except Exception as e:
-                logger.error(f"❌ Error procesando evento: {e}")
+        # ✅ ACK inmediato: dispara background y regresa
+        asyncio.create_task(_background_process_events(events))
+        return {"status": "accepted"}  # 200 rápido
 
-        return {"status": "success"}
     except Exception as e:
         logger.error(f"❌ webhook: ERROR GENERAL: {e}")
         return {"status": "error_but_acked"}
