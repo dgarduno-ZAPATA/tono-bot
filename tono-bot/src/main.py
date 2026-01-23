@@ -23,6 +23,10 @@ if not EVO_API_URL or not EVO_API_KEY:
 
 EVO_INSTANCE = os.getenv("EVO_INSTANCE", "Tractosymax2")
 
+# ✅ NUEVO: debug de columnas Monday (solo cuando tú lo actives en Render)
+MONDAY_DEBUG_COLUMNS = os.getenv("MONDAY_DEBUG_COLUMNS", "0").strip() == "1"
+_monday_debug_ran = False  # para que solo imprima una vez por deploy
+
 # Logs
 logging.basicConfig(
     level=logging.INFO,
@@ -209,6 +213,8 @@ def _ensure_inventory_loaded():
 
 # --- PROCESADOR CENTRAL ---
 async def process_single_event(data: Dict[str, Any]):
+    global _monday_debug_ran
+
     key = data.get("key", {}) or {}
     remote_jid = key.get("remoteJid", "")
     from_me = key.get("fromMe", False)
@@ -221,6 +227,16 @@ async def process_single_event(data: Dict[str, Any]):
     # Ignorar grupos y broadcast
     if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
         return
+
+    # ✅ DEBUG MONDAY: imprime columnas una sola vez si activas MONDAY_DEBUG_COLUMNS=1
+    if MONDAY_DEBUG_COLUMNS and not _monday_debug_ran:
+        try:
+            logger.info("🧪 DEBUG: Listando columnas de Monday para obtener MONDAY_PHONE_COLUMN_ID...")
+            await monday_service.debug_list_columns()
+            _monday_debug_ran = True
+            logger.info("🧪 DEBUG: Listado de columnas completado. Revisa Render Logs.")
+        except Exception as e:
+            logger.error(f"❌ Error en debug_list_columns: {e}")
 
     # Deduplicación
     if msg_id and msg_id in processed_message_ids:
@@ -235,19 +251,23 @@ async def process_single_event(data: Dict[str, Any]):
     if not user_message:
         return
 
-# 2. === COMANDOS DE SILENCIO (HANDOFF) ===
+    # 2. === COMANDOS DE SILENCIO (HANDOFF) ===
     if user_message.lower() == "/silencio":
         silenced_users[remote_jid] = True
-        
+
         # 1. Avisar al cliente
         await send_evolution_message(remote_jid, "🔇 Bot desactivado. Un asesor humano te atenderá en breve.")
-        
-        # 2. AVISAR AL DUEÑO (¡NUEVO!) 🚨
+
+        # 2. AVISAR AL DUEÑO 🚨
         if OWNER_PHONE:
             clean_client = remote_jid.split("@")[0]
-            alerta = f"⚠️ *HANDOFF ACTIVADO*\n\nEl chat con wa.me/{clean_client} ha sido pausado.\nEl bot NO responderá hasta que envíes '/activar'."
+            alerta = (
+                f"⚠️ *HANDOFF ACTIVADO*\n\n"
+                f"El chat con wa.me/{clean_client} ha sido pausado.\n"
+                "El bot NO responderá hasta que envíes '/activar'."
+            )
             await send_evolution_message(OWNER_PHONE, alerta)
-            
+
         return
 
     # 3. Lógica del Bot (Adrian)
@@ -314,4 +334,3 @@ async def evolution_webhook(request: Request):
             logger.error(f"❌ Error procesando evento: {e}")
 
     return {"status": "success"}
-
