@@ -46,7 +46,7 @@ except Exception as e:
     raise
 
 
-# Logs
+# === LOGS ===
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -56,14 +56,14 @@ logger = logging.getLogger("BotTractos")
 
 # === 2. ESTADO GLOBAL EN RAM ===
 class GlobalState:
-    def __init__(self):
+    def __init__(self) -> None:
         self.http_client: Optional[httpx.AsyncClient] = None
         self.inventory: Optional[InventoryService] = None
         self.store: Optional[MemoryStore] = None
 
         # dedupe RAM (si llegan 2 eventos iguales rápido)
-        self.processed_message_ids = deque(maxlen=4000)
-        self.processed_lead_ids = deque(maxlen=8000)
+        self.processed_message_ids: deque[str] = deque(maxlen=4000)
+        self.processed_lead_ids: deque[str] = deque(maxlen=8000)
 
         self.silenced_users: Dict[str, bool] = {}
 
@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI):
 
     try:
         bot_state.inventory.load(force=True)
-        count = len(getattr(bot_state.inventory, "items", []) or [] )
+        count = len(getattr(bot_state.inventory, "items", []) or [])
         logger.info(f"✅ Inventario cargado: {count} items.")
     except Exception as e:
         logger.error(f"⚠️ Error cargando inventario inicial: {e}")
@@ -148,30 +148,28 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
     return ""
 
 
-def _ensure_inventory_loaded():
+def _ensure_inventory_loaded() -> None:
     """
     Compatibilidad con distintas versiones de InventoryService.
     """
     inv = bot_state.inventory
     if not inv:
         return
-
     try:
         if hasattr(inv, "ensure_loaded"):
-            inv.ensure_loaded()
+            inv.ensure_loaded()  # type: ignore[attr-defined]
         else:
-            inv.load(force=False)
+            inv.load(force=False)  # type: ignore[arg-type]
     except Exception as e:
         logger.error(f"⚠️ No se pudo refrescar inventario: {e}")
 
 
-def _safe_log_payload(prefix: str, obj: Any):
+def _safe_log_payload(prefix: str, obj: Any) -> None:
     """
     Log controlado para no llenar Render de JSON gigantes.
     """
     if not settings.LOG_WEBHOOK_PAYLOAD:
         return
-
     try:
         raw = json.dumps(obj, ensure_ascii=False)
         if len(raw) > settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS:
@@ -181,11 +179,14 @@ def _safe_log_payload(prefix: str, obj: Any):
         logger.warning(f"⚠️ No se pudo loggear payload: {e}")
 
 
-# === 5. ENVÍO DE MENSAJES (OPTIMIZADO) ===
-async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
+# === 5. ENVÍO DE MENSAJES (🔥 OPTIMIZADO PARA MÚLTIPLES FOTOS) ===
+async def send_evolution_message(
+    number_or_jid: str,
+    text: str,
+    media_urls: Optional[List[str]] = None
+) -> None:
     media_urls = media_urls or []
     text = (text or "").strip()
-
     if not text and not media_urls:
         return
 
@@ -200,38 +201,58 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
         return
 
     try:
+        # ✅ CAMBIO CLAVE: iterar sobre TODAS las URLs
         if media_urls:
-            url = f"/message/sendMedia/{settings.EVO_INSTANCE}"
-            caption_full = text
-            if len(media_urls) > 1:
-                caption_full = (caption_full + "\n\n(Más fotos disponibles en inventario)").strip()
+            total_fotos = len(media_urls)
+            for i, media_url in enumerate(media_urls):
+                url = f"/message/sendMedia/{settings.EVO_INSTANCE}"
 
-            payload = {
-                "number": clean_number,
-                "mediatype": "image",
-                "mimetype": "image/jpeg",
-                "caption": caption_full,
-                "media": media_urls[0],
-            }
+                # Texto solo en la ÚLTIMA foto
+                caption_part = text if (i == total_fotos - 1) else ""
+
+                payload = {
+                    "number": clean_number,
+                    "mediatype": "image",
+                    "mimetype": "image/jpeg",
+                    "caption": caption_part,
+                    "media": media_url,
+                }
+
+                # Pequeña pausa para orden de llegada en WhatsApp
+                if i > 0:
+                    await asyncio.sleep(0.5)
+
+                response = await client.post(url, json=payload)
+
+                if response.status_code >= 400:
+                    logger.error(f"⚠️ Error foto {i+1}: {response.text}")
+                else:
+                    logger.info(f"✅ Enviada foto {i+1}/{total_fotos} a {clean_number}")
+
         else:
+            # Caso solo texto
             url = f"/message/sendText/{settings.EVO_INSTANCE}"
             payload = {"number": clean_number, "text": text}
+            response = await client.post(url, json=payload)
 
-        response = await client.post(url, json=payload)
-
-        if response.status_code >= 400:
-            logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text} | Payload: {payload}")
-        else:
-            logger.info(f"✅ Enviado a {clean_number} ({'MEDIA' if media_urls else 'TEXT'})")
+            if response.status_code >= 400:
+                logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text}")
+            else:
+                logger.info(f"✅ Enviado a {clean_number} (TEXT)")
 
     except httpx.RequestError as e:
-        logger.error(f"❌ Error de conexión enviando mensaje a {clean_number}: {e}")
+        logger.error(f"❌ Error de conexión: {e}")
     except Exception as e:
-        logger.error(f"❌ Error inesperado en send_evolution_message: {e}")
+        logger.error(f"❌ Error inesperado: {e}")
 
 
 # === 6. ALERTAS AL DUEÑO ===
-async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
+async def notify_owner(
+    user_number_or_jid: str,
+    user_message: str,
+    bot_reply: str,
+    is_lead: bool = False
+) -> None:
     if not settings.OWNER_PHONE:
         return
 
@@ -265,10 +286,10 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
 
 
 # === 7. PROCESADOR CENTRAL ===
-async def process_single_event(data: Dict[str, Any]):
+async def process_single_event(data: Dict[str, Any]) -> None:
     key = data.get("key", {}) or {}
     remote_jid = (key.get("remoteJid", "") or "").strip()
-    from_me = key.get("fromMe", False)
+    from_me = bool(key.get("fromMe", False))
     msg_id = (key.get("id", "") or "").strip()
 
     # Ignorar basura
@@ -304,10 +325,10 @@ async def process_single_event(data: Dict[str, Any]):
         await send_evolution_message(remote_jid, "🔇 Bot desactivado. Un asesor humano te atenderá en breve.")
 
         if settings.OWNER_PHONE:
-            clean_client = remote_jid.split("@")[0]
+            clean_client_simple = remote_jid.split("@")[0]
             alerta = (
                 "⚠️ *HANDOFF ACTIVADO*\n\n"
-                f"El chat con wa.me/{clean_client} ha sido pausado.\n"
+                f"El chat con wa.me/{clean_client_simple} ha sido pausado.\n"
                 "El bot NO responderá hasta que el cliente envíe '/activar'."
             )
             await send_evolution_message(settings.OWNER_PHONE, alerta)
@@ -393,7 +414,7 @@ async def process_single_event(data: Dict[str, Any]):
 
 # === 8. ENDPOINTS ===
 @app.get("/health")
-async def health():
+async def health() -> Dict[str, Any]:
     return {
         "status": "ok",
         "instance": settings.EVO_INSTANCE,
@@ -404,7 +425,7 @@ async def health():
     }
 
 
-async def _background_process_events(events: List[Dict[str, Any]]):
+async def _background_process_events(events: List[Dict[str, Any]]) -> None:
     """
     Procesa eventos en background para que /webhook siempre responda rápido (ACK inmediato).
     """
@@ -416,7 +437,7 @@ async def _background_process_events(events: List[Dict[str, Any]]):
 
 
 @app.post("/webhook")
-async def evolution_webhook(request: Request):
+async def evolution_webhook(request: Request) -> Dict[str, Any]:
     """
     Webhook anti-reintentos:
     - SIEMPRE responde 200 rápido (ACK inmediato)
