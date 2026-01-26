@@ -11,14 +11,13 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # ============================================================
-#  CONFIG
+# CONFIG
 # ============================================================
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-
 # ============================================================
-#  TIME (CDMX)
+# TIME (CDMX)
 # ============================================================
 def get_mexico_time() -> Tuple[datetime, str]:
     """Returns current datetime in Mexico City timezone and a readable string."""
@@ -33,88 +32,94 @@ def get_mexico_time() -> Tuple[datetime, str]:
 
 
 # ============================================================
-#  PROMPT (IMPORTANT: JSON example uses DOUBLE BRACES {{ }})
+# PROMPT (IMPORTANT: JSON example uses DOUBLE BRACES {{ }})
 # ============================================================
 SYSTEM_PROMPT = """
 Eres "Adrian Jímenez", Asesor humano de alto nivel comercial de 'Tractos y Max'.
 
-OBJETIVO: Vender vehículos comerciales, generar confianza, resolver dudas y agendar visitas a la agencia. Gestionar la interacción con empatía, claridad y control, logrando que el cliente se sienta bien atendido sin caer en complacencia. Dar contexto y confianza sobre quién es Tractos y Max. Validar el interés del cliente con una sola pregunta humana y breve. Confirmar de forma mínima que entendiste lo que busca el cliente
+OBJETIVO: Vender vehículos comerciales, generar confianza, resolver dudas y agendar visitas a la agencia.
+Gestionar la interacción con empatía, claridad y control, logrando que el cliente se sienta bien atendido
+sin caer en complacencia. Dar contexto y confianza sobre quién es Tractos y Max. Validar el interés del
+cliente con una sola pregunta humana y breve. Confirmar de forma mínima que entendiste lo que busca el cliente
 
 DATOS CLAVE:
 - Ubicación: Tlalnepantla, Edo Mex.
 - Horario: Lunes a Viernes 9:00 AM a 6:00 PM. Sábados 9:00 AM a 2:00 PM.
 - MOMENTO ACTUAL: {current_time_str}
 - CLIENTE DETECTADO: {user_name_context}
--Conocimiento del negocio: Tractos y Max se dedica a la comercialización de vehículos comerciales nuevos y seminuevos a precio de oportunidad.
+- Conocimiento del negocio: Tractos y Max se dedica a la comercialización de vehículos comerciales nuevos y
+  seminuevos a precio de oportunidad.
 
 REGLAS OBLIGATORIAS:
-
 1) BIENVENIDA Y NOMBRE:
-   - Si es el PRIMER mensaje y sabes qué vehículo le interesa, di: "Hola, veo que te interesa la [Modelo]. Soy Adrian Jimenez, ¿con quién tengo el gusto?".
-   - Si el cliente solo dice "Hola" o no sabes su interés, saluda y ofrece ayuda SIN pedir el nombre aún.
-   - Si ya tienes el nombre ({user_name_context}), úsalo para personalizar ("Hola Juan...").
+- Si es el PRIMER mensaje y sabes qué vehículo le interesa, di:
+  "Hola, veo que te interesa la [Modelo]. Soy Adrian Jimenez, ¿con quién tengo el gusto?".
+- Si el cliente solo dice "Hola" o no sabes su interés, saluda y ofrece ayuda SIN pedir el nombre aún.
+- Si ya tienes el nombre ({user_name_context}), úsalo para personalizar ("Hola Juan...").
 
 2) TU NOMBRE vs SU NOMBRE (FLUIDEZ):
-   - Si el cliente pregunta "¿Cómo te llamas?", responde primero: "Soy Adrian..."
-   - Después, de forma casual, pide el suyo si no lo tienes: "¿Con quién tengo el gusto?"
+- Si el cliente pregunta "¿Cómo te llamas?", responde primero: "Soy Adrian..."
+- Después, de forma casual, pide el suyo si no lo tienes: "¿Con quién tengo el gusto?"
 
 3) NOMBRE (NATURAL, NO INSISTENTE):
-   - Si ya tienes nombre en "CLIENTE DETECTADO", úsalo.
-   - Si no lo tienes, NO lo pidas al inicio.
-   - Pídelo SOLO cuando el cliente muestre interés real (precio/fotos/crédito) o al cerrar cita.
-   - Frases casuales: "Por cierto, ¿con quién tengo el gusto?" / "¿A nombre de quién registro la visita?"
+- Si ya tienes nombre en "CLIENTE DETECTADO", úsalo.
+- Si no lo tienes, NO lo pidas al inicio.
+- Pídelo SOLO cuando el cliente muestre interés real (precio/fotos/crédito) o al cerrar cita.
+- Frases casuales: "Por cierto, ¿con quién tengo el gusto?" / "¿A nombre de quién registro la visita?"
 
 4) POLÍTICA DE MARCA (GARANTÍA):
-   - En tu PRIMERA respuesta donde des información técnica o precios, debes mencionar casualmente (sin que suene a robot legal):
-     "Te comento que todas nuestras unidades son 100% nuevas, con garantía de fábrica y facturadas directo por distribuidor FOTON."
-   - Hazlo fluir con la conversación, no lo digas como una interrupción brusca.   
+- En tu PRIMERA respuesta donde des información técnica o precios, debes mencionar casualmente (sin que suene a robot legal):
+  "Te comento que todas nuestras unidades son 100% nuevas, con garantía de fábrica y facturadas directo por distribuidor FOTON."
+- Hazlo fluir con la conversación, no lo digas como una interrupción brusca.
 
 5) FOTOS (CERO CONTRADICCIONES):
-   - Asume que SÍ hay fotos. El sistema las adjuntará automáticamente.
-   - Prohibido decir: "No puedo enviar fotos", "No tengo imágenes", "Soy una IA".
-   - Si piden fotos: "Claro, aquí tienes." o "Mira esta unidad."
+- Asume que SÍ hay fotos. El sistema las adjuntará automáticamente.
+- Prohibido decir: "No puedo enviar fotos", "No tengo imágenes", "Soy una IA".
+- Si piden fotos: "Claro, aquí tienes." o "Mira esta unidad."
 
 6) RELOJ:
-   - Si es FUERA de horario, di que la oficina está cerrada y ofrece agendar para mañana.
-   
-7) **MODO GPS (HANDOFF):**
-   - Si piden ubicación, envía este enlace EXACTO: [https://maps.app.goo.gl/v9KigGY3QVAxqwV17]
-   - Y aclara: "Para recibirte personalmente, es necesario agendar una cita previa. ¿Qué día podrías venir?" (No des la dirección escrita, fuerza la cita).
-   
+- Si es FUERA de horario, di que la oficina está cerrada y ofrece agendar para mañana.
+
+7) MODO GPS (HANDOFF):
+- Si piden ubicación, envía este enlace EXACTO: [https://maps.app.goo.gl/v9KigGY3QVAxqwV17]
+- Y aclara: "Para recibirte personalmente, es necesario agendar una cita previa. ¿Qué día podrías venir?"
+  (No des la dirección escrita, fuerza la cita).
 
 8) MONDAY (NO SPAM, PERO NO FALLAR):
-   - SOLO registra lead si hay: NOMBRE REAL + INTERÉS (modelo) + CITA/INTENCIÓN clara.
-   - Si falta el nombre, pídelo antes de cerrar la cita.
-   - Si ya hay cita confirmada, genera el JSON oculto al final (formato EXACTO):
-   ```json
-   {{
-     "lead_event": {{
-       "nombre": "Juan Perez",
-       "interes": "Foton Miler 45T RS 2024",
-       "cita": "Mañana 4:30 PM",
-       "pago": "Crédito"
-     }}
-   }}
-   ```
+- SOLO registra lead si hay: NOMBRE REAL + INTERÉS (modelo) + CITA/INTENCIÓN clara.
+- Si falta el nombre, pídelo antes de cerrar la cita.
+- Si ya hay cita confirmada, genera el JSON oculto al final (formato EXACTO):
 
-NO REPETIR: No repitas saludos ni direcciones si ya las diste hace poco. Nunca presiones, interrogues ni repitas la misma pregunta innecesariamente.
+```json
+{{
+  "lead_event": {{
+    "nombre": "Juan Perez",
+    "interes": "Foton Miler 45T RS 2024",
+    "cita": "Mañana 4:30 PM",
+    "pago": "Crédito"
+  }}
+}}
+```
+
+NO REPETIR:
+No repitas saludos ni direcciones si ya las diste hace poco. Nunca presiones, interrogues ni repitas la misma
+pregunta innecesariamente.
+
 INVENTARIO: Vende solo lo que ves en la lista.
-MODO GPS: Si piden ubicación, dales la dirección exacta y una referencia visual (sin fotos).
+
 ASUNCIÓN: Asume siempre que es una mensaje entrante.
+
 LENGUAJE: Usa frases cortas, habladas y naturales. Evita lenguaje corporativo, de folleto o de call center.
-Conversas; no sigas un formulario.
-Evita repetir la misma estructura más de dos veces.
-Satisfacción sin complacencia.
-El cliente debe sentirse escuchado y bien atendido,
-pero no intentes resolver todo, convencer ni “quedar bien”.
-Marca límites con naturalidad y ofrece un siguiente paso claro.
+Conversas; no sigas un formulario. Evita repetir la misma estructura más de dos veces.
+Satisfacción sin complacencia. El cliente debe sentirse escuchado y bien atendido, pero no intentes resolver
+todo, convencer ni "quedar bien". Marca límites con naturalidad y ofrece un siguiente paso claro.
 
 ESTILO: Amable, directo y profesional. Máximo 3 oraciones.
 """.strip()
 
 
 # ============================================================
-#  INVENTORY HELPERS
+# INVENTORY HELPERS
 # ============================================================
 def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
     """Return first non-empty string for given keys."""
@@ -155,7 +160,7 @@ def _extract_photos_from_item(item: Dict[str, Any]) -> List[str]:
 
 
 # ============================================================
-#  NAME / PAYMENT / APPOINTMENT EXTRACTION
+# NAME / PAYMENT / APPOINTMENT EXTRACTION
 # ============================================================
 def _extract_name_from_text(text: str) -> Optional[str]:
     """Extract probable customer name (conservative)."""
@@ -168,6 +173,7 @@ def _extract_name_from_text(text: str) -> Optional[str]:
         r"\bsoy\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
         r"\bmi nombre es\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
     ]
+
     for p in patterns:
         m = re.search(p, t, flags=re.IGNORECASE)
         if m:
@@ -215,8 +221,8 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
         if not modelo:
             continue
-        modelo_norm = _normalize_spanish(modelo)
 
+        modelo_norm = _normalize_spanish(modelo)
         tokens = [t for t in modelo_norm.split() if len(t) >= 3 and t not in {"foton", "camion", "camión"}]
         if not tokens:
             continue
@@ -234,6 +240,7 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
 
     if best_score >= 2:
         return best
+
     return None
 
 
@@ -243,7 +250,7 @@ def _extract_appointment_from_text(text: str) -> Optional[str]:
     if not t:
         return None
 
-    day = None
+    day: Optional[str] = None
     if "mañana" in t:
         day = "Mañana"
     else:
@@ -253,7 +260,7 @@ def _extract_appointment_from_text(text: str) -> Optional[str]:
                 day = d.capitalize().replace("Miercoles", "Miércoles").replace("Sabado", "Sábado")
                 break
 
-    time_str = None
+    time_str: Optional[str] = None
 
     m = re.search(r"\b(\d{1,2})\s*y\s*media\b", t)
     if m:
@@ -288,20 +295,13 @@ def _extract_appointment_from_text(text: str) -> Optional[str]:
             time_str = "(noche)"
 
     def _pretty_time_24_to_12(h24: int, mm: str) -> str:
-        suffix = "AM"
         if h24 == 0:
-            hh12 = 12
-            suffix = "AM"
-        elif 1 <= h24 <= 11:
-            hh12 = h24
-            suffix = "AM"
-        elif h24 == 12:
-            hh12 = 12
-            suffix = "PM"
-        else:
-            hh12 = h24 - 12
-            suffix = "PM"
-        return f"{hh12}:{mm} {suffix}"
+            return f"12:{mm} AM"
+        if 1 <= h24 <= 11:
+            return f"{h24}:{mm} AM"
+        if h24 == 12:
+            return f"12:{mm} PM"
+        return f"{h24 - 12}:{mm} PM"
 
     if day and time_str:
         if re.fullmatch(r"\d{1,2}:\d{2}", time_str):
@@ -327,23 +327,40 @@ def _message_confirms_appointment(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return False
+
     confirmations = [
-        "vale", "ok", "okey", "listo", "perfecto", "nos vemos", "ahí nos vemos",
-        "mañana nos vemos", "de acuerdo", "confirmo",
+        "vale",
+        "ok",
+        "okey",
+        "listo",
+        "perfecto",
+        "nos vemos",
+        "ahí nos vemos",
+        "mañana nos vemos",
+        "de acuerdo",
+        "confirmo",
     ]
     return any(c in t for c in confirmations)
 
 
 # ============================================================
-#  PHOTOS LOGIC
+# PHOTOS LOGIC (🔥 CON MEMORIA DE ÍNDICE)
 # ============================================================
-def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[str]:
+def _pick_media_urls(
+    user_message: str,
+    reply: str,
+    inventory_service,
+    context: Dict[str, Any],
+) -> List[str]:
+    """
+    Devuelve lista de URLs de fotos según el modelo detectado.
+
+    Ahora con MEMORIA: guarda en context['photo_index'] para saber cuál foto va.
+    """
     msg = _normalize_spanish(user_message)
 
-    gps_keywords = [
-        "ubicacion", "ubicación", "donde estan", "dónde están",
-        "direccion", "dirección", "mapa", "donde se ubican"
-    ]
+    # 1) Si piden ubicación, no mandar fotos
+    gps_keywords = ["ubicacion", "ubicación", "donde estan", "dónde están", "direccion", "dirección", "mapa", "donde se ubican"]
     if any(k in msg for k in gps_keywords):
         return []
 
@@ -351,41 +368,113 @@ def _pick_media_urls(user_message: str, reply: str, inventory_service) -> List[s
     if not items:
         return []
 
-    rep_norm = _normalize_spanish(reply)
-
+    # 2) Verificar si piden fotos
     photo_keywords = [
-        "foto", "fotos", "imagen", "imagenes", "imágenes",
-        "ver fotos", "ver imágenes", "ver la foto", "ver las fotos",
-        "enseñame", "enséñame", "muestrame", "muéstrame",
-        "mandame fotos", "mándame fotos", "quiero ver"
+        "foto",
+        "fotos",
+        "imagen",
+        "imagenes",
+        "imágenes",
+        "ver fotos",
+        "ver imágenes",
+        "ver la foto",
+        "ver las fotos",
+        "enseñame",
+        "enséñame",
+        "muestrame",
+        "muéstrame",
+        "mandame fotos",
+        "mándame fotos",
+        "quiero ver",
+        "otra",
+        "mas",
+        "más",
+        "siguiente",
     ]
     if not any(k in msg for k in photo_keywords):
         return []
 
-    for item in items:
-        urls = _extract_photos_from_item(item)
-        if not urls:
-            continue
+    # 3) Recuperar memoria del contexto
+    last_interest = (context.get("last_interest") or "").strip()
+    current_photo_model = (context.get("photo_model") or "").strip()
+    try:
+        photo_index = int(context.get("photo_index", 0))
+    except Exception:
+        photo_index = 0
 
-        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).lower().strip()
+    rep_norm = _normalize_spanish(reply)
+
+    # 4) Detectar qué modelo quiere ver
+    target_item = None
+    target_model_name = ""
+
+    # A) Buscar mención explícita en mensaje o respuesta del bot
+    for item in items:
+        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
         if not modelo:
             continue
 
-        parts = modelo.split()
-
-        match_user = any(
-            part in msg for part in parts
-            if len(part) >= 3 and part not in ["foton", "camion", "camión"]
-        )
-        match_bot = any(
-            part in rep_norm for part in parts
-            if len(part) >= 3 and part not in ["foton", "camion", "camión"]
-        )
-
+        modelo_norm = _normalize_spanish(modelo)
+        parts = [p for p in modelo_norm.split() if len(p) >= 3 and p not in ["foton", "camion", "camión"]]
+        match_user = any(part in msg for part in parts)
+        match_bot = any(part in rep_norm for part in parts)
         if match_user or match_bot:
-            return urls
+            target_item = item
+            target_model_name = modelo
+            break
 
-    return []
+    # B) Si no hay mención, usar last_interest (CLAVE para "otra foto" sin decir modelo)
+    if not target_item and last_interest:
+        for item in items:
+            modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
+            if _normalize_spanish(modelo) == _normalize_spanish(last_interest):
+                target_item = item
+                target_model_name = modelo
+                break
+
+    if not target_item:
+        return []
+
+    # 5) Extraer fotos
+    urls = _extract_photos_from_item(target_item)
+    if not urls:
+        return []
+
+    # 6) Si cambió de modelo, reiniciar índice
+    if _normalize_spanish(target_model_name) != _normalize_spanish(current_photo_model):
+        photo_index = 0
+        context["photo_model"] = target_model_name
+
+    # 7) Determinar si quiere "otra" (1 foto) o "fotos" (grupo)
+    wants_next = any(k in msg for k in ["otra", "mas", "más", "siguiente"])
+    selected_urls: List[str] = []
+
+    if wants_next:
+        # Modo "Siguiente": manda 1 foto y avanza el índice
+        if photo_index < len(urls):
+            selected_urls = [urls[photo_index]]
+            photo_index += 1
+        else:
+            # Ya no hay más, reiniciar (loop)
+            photo_index = 0
+            selected_urls = [urls[0]]
+            photo_index = 1
+    else:
+        # Modo "Ver fotos": manda batch (ej. 3)
+        batch_size = 3
+        end_index = min(photo_index + batch_size, len(urls))
+        selected_urls = urls[photo_index:end_index]
+        if not selected_urls:
+            photo_index = 0
+            end_index = min(batch_size, len(urls))
+            selected_urls = urls[0:end_index]
+            photo_index = end_index
+        else:
+            photo_index = end_index
+
+    # 8) Guardar el nuevo índice en contexto
+    context["photo_index"] = photo_index
+    return selected_urls
 
 
 def _sanitize_reply_if_photos_attached(reply: str, media_urls: List[str]) -> str:
@@ -401,14 +490,16 @@ def _sanitize_reply_if_photos_attached(reply: str, media_urls: List[str]) -> str
         r"soy\s+una\s+ia",
         r"soy\s+un\s+modelo",
     ]
+
     cleaned = reply or ""
     for p in bad_phrases:
         cleaned = re.sub(p, "Claro, aquí tienes.", cleaned, flags=re.IGNORECASE)
+
     return cleaned
 
 
 # ============================================================
-#  MONDAY VALIDATION (HARD GATE)
+# MONDAY VALIDATION (HARD GATE)
 # ============================================================
 def _lead_is_valid(lead: Dict[str, Any]) -> bool:
     if not isinstance(lead, dict):
@@ -438,7 +529,7 @@ def _lead_is_valid(lead: Dict[str, Any]) -> bool:
 
 
 # ============================================================
-#  MAIN ENTRY
+# MAIN ENTRY
 # ============================================================
 def handle_message(
     user_message: str,
@@ -525,7 +616,6 @@ def handle_message(
             temperature=0.3,
             max_tokens=350,
         )
-
         raw_reply = resp.choices[0].message.content or ""
         reply_clean = raw_reply
 
@@ -534,8 +624,8 @@ def handle_message(
         if inferred_interest:
             last_interest = inferred_interest
 
-        # Extract optional JSON from the model
-        json_match = re.search(r"```json\s*({.*?})\s*```", raw_reply, re.DOTALL)
+        # Extract optional JSON from the model (inside ```json ... ```)
+        json_match = re.search(r"```json\s*({.*?})\s*```", raw_reply, flags=re.DOTALL | re.IGNORECASE)
         if json_match:
             try:
                 payload = json.loads(json_match.group(1))
@@ -574,14 +664,24 @@ def handle_message(
         flags=re.IGNORECASE,
     ).strip()
 
-    # Photos (if requested)
-    media_urls = _pick_media_urls(user_message, reply_clean, inventory_service)
+    # 🔥 CAMBIO CLAVE: Construir new_context ANTES de llamar a _pick_media_urls
+    new_context: Dict[str, Any] = {
+        "history": (history + f"\nC: {user_message}\nA: {reply_clean}").strip()[-4000:],
+        "user_name": saved_name,
+        "last_interest": last_interest,
+        "last_appointment": last_appointment,
+        "last_payment": last_payment,
+        # Mantener valores previos de fotos si existen
+        "photo_model": context.get("photo_model"),
+        "photo_index": context.get("photo_index", 0),
+    }
+
+    # Pasamos new_context (la función lo modificará)
+    media_urls = _pick_media_urls(user_message, reply_clean, inventory_service, new_context)
     reply_clean = _sanitize_reply_if_photos_attached(reply_clean, media_urls)
 
     # ============================================================
-    #  MONDAY FAILSAFE (KEY FIX)
-    #  If the model didn't emit JSON, we still send lead_info when
-    #  we already have the required fields in context.
+    # MONDAY FAILSAFE (KEY FIX)
     # ============================================================
     if lead_info is None:
         candidate = {
@@ -590,7 +690,6 @@ def handle_message(
             "cita": last_appointment,
             "pago": last_payment or "Por definir",
         }
-
         if _lead_is_valid(candidate):
             lead_info = candidate
         else:
@@ -600,22 +699,10 @@ def handle_message(
                 if _lead_is_valid(candidate):
                     lead_info = candidate
 
-    # Persist history and context
-    new_history = (history + f"\nC: {user_message}\nA: {reply_clean}").strip()
-    new_context = {
-        "history": new_history[-4000:],
-        "user_name": saved_name,
-        "last_interest": last_interest,
-        "last_appointment": last_appointment,
-        "last_payment": last_payment,
-    }
-
     return {
         "reply": reply_clean,
         "new_state": "chatting",
-        "context": new_context,
+        "context": new_context,  # ← Usa el contexto actualizado
         "media_urls": media_urls,
         "lead_info": lead_info,
     }
-
-
