@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import asyncio
+import tempfile  # ← NUEVO para audios
 from contextlib import asynccontextmanager
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -45,8 +46,7 @@ except Exception as e:
     print(f"❌ FATAL: Error en configuración de variables de entorno: {e}")
     raise
 
-
-# === LOGS ===
+# Logs
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -56,14 +56,14 @@ logger = logging.getLogger("BotTractos")
 
 # === 2. ESTADO GLOBAL EN RAM ===
 class GlobalState:
-    def __init__(self) -> None:
+    def __init__(self):
         self.http_client: Optional[httpx.AsyncClient] = None
         self.inventory: Optional[InventoryService] = None
         self.store: Optional[MemoryStore] = None
 
         # dedupe RAM (si llegan 2 eventos iguales rápido)
-        self.processed_message_ids: deque[str] = deque(maxlen=4000)
-        self.processed_lead_ids: deque[str] = deque(maxlen=8000)
+        self.processed_message_ids = deque(maxlen=4000)
+        self.processed_lead_ids = deque(maxlen=8000)
 
         self.silenced_users: Dict[str, bool] = {}
 
@@ -130,20 +130,28 @@ def _clean_phone_or_jid(value: str) -> str:
 def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
     """
     Extrae el texto del mensaje de Evolution.
+    Si es audio, retorna cadena vacía para que process_single_event lo maneje.
     """
     if not isinstance(msg_obj, dict):
         return ""
 
+    # 1. Mensaje de texto normal
     if "conversation" in msg_obj:
         return msg_obj.get("conversation") or ""
 
+    # 2. Mensaje de texto extendido (reply, etc)
     if "extendedTextMessage" in msg_obj:
         ext = msg_obj.get("extendedTextMessage") or {}
         return ext.get("text") or ""
 
+    # 3. Imagen con caption
     if "imageMessage" in msg_obj:
         img = msg_obj.get("imageMessage") or {}
         return img.get("caption") or "📷 (Envió una foto)"
+
+    # 4. AUDIO/NOTA DE VOZ - Retornamos vacío para señalar que hay audio
+    if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
+        return ""  # ← Señal de que hay audio
 
     return ""
 
@@ -179,14 +187,88 @@ def _safe_log_payload(prefix: str, obj: Any) -> None:
         logger.warning(f"⚠️ No se pudo loggear payload: {e}")
 
 
-# === 5. ENVÍO DE MENSAJES (🔥 OPTIMIZADO PARA MÚLTIPLES FOTOS) ===
-async def send_evolution_message(
-    number_or_jid: str,
-    text: str,
-    media_urls: Optional[List[str]] = None
-) -> None:
+# === 5. TRANSCRIPCIÓN DE AUDIO (🎤 WHISPER) ===
+async def _handle_audio_transcription(audio_url: str) -> str:
+    """
+    Descarga el audio de Evolution y lo transcribe con OpenAI Whisper.
+    Retorna el texto transcrito o cadena vacía si falla.
+    """
+    if not audio_url:
+        logger.warning("⚠️ URL de audio vacía")
+        return ""
+
+    temp_path = None
+    try:
+        # 1. Crear archivo temporal
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
+            temp_path = temp_audio.name
+
+        logger.info(f"⬇️ Descargando audio desde: {audio_url[:100]}...")
+
+        # 2. Descargar el audio (crear cliente temporal para URL externa)
+        async with httpx.AsyncClient(timeout=30.0) as download_client:
+            resp = await download_client.get(audio_url)
+            if resp.status_code != 200:
+                logger.error(f"❌ Error HTTP descargando audio: {resp.status_code}")
+                return ""
+            
+            with open(temp_path, "wb") as f:
+                f.write(resp.content)
+
+        logger.info(f"✅ Audio descargado: {temp_path} ({len(resp.content)} bytes)")
+
+        # 3. Transcribir con OpenAI Whisper
+        try:
+            # Importar el cliente de OpenAI desde conversation_logic
+            from src.conversation_logic import client as openai_client
+            
+            with open(temp_path, "rb") as audio_file:
+                # run_in_threadpool porque OpenAI SDK es síncrono
+                transcript = await run_in_threadpool(
+                    lambda: openai_client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        language="es",  # Forzar español mejora precisión
+                        response_format="text"
+                    )
+                )
+            
+            # El resultado puede ser str directo o un objeto con .text
+            if isinstance(transcript, str):
+                texto = transcript.strip()
+            else:
+                texto = (getattr(transcript, "text", "") or "").strip()
+            
+            if texto:
+                logger.info(f"🎤 Audio transcrito: '{texto[:150]}...'")
+            else:
+                logger.warning("⚠️ Transcripción vacía (audio sin contenido reconocible)")
+            
+            return texto
+
+        except Exception as e:
+            logger.error(f"❌ Error en Whisper API: {e}")
+            return ""
+
+    except Exception as e:
+        logger.error(f"❌ Error general procesando audio: {e}")
+        return ""
+
+    finally:
+        # 4. Limpieza: Borrar archivo temporal SIEMPRE
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                logger.info(f"🗑️ Archivo temporal eliminado")
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo eliminar temp file: {e}")
+
+
+# === 6. ENVÍO DE MENSAJES (OPTIMIZADO PARA MÚLTIPLES FOTOS) ===
+async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
     media_urls = media_urls or []
     text = (text or "").strip()
+
     if not text and not media_urls:
         return
 
@@ -201,15 +283,14 @@ async def send_evolution_message(
         return
 
     try:
-        # ✅ CAMBIO CLAVE: iterar sobre TODAS las URLs
         if media_urls:
             total_fotos = len(media_urls)
             for i, media_url in enumerate(media_urls):
                 url = f"/message/sendMedia/{settings.EVO_INSTANCE}"
-
+                
                 # Texto solo en la ÚLTIMA foto
                 caption_part = text if (i == total_fotos - 1) else ""
-
+                
                 payload = {
                     "number": clean_number,
                     "mediatype": "image",
@@ -217,13 +298,13 @@ async def send_evolution_message(
                     "caption": caption_part,
                     "media": media_url,
                 }
-
+                
                 # Pequeña pausa para orden de llegada en WhatsApp
                 if i > 0:
                     await asyncio.sleep(0.5)
 
                 response = await client.post(url, json=payload)
-
+                
                 if response.status_code >= 400:
                     logger.error(f"⚠️ Error foto {i+1}: {response.text}")
                 else:
@@ -234,7 +315,7 @@ async def send_evolution_message(
             url = f"/message/sendText/{settings.EVO_INSTANCE}"
             payload = {"number": clean_number, "text": text}
             response = await client.post(url, json=payload)
-
+            
             if response.status_code >= 400:
                 logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text}")
             else:
@@ -246,13 +327,8 @@ async def send_evolution_message(
         logger.error(f"❌ Error inesperado: {e}")
 
 
-# === 6. ALERTAS AL DUEÑO ===
-async def notify_owner(
-    user_number_or_jid: str,
-    user_message: str,
-    bot_reply: str,
-    is_lead: bool = False
-) -> None:
+# === 7. ALERTAS AL DUEÑO ===
+async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
     if not settings.OWNER_PHONE:
         return
 
@@ -285,11 +361,11 @@ async def notify_owner(
     await send_evolution_message(settings.OWNER_PHONE, alert_text)
 
 
-# === 7. PROCESADOR CENTRAL ===
-async def process_single_event(data: Dict[str, Any]) -> None:
+# === 8. PROCESADOR CENTRAL ===
+async def process_single_event(data: Dict[str, Any]):
     key = data.get("key", {}) or {}
     remote_jid = (key.get("remoteJid", "") or "").strip()
-    from_me = bool(key.get("fromMe", False))
+    from_me = key.get("fromMe", False)
     msg_id = (key.get("id", "") or "").strip()
 
     # Ignorar basura
@@ -313,9 +389,45 @@ async def process_single_event(data: Dict[str, Any]) -> None:
             return
         bot_state.processed_message_ids.append(msg_id)
 
-    # Extraer mensaje
+    # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
     msg_obj = data.get("message", {}) or {}
+    
+    # 1. Intentar extraer texto normal primero
     user_message = _extract_user_message(msg_obj).strip()
+    
+    # 2. Si NO hay texto, verificar si es audio
+    if not user_message:
+        # Buscar audioMessage o pttMessage (nota de voz)
+        audio_info = msg_obj.get("audioMessage") or msg_obj.get("pttMessage") or {}
+        
+        # Evolution puede mandar la URL en diferentes campos según versión
+        audio_url = (
+            audio_info.get("url") or 
+            audio_info.get("directPath") or 
+            audio_info.get("mediaUrl")
+        )
+        
+        if audio_url:
+            logger.info(f"🎤 Audio detectado. Procesando...")
+            
+            # Feedback inmediato al usuario
+            await send_evolution_message(remote_jid, "🎧 Escuchando tu audio...")
+            
+            # Transcribir
+            user_message = await _handle_audio_transcription(audio_url)
+            
+            if not user_message:
+                # Si falló la transcripción, avisar y salir
+                await send_evolution_message(
+                    remote_jid, 
+                    "🙉 Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
+                )
+                return
+            
+            # Si llegamos aquí, user_message ya tiene la transcripción
+            logger.info(f"✅ Transcripción exitosa. Procesando como texto...")
+
+    # 3. Si después de todo sigue vacío, ignorar
     if not user_message:
         return
 
@@ -325,10 +437,10 @@ async def process_single_event(data: Dict[str, Any]) -> None:
         await send_evolution_message(remote_jid, "🔇 Bot desactivado. Un asesor humano te atenderá en breve.")
 
         if settings.OWNER_PHONE:
-            clean_client_simple = remote_jid.split("@")[0]
+            clean_client = remote_jid.split("@")[0]
             alerta = (
                 "⚠️ *HANDOFF ACTIVADO*\n\n"
-                f"El chat con wa.me/{clean_client_simple} ha sido pausado.\n"
+                f"El chat con wa.me/{clean_client} ha sido pausado.\n"
                 "El bot NO responderá hasta que el cliente envíe '/activar'."
             )
             await send_evolution_message(settings.OWNER_PHONE, alerta)
@@ -398,8 +510,6 @@ async def process_single_event(data: Dict[str, Any]) -> None:
 
             # Teléfono limpio (sin @s.whatsapp.net)
             lead_info["telefono"] = remote_jid.split("@")[0]
-
-            # 🔥 ESTA ES LA CLAVE: guardamos msg_id como external_id
             lead_info["external_id"] = msg_id
 
             logger.info(f"🚀 ¡LEAD DETECTADO! Enviando a Monday: {lead_info.get('nombre')}")
@@ -412,9 +522,9 @@ async def process_single_event(data: Dict[str, Any]) -> None:
         await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
 
 
-# === 8. ENDPOINTS ===
+# === 9. ENDPOINTS ===
 @app.get("/health")
-async def health() -> Dict[str, Any]:
+async def health():
     return {
         "status": "ok",
         "instance": settings.EVO_INSTANCE,
@@ -425,7 +535,7 @@ async def health() -> Dict[str, Any]:
     }
 
 
-async def _background_process_events(events: List[Dict[str, Any]]) -> None:
+async def _background_process_events(events: List[Dict[str, Any]]):
     """
     Procesa eventos en background para que /webhook siempre responda rápido (ACK inmediato).
     """
@@ -437,7 +547,7 @@ async def _background_process_events(events: List[Dict[str, Any]]) -> None:
 
 
 @app.post("/webhook")
-async def evolution_webhook(request: Request) -> Dict[str, Any]:
+async def evolution_webhook(request: Request):
     """
     Webhook anti-reintentos:
     - SIEMPRE responde 200 rápido (ACK inmediato)
@@ -461,7 +571,7 @@ async def evolution_webhook(request: Request) -> Dict[str, Any]:
 
         # ✅ ACK inmediato: dispara background y regresa
         asyncio.create_task(_background_process_events(events))
-        return {"status": "accepted"}  # 200 rápido
+        return {"status": "accepted"}
 
     except Exception as e:
         logger.error(f"❌ webhook: ERROR GENERAL: {e}")
