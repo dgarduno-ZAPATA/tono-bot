@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import asyncio
-import tempfile  # ← NUEVO para audios
+import tempfile
 from contextlib import asynccontextmanager
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -187,14 +187,20 @@ def _safe_log_payload(prefix: str, obj: Any) -> None:
         logger.warning(f"⚠️ No se pudo loggear payload: {e}")
 
 
-# === 5. TRANSCRIPCIÓN DE AUDIO (🎤 WHISPER) ===
-async def _handle_audio_transcription(audio_url: str) -> str:
+# === 5. TRANSCRIPCIÓN DE AUDIO (🎤 WHISPER) - VERSIÓN CORREGIDA ===
+async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
     """
-    Descarga el audio de Evolution y lo transcribe con OpenAI Whisper.
-    Retorna el texto transcrito o cadena vacía si falla.
+    Descarga el audio DESENCRIPTADO desde Evolution API y lo transcribe con Whisper.
+    
+    Args:
+        msg_id: ID del mensaje de audio
+        remote_jid: JID del chat remoto
+    
+    Returns:
+        Texto transcrito o cadena vacía si falla
     """
-    if not audio_url:
-        logger.warning("⚠️ URL de audio vacía")
+    if not msg_id or not remote_jid:
+        logger.warning("⚠️ msg_id o remote_jid vacío")
         return ""
 
     temp_path = None
@@ -203,37 +209,70 @@ async def _handle_audio_transcription(audio_url: str) -> str:
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
             temp_path = temp_audio.name
 
-        logger.info(f"⬇️ Descargando audio desde: {audio_url[:100]}...")
+        logger.info(f"⬇️ Descargando audio desde Evolution API...")
 
-        # 2. Descargar el audio (crear cliente temporal para URL externa)
-        async with httpx.AsyncClient(timeout=30.0) as download_client:
-            resp = await download_client.get(audio_url)
-            if resp.status_code != 200:
-                logger.error(f"❌ Error HTTP descargando audio: {resp.status_code}")
-                return ""
+        # 2. CLAVE: Usar el endpoint de Evolution para descargar el audio desencriptado
+        client = bot_state.http_client
+        if not client:
+            logger.error("❌ Cliente HTTP no inicializado")
+            return ""
+
+        # Endpoint de Evolution para descargar media desencriptado
+        media_url = f"/chat/getBase64FromMediaMessage/{settings.EVO_INSTANCE}"
+        
+        payload = {
+            "message": {
+                "key": {
+                    "remoteJid": remote_jid,
+                    "id": msg_id,
+                    "fromMe": False
+                }
+            },
+            "convertToMp4": False  # Mantener en formato original (ogg)
+        }
+
+        response = await client.post(media_url, json=payload)
+        
+        if response.status_code != 200 and response.status_code != 201:
+            logger.error(f"❌ Error descargando desde Evolution: {response.status_code} - {response.text}")
+            return ""
+
+        data = response.json()
+        
+        # Evolution devuelve el audio en base64
+        import base64
+        
+        if isinstance(data, dict):
+            base64_audio = data.get("base64") or data.get("media")
+        else:
+            base64_audio = data
             
-            with open(temp_path, "wb") as f:
-                f.write(resp.content)
+        if not base64_audio:
+            logger.error("❌ No se recibió base64 de Evolution")
+            return ""
 
-        logger.info(f"✅ Audio descargado: {temp_path} ({len(resp.content)} bytes)")
+        # Decodificar y guardar
+        audio_bytes = base64.b64decode(base64_audio)
+        
+        with open(temp_path, "wb") as f:
+            f.write(audio_bytes)
+
+        logger.info(f"✅ Audio descargado y desencriptado: {temp_path} ({len(audio_bytes)} bytes)")
 
         # 3. Transcribir con OpenAI Whisper
         try:
-            # Importar el cliente de OpenAI desde conversation_logic
             from src.conversation_logic import client as openai_client
             
             with open(temp_path, "rb") as audio_file:
-                # run_in_threadpool porque OpenAI SDK es síncrono
                 transcript = await run_in_threadpool(
                     lambda: openai_client.audio.transcriptions.create(
                         model="whisper-1",
                         file=audio_file,
-                        language="es",  # Forzar español mejora precisión
+                        language="es",
                         response_format="text"
                     )
                 )
             
-            # El resultado puede ser str directo o un objeto con .text
             if isinstance(transcript, str):
                 texto = transcript.strip()
             else:
@@ -242,7 +281,7 @@ async def _handle_audio_transcription(audio_url: str) -> str:
             if texto:
                 logger.info(f"🎤 Audio transcrito: '{texto[:150]}...'")
             else:
-                logger.warning("⚠️ Transcripción vacía (audio sin contenido reconocible)")
+                logger.warning("⚠️ Transcripción vacía")
             
             return texto
 
@@ -255,7 +294,7 @@ async def _handle_audio_transcription(audio_url: str) -> str:
         return ""
 
     finally:
-        # 4. Limpieza: Borrar archivo temporal SIEMPRE
+        # 4. Limpieza
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -288,7 +327,6 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
             for i, media_url in enumerate(media_urls):
                 url = f"/message/sendMedia/{settings.EVO_INSTANCE}"
                 
-                # Texto solo en la ÚLTIMA foto
                 caption_part = text if (i == total_fotos - 1) else ""
                 
                 payload = {
@@ -299,7 +337,6 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                     "media": media_url,
                 }
                 
-                # Pequeña pausa para orden de llegada en WhatsApp
                 if i > 0:
                     await asyncio.sleep(0.5)
 
@@ -311,7 +348,6 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                     logger.info(f"✅ Enviada foto {i+1}/{total_fotos} a {clean_number}")
 
         else:
-            # Caso solo texto
             url = f"/message/sendText/{settings.EVO_INSTANCE}"
             payload = {"number": clean_number, "text": text}
             response = await client.post(url, json=payload)
@@ -368,21 +404,17 @@ async def process_single_event(data: Dict[str, Any]):
     from_me = key.get("fromMe", False)
     msg_id = (key.get("id", "") or "").strip()
 
-    # Ignorar basura
     if not remote_jid:
         return
 
     logger.info(f"📩 Evento recibido. msg_id={msg_id} remote_jid={remote_jid}")
 
-    # Ignorar lo que manda el bot
     if from_me:
         return
 
-    # Ignorar grupos/broadcast
     if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
         return
 
-    # Deduplicación general por msg_id (RAM)
     if msg_id:
         if msg_id in bot_state.processed_message_ids:
             logger.info(f"🔁 Mensaje duplicado ignorado (RAM): {msg_id}")
@@ -392,42 +424,36 @@ async def process_single_event(data: Dict[str, Any]):
     # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
     msg_obj = data.get("message", {}) or {}
     
-    # 1. Intentar extraer texto normal primero
     user_message = _extract_user_message(msg_obj).strip()
     
-    # 2. Si NO hay texto, verificar si es audio
+    # Si NO hay texto, verificar si es audio
     if not user_message:
-        # Buscar audioMessage o pttMessage (nota de voz)
         audio_info = msg_obj.get("audioMessage") or msg_obj.get("pttMessage") or {}
         
-        # Evolution puede mandar la URL en diferentes campos según versión
-        audio_url = (
+        # Verificar si hay audio (cualquier campo indica audio)
+        has_audio = bool(audio_info and (
             audio_info.get("url") or 
             audio_info.get("directPath") or 
-            audio_info.get("mediaUrl")
-        )
+            audio_info.get("mediaKey")
+        ))
         
-        if audio_url:
+        if has_audio:
             logger.info(f"🎤 Audio detectado. Procesando...")
             
-            # Feedback inmediato al usuario
             await send_evolution_message(remote_jid, "🎧 Escuchando tu audio...")
             
-            # Transcribir
-            user_message = await _handle_audio_transcription(audio_url)
+            # Transcribir usando msg_id y remote_jid
+            user_message = await _handle_audio_transcription(msg_id, remote_jid)
             
             if not user_message:
-                # Si falló la transcripción, avisar y salir
                 await send_evolution_message(
                     remote_jid, 
                     "🙉 Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
                 )
                 return
             
-            # Si llegamos aquí, user_message ya tiene la transcripción
             logger.info(f"✅ Transcripción exitosa. Procesando como texto...")
 
-    # 3. Si después de todo sigue vacío, ignorar
     if not user_message:
         return
 
@@ -451,14 +477,11 @@ async def process_single_event(data: Dict[str, Any]):
         await send_evolution_message(remote_jid, "✅ Bot activado de nuevo. ¿En qué te ayudo?")
         return
 
-    # Si está silenciado, ya no responde
     if bot_state.silenced_users.get(remote_jid) is True:
         return
 
-    # Inventario refresh
     _ensure_inventory_loaded()
 
-    # Estado conversación
     store = bot_state.store
     if not store:
         logger.error("❌ MemoryStore no inicializado.")
@@ -468,7 +491,6 @@ async def process_single_event(data: Dict[str, Any]):
     state = session.get("state", "start")
     context = session.get("context", {}) or {}
 
-    # IA / lógica principal
     try:
         result = await run_in_threadpool(handle_message, user_message, bot_state.inventory, state, context)
     except Exception as e:
@@ -485,7 +507,6 @@ async def process_single_event(data: Dict[str, Any]):
     media_urls = result.get("media_urls") or []
     lead_info = result.get("lead_info")
 
-    # Guardar memoria
     try:
         store.upsert(
             remote_jid,
@@ -495,20 +516,16 @@ async def process_single_event(data: Dict[str, Any]):
     except Exception as e:
         logger.error(f"⚠️ Error guardando memoria: {e}")
 
-    # Responder al cliente
     await send_evolution_message(remote_jid, reply_text, media_urls)
 
-    # Leads a Monday (con dedupe fuerte)
     if lead_info:
         try:
-            # Candado RAM (extra)
             lead_key = f"{remote_jid}|{msg_id}|lead"
             if lead_key in bot_state.processed_lead_ids:
                 logger.info(f"🧱 Lead duplicado bloqueado (RAM): {lead_key}")
                 return
             bot_state.processed_lead_ids.append(lead_key)
 
-            # Teléfono limpio (sin @s.whatsapp.net)
             lead_info["telefono"] = remote_jid.split("@")[0]
             lead_info["external_id"] = msg_id
 
@@ -536,9 +553,6 @@ async def health():
 
 
 async def _background_process_events(events: List[Dict[str, Any]]):
-    """
-    Procesa eventos en background para que /webhook siempre responda rápido (ACK inmediato).
-    """
     for event in events:
         try:
             await process_single_event(event)
@@ -548,18 +562,12 @@ async def _background_process_events(events: List[Dict[str, Any]]):
 
 @app.post("/webhook")
 async def evolution_webhook(request: Request):
-    """
-    Webhook anti-reintentos:
-    - SIEMPRE responde 200 rápido (ACK inmediato)
-    - Procesa en background para que Evolution no reintente y no haya duplicados
-    """
     try:
         body = await request.json()
     except Exception as e:
         logger.error(f"❌ webhook: JSON inválido: {e}")
         return {"status": "ignored", "reason": "invalid_json"}
 
-    # Log del payload (controlado)
     _safe_log_payload("🧾 WEBHOOK PAYLOAD: ", body)
 
     try:
@@ -569,7 +577,6 @@ async def evolution_webhook(request: Request):
 
         events = data_payload if isinstance(data_payload, list) else [data_payload]
 
-        # ✅ ACK inmediato: dispara background y regresa
         asyncio.create_task(_background_process_events(events))
         return {"status": "accepted"}
 
