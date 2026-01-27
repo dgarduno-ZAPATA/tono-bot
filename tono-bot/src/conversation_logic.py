@@ -330,22 +330,27 @@ def _extract_appointment_from_text(text: str) -> Optional[str]:
 
 
 def _message_confirms_appointment(text: str) -> bool:
+    """
+    Detecta si el mensaje es una confirmación de cita.
+    Ampliado para incluir respuestas cortas comunes.
+    """
     t = (text or "").strip().lower()
     if not t:
         return False
-
+    
+    # Lista ampliada de confirmaciones
     confirmations = [
-        "vale",
-        "ok",
-        "okey",
-        "listo",
-        "perfecto",
-        "nos vemos",
-        "ahí nos vemos",
-        "mañana nos vemos",
-        "de acuerdo",
-        "confirmo",
+        "vale", "ok", "okey", "si", "sí", "listo", "perfecto", 
+        "nos vemos", "ahí nos vemos", "mañana nos vemos", 
+        "de acuerdo", "confirmo", "gracias", "está bien", 
+        "entendido", "perfecto", "excelente", "claro"
     ]
+    
+    # Si el mensaje es EXACTAMENTE una de estas palabras (o muy corto)
+    if t in confirmations:
+        return True
+    
+    # O si contiene alguna de estas frases
     return any(c in t for c in confirmations)
 
 
@@ -712,4 +717,5 @@ def handle_message(
         "media_urls": media_urls,
         "lead_info": lead_info,
     }
+
 
