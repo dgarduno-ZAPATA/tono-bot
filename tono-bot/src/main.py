@@ -3,7 +3,8 @@ import json
 import logging
 import asyncio
 import tempfile
-import random  # ← NUEVO para delay aleatorio
+import random
+import time
 from contextlib import asynccontextmanager
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -54,6 +55,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotTractos")
 
+# 🆕 Configuración de Handoff
+TEAM_NUMBERS_LIST = []
+try:
+    team_numbers_str = os.getenv("TEAM_NUMBERS", "")
+    if team_numbers_str:
+        TEAM_NUMBERS_LIST = [n.strip() for n in team_numbers_str.split(",") if n.strip()]
+        logger.info(f"✅ Números del equipo configurados: {len(TEAM_NUMBERS_LIST)}")
+except Exception as e:
+    logger.warning(f"⚠️ No se pudieron cargar TEAM_NUMBERS: {e}")
+
+AUTO_REACTIVATE_MINUTES = int(os.getenv("AUTO_REACTIVATE_MINUTES", "60"))
+HUMAN_DETECTION_WINDOW_SECONDS = int(os.getenv("HUMAN_DETECTION_WINDOW_SECONDS", "3"))
+
 
 # === 2. ESTADO GLOBAL EN RAM ===
 class GlobalState:
@@ -66,7 +80,13 @@ class GlobalState:
         self.processed_message_ids = deque(maxlen=4000)
         self.processed_lead_ids = deque(maxlen=8000)
 
-        self.silenced_users: Dict[str, bool] = {}
+        # Silencios (ahora soporta timestamp o bool)
+        self.silenced_users: Dict[str, Any] = {}
+        
+        # 🆕 HANDOFF: Rastreo de mensajes del bot
+        self.bot_sent_message_ids = deque(maxlen=2000)
+        self.bot_sent_texts: Dict[str, deque] = {}
+        self.last_bot_message_time: Dict[str, float] = {}
 
 
 bot_state = GlobalState()
@@ -75,7 +95,7 @@ bot_state = GlobalState()
 # === 3. LIFESPAN (INICIO/CIERRE) ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Iniciando BotTractos...")
+    logger.info("🚀 Iniciando BotTractos con sistema completo...")
 
     # A) Cliente HTTP persistente (Evolution)
     bot_state.http_client = httpx.AsyncClient(
@@ -152,7 +172,7 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
 
     # 4. AUDIO/NOTA DE VOZ - Retornamos vacío para señalar que hay audio
     if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
-        return ""  # ← Señal de que hay audio
+        return ""
 
     return ""
 
@@ -166,9 +186,9 @@ def _ensure_inventory_loaded() -> None:
         return
     try:
         if hasattr(inv, "ensure_loaded"):
-            inv.ensure_loaded()  # type: ignore[attr-defined]
+            inv.ensure_loaded()
         else:
-            inv.load(force=False)  # type: ignore[arg-type]
+            inv.load(force=False)
     except Exception as e:
         logger.error(f"⚠️ No se pudo refrescar inventario: {e}")
 
@@ -188,18 +208,77 @@ def _safe_log_payload(prefix: str, obj: Any) -> None:
         logger.warning(f"⚠️ No se pudo loggear payload: {e}")
 
 
-# === 5. DELAY HUMANO (ALEATORIO 5-10 SEGUNDOS) ===
+# === 5. 🆕 DETECCIÓN DE MENSAJES HUMANOS ===
+def _message_looks_human(text: str) -> bool:
+    """Detecta si un mensaje tiene características que el bot NO usaría."""
+    if not text:
+        return False
+    
+    text_lower = text.lower()
+    
+    # 1. El bot NUNCA usa emojis (según tu configuración)
+    emoji_patterns = ["😊", "👍", "🙏", "💪", "🚚", "✅", "❤️", "🔥", "👌", "😉", "😅", "🤝", "📞", "📱", "🎉", "💯"]
+    if any(emoji in text for emoji in emoji_patterns):
+        logger.debug(f"🔍 Detectado emoji humano en: '{text[:50]}'")
+        return True
+    
+    # 2. Frases típicas de asesor humano
+    human_phrases = [
+        "un momento", "déjame verificar", "déjame revisar", "te marco", "te llamo",
+        "te hablo", "estoy revisando", "dame un segundo", "aquí adrian", "soy adrian",
+        "con adrian", "te contacto", "te escribo", "ahora te", "espérame", "un sec"
+    ]
+    if any(phrase in text_lower for phrase in human_phrases):
+        logger.debug(f"🔍 Detectada frase humana en: '{text[:50]}'")
+        return True
+    
+    # 3. Errores de ortografía típicamente humanos
+    typos = ["aver", "haber si", "ps si", "nel", "simon", "sisas", "ok ok", "oks"]
+    if any(typo in text_lower for typo in typos):
+        logger.debug(f"🔍 Detectado typo humano en: '{text[:50]}'")
+        return True
+    
+    return False
+
+
+def _is_bot_message(remote_jid: str, msg_id: str, msg_text: str) -> bool:
+    """
+    Verifica si un mensaje saliente fue enviado por el bot (multicapa).
+    Retorna True si es del bot, False si es de un humano.
+    """
+    # CAPA 1: Verificar ID del mensaje
+    if msg_id and msg_id in bot_state.bot_sent_message_ids:
+        logger.debug(f"✓ Mensaje ID {msg_id[:20]}... es del bot")
+        return True
+    
+    # CAPA 2: Verificar texto exacto reciente
+    if remote_jid in bot_state.bot_sent_texts:
+        recent_texts = bot_state.bot_sent_texts[remote_jid]
+        if msg_text in recent_texts:
+            logger.debug(f"✓ Texto coincide con cache del bot")
+            return True
+    
+    # CAPA 3: Verificar timestamp (ventana temporal)
+    last_bot_time = bot_state.last_bot_message_time.get(remote_jid, 0)
+    time_diff = time.time() - last_bot_time
+    
+    if time_diff < HUMAN_DETECTION_WINDOW_SECONDS:
+        logger.debug(f"✓ Dentro de ventana temporal ({time_diff:.1f}s)")
+        return True
+    
+    logger.debug(f"✗ NO es del bot (time_diff={time_diff:.1f}s)")
+    return False
+
+
+# === 6. DELAY HUMANO ALEATORIO ===
 async def human_typing_delay():
-    """
-    Simula el tiempo que un humano tarda en escribir.
-    Delay aleatorio entre 5 y 10 segundos.
-    """
+    """Simula el tiempo que un humano tarda en escribir."""
     delay = random.uniform(5.0, 10.0)
     logger.info(f"⏳ Esperando {delay:.1f}s (delay humano)...")
     await asyncio.sleep(delay)
 
 
-# === 6. TRANSCRIPCIÓN DE AUDIO (SIN AVISOS) ===
+# === 7. TRANSCRIPCIÓN DE AUDIO ===
 async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
     """
     Descarga el audio DESENCRIPTADO desde Evolution API y lo transcribe con Whisper.
@@ -236,8 +315,8 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
 
         response = await client.post(media_url, json=payload)
         
-        if response.status_code != 200 and response.status_code != 201:
-            logger.error(f"❌ Error descargando desde Evolution: {response.status_code} - {response.text}")
+        if response.status_code not in [200, 201]:
+            logger.error(f"❌ Error descargando desde Evolution: {response.status_code}")
             return ""
 
         data = response.json()
@@ -258,7 +337,7 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
         with open(temp_path, "wb") as f:
             f.write(audio_bytes)
 
-        logger.info(f"✅ Audio descargado y desencriptado: {temp_path} ({len(audio_bytes)} bytes)")
+        logger.info(f"✅ Audio descargado: {len(audio_bytes)} bytes")
 
         try:
             from src.conversation_logic import client as openai_client
@@ -302,7 +381,7 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
                 logger.warning(f"⚠️ No se pudo eliminar temp file: {e}")
 
 
-# === 7. ENVÍO DE MENSAJES (SIN EMOJIS) ===
+# === 8. ENVÍO DE MENSAJES (CON RASTREO) ===
 async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
     media_urls = media_urls or []
     text = (text or "").strip()
@@ -345,6 +424,15 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                     logger.error(f"⚠️ Error foto {i+1}: {response.text}")
                 else:
                     logger.info(f"✅ Enviada foto {i+1}/{total_fotos} a {clean_number}")
+                    
+                    # 🆕 Rastrear mensaje del bot
+                    try:
+                        resp_data = response.json()
+                        msg_id = resp_data.get("key", {}).get("id")
+                        if msg_id:
+                            bot_state.bot_sent_message_ids.append(msg_id)
+                    except:
+                        pass
 
         else:
             url = f"/message/sendText/{settings.EVO_INSTANCE}"
@@ -355,6 +443,27 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                 logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text}")
             else:
                 logger.info(f"✅ Enviado a {clean_number} (TEXT)")
+                
+                # 🆕 Rastrear mensaje enviado por el bot
+                jid = f"{clean_number}@s.whatsapp.net"
+                
+                # Guardar ID
+                try:
+                    resp_data = response.json()
+                    msg_id = resp_data.get("key", {}).get("id")
+                    if msg_id:
+                        bot_state.bot_sent_message_ids.append(msg_id)
+                        logger.debug(f"📤 Rastreando msg_id: {msg_id[:20]}...")
+                except:
+                    pass
+                
+                # Guardar texto
+                if jid not in bot_state.bot_sent_texts:
+                    bot_state.bot_sent_texts[jid] = deque(maxlen=10)
+                bot_state.bot_sent_texts[jid].append(text)
+                
+                # Guardar timestamp
+                bot_state.last_bot_message_time[jid] = time.time()
 
     except httpx.RequestError as e:
         logger.error(f"❌ Error de conexión: {e}")
@@ -362,7 +471,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
         logger.error(f"❌ Error inesperado: {e}")
 
 
-# === 8. ALERTAS AL DUEÑO (SIN EMOJIS) ===
+# === 9. ALERTAS AL DUEÑO ===
 async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
     if not settings.OWNER_PHONE:
         return
@@ -396,7 +505,7 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
     await send_evolution_message(settings.OWNER_PHONE, alert_text)
 
 
-# === 9. PROCESADOR CENTRAL (CON DELAY HUMANO) ===
+# === 10. PROCESADOR CENTRAL (CON HANDOFF + TODAS LAS MEJORAS) ===
 async def process_single_event(data: Dict[str, Any]):
     key = data.get("key", {}) or {}
     remote_jid = (key.get("remoteJid", "") or "").strip()
@@ -406,19 +515,107 @@ async def process_single_event(data: Dict[str, Any]):
     if not remote_jid:
         return
 
-    logger.info(f"📩 Evento recibido. msg_id={msg_id} remote_jid={remote_jid}")
+    logger.info(f"📩 Evento: msg_id={msg_id[:20]}... from_me={from_me}")
 
-    if from_me:
-        return
-
+    # Ignorar grupos/broadcast
     if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
         return
 
+    # Deduplicación por msg_id
+    if msg_id and msg_id in bot_state.processed_message_ids:
+        logger.debug(f"🔁 Mensaje duplicado ignorado: {msg_id}")
+        return
+    
     if msg_id:
-        if msg_id in bot_state.processed_message_ids:
-            logger.info(f"🔁 Mensaje duplicado ignorado (RAM): {msg_id}")
-            return
         bot_state.processed_message_ids.append(msg_id)
+
+    # === 🆕 DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
+    if from_me:
+        msg_obj = data.get("message", {}) or {}
+        msg_text = _extract_user_message(msg_obj).strip()
+        
+        clean_sender = _clean_phone_or_jid(remote_jid)
+        
+        # Sub-caso 1: Comandos de control desde el asesor
+        if clean_sender in TEAM_NUMBERS_LIST:
+            # El asesor está enviando comandos desde su propio chat
+            
+            if msg_text.startswith("/pausar"):
+                parts = msg_text.split()
+                if len(parts) >= 2:
+                    target_phone = parts[1].strip()
+                    target_jid = f"{target_phone}@s.whatsapp.net"
+                    bot_state.silenced_users[target_jid] = True
+                    logger.info(f"🤐 Bot pausado manualmente para {target_phone}")
+                    await send_evolution_message(remote_jid, f"✅ Bot pausado para {target_phone}")
+                return
+            
+            if msg_text.startswith("/reactivar"):
+                parts = msg_text.split()
+                if len(parts) >= 2:
+                    target_phone = parts[1].strip()
+                    target_jid = f"{target_phone}@s.whatsapp.net"
+                    bot_state.silenced_users.pop(target_jid, None)
+                    logger.info(f"✅ Bot reactivado manualmente para {target_phone}")
+                    await send_evolution_message(remote_jid, f"✅ Bot reactivado para {target_phone}")
+                return
+            
+            if msg_text == "/estado":
+                silenced = []
+                for jid, value in bot_state.silenced_users.items():
+                    phone = jid.split("@")[0]
+                    if isinstance(value, (int, float)):
+                        mins_left = int((value - time.time()) / 60)
+                        if mins_left > 0:
+                            silenced.append(f"- {phone} ({mins_left} min, temporal)")
+                    elif value is True:
+                        silenced.append(f"- {phone} (permanente)")
+                
+                if silenced:
+                    msg = "Chats pausados:\n" + "\n".join(silenced)
+                else:
+                    msg = "No hay chats pausados"
+                await send_evolution_message(remote_jid, msg)
+                return
+        
+        # Sub-caso 2: El asesor respondió en el chat de un CLIENTE
+        # Verificar si este mensaje fue enviado por el bot
+        if _is_bot_message(remote_jid, msg_id, msg_text):
+            # Es del bot, ignorar
+            logger.debug(f"✓ Confirmado mensaje del bot, ignorando")
+            return
+        
+        # Si NO es del bot → Es un HUMANO respondiendo
+        is_human = _message_looks_human(msg_text)
+        
+        if is_human or not msg_text:
+            logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {AUTO_REACTIVATE_MINUTES} min)")
+            bot_state.silenced_users[remote_jid] = time.time() + (AUTO_REACTIVATE_MINUTES * 60)
+            return
+        
+        # Si no tiene estilo humano pero tampoco es del bot, asumir humano por seguridad
+        logger.warning(f"⚠️ Mensaje saliente ambiguo en {remote_jid}, asumiendo humano (30 min)")
+        bot_state.silenced_users[remote_jid] = time.time() + 1800  # 30 min conservador
+        return
+
+    # === VERIFICAR SI EL BOT ESTÁ SILENCIADO ===
+    if remote_jid in bot_state.silenced_users:
+        silence_value = bot_state.silenced_users[remote_jid]
+        
+        # Si es timestamp (silencio temporal)
+        if isinstance(silence_value, (int, float)):
+            if time.time() < silence_value:
+                mins_left = int((silence_value - time.time()) / 60)
+                logger.info(f"🤐 Bot silenciado en {remote_jid} ({mins_left} min restantes)")
+                return
+            else:
+                # Expiró, reactivar
+                del bot_state.silenced_users[remote_jid]
+                logger.info(f"✅ Bot reactivado automáticamente en {remote_jid}")
+        # Si es True (silencio permanente)
+        elif silence_value is True:
+            logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
+            return
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
     msg_obj = data.get("message", {}) or {}
@@ -436,10 +633,9 @@ async def process_single_event(data: Dict[str, Any]):
         ))
         
         if has_audio:
-            logger.info(f"🎤 Audio detectado. Procesando en silencio...")
+            logger.info(f"🎤 Audio detectado, procesando...")
             
-            # ❌ NO avisar al usuario "Escuchando audio..."
-            # Transcribir directamente
+            # Transcribir directamente (sin avisar al usuario)
             user_message = await _handle_audio_transcription(msg_id, remote_jid)
             
             if not user_message:
@@ -450,12 +646,12 @@ async def process_single_event(data: Dict[str, Any]):
                 )
                 return
             
-            logger.info(f"✅ Transcripción exitosa. Procesando como texto...")
+            logger.info(f"✅ Transcripción exitosa, procesando como texto...")
 
     if not user_message:
         return
 
-    # --- comandos ---
+    # === COMANDOS DEL CLIENTE ===
     if user_message.lower() == "/silencio":
         bot_state.silenced_users[remote_jid] = True
         await send_evolution_message(remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
@@ -475,9 +671,7 @@ async def process_single_event(data: Dict[str, Any]):
         await send_evolution_message(remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
         return
 
-    if bot_state.silenced_users.get(remote_jid) is True:
-        return
-
+    # Refrescar inventario
     _ensure_inventory_loaded()
 
     store = bot_state.store
@@ -489,7 +683,7 @@ async def process_single_event(data: Dict[str, Any]):
     state = session.get("state", "start")
     context = session.get("context", {}) or {}
 
-    # 🕐 DELAY HUMANO ALEATORIO (5-10 segundos)
+    # Delay humano aleatorio (5-10 segundos)
     await human_typing_delay()
 
     try:
@@ -523,14 +717,14 @@ async def process_single_event(data: Dict[str, Any]):
         try:
             lead_key = f"{remote_jid}|{msg_id}|lead"
             if lead_key in bot_state.processed_lead_ids:
-                logger.info(f"🧱 Lead duplicado bloqueado (RAM): {lead_key}")
+                logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
                 return
             bot_state.processed_lead_ids.append(lead_key)
 
             lead_info["telefono"] = remote_jid.split("@")[0]
             lead_info["external_id"] = msg_id
 
-            logger.info(f"🚀 ¡LEAD DETECTADO! Enviando a Monday: {lead_info.get('nombre')}")
+            logger.info(f"🚀 LEAD DETECTADO: {lead_info.get('nombre')} - {lead_info.get('interes')}")
             await monday_service.create_lead(lead_info)
 
             await notify_owner(remote_jid, user_message, reply_text, is_lead=True)
@@ -540,9 +734,10 @@ async def process_single_event(data: Dict[str, Any]):
         await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
 
 
-# === 10. ENDPOINTS ===
+# === 11. ENDPOINTS ===
 @app.get("/health")
 async def health():
+    """Endpoint de salud con métricas del sistema."""
     return {
         "status": "ok",
         "instance": settings.EVO_INSTANCE,
@@ -550,10 +745,14 @@ async def health():
         "silenced_chats": len(bot_state.silenced_users),
         "processed_msgs_cache": len(bot_state.processed_message_ids),
         "processed_leads_cache": len(bot_state.processed_lead_ids),
+        "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
+        "handoff_enabled": len(TEAM_NUMBERS_LIST) > 0,
+        "auto_reactivate_minutes": AUTO_REACTIVATE_MINUTES,
     }
 
 
 async def _background_process_events(events: List[Dict[str, Any]]):
+    """Procesa eventos en background para ACK inmediato al webhook."""
     for event in events:
         try:
             await process_single_event(event)
@@ -563,13 +762,19 @@ async def _background_process_events(events: List[Dict[str, Any]]):
 
 @app.post("/webhook")
 async def evolution_webhook(request: Request):
+    """
+    Webhook anti-reintentos:
+    - SIEMPRE responde 200 rápido (ACK inmediato)
+    - Procesa en background para que Evolution no reintente
+    """
     try:
         body = await request.json()
     except Exception as e:
         logger.error(f"❌ webhook: JSON inválido: {e}")
         return {"status": "ignored", "reason": "invalid_json"}
 
-    _safe_log_payload("🧾 WEBHOOK PAYLOAD: ", body)
+    # Log del payload (controlado)
+    _safe_log_payload("🧾 WEBHOOK: ", body)
 
     try:
         data_payload = body.get("data")
@@ -578,9 +783,10 @@ async def evolution_webhook(request: Request):
 
         events = data_payload if isinstance(data_payload, list) else [data_payload]
 
+        # ACK inmediato: dispara background y regresa
         asyncio.create_task(_background_process_events(events))
         return {"status": "accepted"}
 
     except Exception as e:
-        logger.error(f"❌ webhook: ERROR GENERAL: {e}")
+        logger.error(f"❌ webhook ERROR GENERAL: {e}")
         return {"status": "error_but_acked"}
