@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 import tempfile
+import random  # ← NUEVO para delay aleatorio
 from contextlib import asynccontextmanager
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -147,7 +148,7 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
     # 3. Imagen con caption
     if "imageMessage" in msg_obj:
         img = msg_obj.get("imageMessage") or {}
-        return img.get("caption") or "📷 (Envió una foto)"
+        return img.get("caption") or "(Envió una foto)"
 
     # 4. AUDIO/NOTA DE VOZ - Retornamos vacío para señalar que hay audio
     if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
@@ -187,17 +188,22 @@ def _safe_log_payload(prefix: str, obj: Any) -> None:
         logger.warning(f"⚠️ No se pudo loggear payload: {e}")
 
 
-# === 5. TRANSCRIPCIÓN DE AUDIO (🎤 WHISPER) - VERSIÓN CORREGIDA ===
+# === 5. DELAY HUMANO (ALEATORIO 5-10 SEGUNDOS) ===
+async def human_typing_delay():
+    """
+    Simula el tiempo que un humano tarda en escribir.
+    Delay aleatorio entre 5 y 10 segundos.
+    """
+    delay = random.uniform(5.0, 10.0)
+    logger.info(f"⏳ Esperando {delay:.1f}s (delay humano)...")
+    await asyncio.sleep(delay)
+
+
+# === 6. TRANSCRIPCIÓN DE AUDIO (SIN AVISOS) ===
 async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
     """
     Descarga el audio DESENCRIPTADO desde Evolution API y lo transcribe con Whisper.
-    
-    Args:
-        msg_id: ID del mensaje de audio
-        remote_jid: JID del chat remoto
-    
-    Returns:
-        Texto transcrito o cadena vacía si falla
+    SIN avisar al usuario.
     """
     if not msg_id or not remote_jid:
         logger.warning("⚠️ msg_id o remote_jid vacío")
@@ -205,19 +211,16 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
 
     temp_path = None
     try:
-        # 1. Crear archivo temporal
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
             temp_path = temp_audio.name
 
         logger.info(f"⬇️ Descargando audio desde Evolution API...")
 
-        # 2. CLAVE: Usar el endpoint de Evolution para descargar el audio desencriptado
         client = bot_state.http_client
         if not client:
             logger.error("❌ Cliente HTTP no inicializado")
             return ""
 
-        # Endpoint de Evolution para descargar media desencriptado
         media_url = f"/chat/getBase64FromMediaMessage/{settings.EVO_INSTANCE}"
         
         payload = {
@@ -228,7 +231,7 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
                     "fromMe": False
                 }
             },
-            "convertToMp4": False  # Mantener en formato original (ogg)
+            "convertToMp4": False
         }
 
         response = await client.post(media_url, json=payload)
@@ -239,7 +242,6 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
 
         data = response.json()
         
-        # Evolution devuelve el audio en base64
         import base64
         
         if isinstance(data, dict):
@@ -251,7 +253,6 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
             logger.error("❌ No se recibió base64 de Evolution")
             return ""
 
-        # Decodificar y guardar
         audio_bytes = base64.b64decode(base64_audio)
         
         with open(temp_path, "wb") as f:
@@ -259,7 +260,6 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
 
         logger.info(f"✅ Audio descargado y desencriptado: {temp_path} ({len(audio_bytes)} bytes)")
 
-        # 3. Transcribir con OpenAI Whisper
         try:
             from src.conversation_logic import client as openai_client
             
@@ -294,7 +294,6 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
         return ""
 
     finally:
-        # 4. Limpieza
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
@@ -303,7 +302,7 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
                 logger.warning(f"⚠️ No se pudo eliminar temp file: {e}")
 
 
-# === 6. ENVÍO DE MENSAJES (OPTIMIZADO PARA MÚLTIPLES FOTOS) ===
+# === 7. ENVÍO DE MENSAJES (SIN EMOJIS) ===
 async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
     media_urls = media_urls or []
     text = (text or "").strip()
@@ -363,7 +362,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
         logger.error(f"❌ Error inesperado: {e}")
 
 
-# === 7. ALERTAS AL DUEÑO ===
+# === 8. ALERTAS AL DUEÑO (SIN EMOJIS) ===
 async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
     if not settings.OWNER_PHONE:
         return
@@ -372,9 +371,9 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
 
     if is_lead:
         alert_text = (
-            "🚨 *NUEVO LEAD EN MONDAY* 🚨\n\n"
+            "*NUEVO LEAD EN MONDAY*\n\n"
             f"Cliente: wa.me/{clean_client}\n"
-            "El bot cerró una cita. ¡Revisa el tablero!"
+            "El bot cerró una cita. Revisa el tablero."
         )
         await send_evolution_message(settings.OWNER_PHONE, alert_text)
         return
@@ -389,7 +388,7 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
         return
 
     alert_text = (
-        "🔔 *Interés Detectado*\n"
+        "*Interés Detectado*\n"
         f"Cliente: wa.me/{clean_client}\n"
         f"Dijo: \"{user_message}\"\n"
         f"Bot: \"{(bot_reply or '')[:60]}...\""
@@ -397,7 +396,7 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
     await send_evolution_message(settings.OWNER_PHONE, alert_text)
 
 
-# === 8. PROCESADOR CENTRAL ===
+# === 9. PROCESADOR CENTRAL (CON DELAY HUMANO) ===
 async def process_single_event(data: Dict[str, Any]):
     key = data.get("key", {}) or {}
     remote_jid = (key.get("remoteJid", "") or "").strip()
@@ -430,7 +429,6 @@ async def process_single_event(data: Dict[str, Any]):
     if not user_message:
         audio_info = msg_obj.get("audioMessage") or msg_obj.get("pttMessage") or {}
         
-        # Verificar si hay audio (cualquier campo indica audio)
         has_audio = bool(audio_info and (
             audio_info.get("url") or 
             audio_info.get("directPath") or 
@@ -438,17 +436,17 @@ async def process_single_event(data: Dict[str, Any]):
         ))
         
         if has_audio:
-            logger.info(f"🎤 Audio detectado. Procesando...")
+            logger.info(f"🎤 Audio detectado. Procesando en silencio...")
             
-            await send_evolution_message(remote_jid, "🎧 Escuchando tu audio...")
-            
-            # Transcribir usando msg_id y remote_jid
+            # ❌ NO avisar al usuario "Escuchando audio..."
+            # Transcribir directamente
             user_message = await _handle_audio_transcription(msg_id, remote_jid)
             
             if not user_message:
+                # Si falló la transcripción, avisar SIN emojis
                 await send_evolution_message(
                     remote_jid, 
-                    "🙉 Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
+                    "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
                 )
                 return
             
@@ -460,12 +458,12 @@ async def process_single_event(data: Dict[str, Any]):
     # --- comandos ---
     if user_message.lower() == "/silencio":
         bot_state.silenced_users[remote_jid] = True
-        await send_evolution_message(remote_jid, "🔇 Bot desactivado. Un asesor humano te atenderá en breve.")
+        await send_evolution_message(remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
 
         if settings.OWNER_PHONE:
             clean_client = remote_jid.split("@")[0]
             alerta = (
-                "⚠️ *HANDOFF ACTIVADO*\n\n"
+                "*HANDOFF ACTIVADO*\n\n"
                 f"El chat con wa.me/{clean_client} ha sido pausado.\n"
                 "El bot NO responderá hasta que el cliente envíe '/activar'."
             )
@@ -474,7 +472,7 @@ async def process_single_event(data: Dict[str, Any]):
 
     if user_message.lower() == "/activar":
         bot_state.silenced_users.pop(remote_jid, None)
-        await send_evolution_message(remote_jid, "✅ Bot activado de nuevo. ¿En qué te ayudo?")
+        await send_evolution_message(remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
         return
 
     if bot_state.silenced_users.get(remote_jid) is True:
@@ -490,6 +488,9 @@ async def process_single_event(data: Dict[str, Any]):
     session = store.get(remote_jid) or {"state": "start", "context": {}}
     state = session.get("state", "start")
     context = session.get("context", {}) or {}
+
+    # 🕐 DELAY HUMANO ALEATORIO (5-10 segundos)
+    await human_typing_delay()
 
     try:
         result = await run_in_threadpool(handle_message, user_message, bot_state.inventory, state, context)
@@ -539,7 +540,7 @@ async def process_single_event(data: Dict[str, Any]):
         await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
 
 
-# === 9. ENDPOINTS ===
+# === 10. ENDPOINTS ===
 @app.get("/health")
 async def health():
     return {
