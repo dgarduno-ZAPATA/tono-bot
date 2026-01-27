@@ -119,7 +119,6 @@ El cliente debe sentirse escuchado y bien atendido,
 pero no intentes resolver todo, convencer ni "quedar bien".
 Marca límites con naturalidad y ofrece un siguiente paso claro.
 
-
 ESTILO: Amable, directo y profesional. Máximo 3 oraciones. SIN EMOJIS.
 """.strip()
 
@@ -178,13 +177,14 @@ def _extract_name_from_text(text: str) -> Optional[str]:
         r"\bme llamo\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
         r"\bsoy\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
         r"\bmi nombre es\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
+        r"\bcon\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,2})\b",
     ]
 
     for p in patterns:
         m = re.search(p, t, flags=re.IGNORECASE)
         if m:
             name = m.group(1).strip()
-            bad = {"aqui", "aquí", "nadie", "yo", "el", "ella", "amigo", "desconocido", "cliente", "usuario"}
+            bad = {"aqui", "aquí", "nadie", "yo", "el", "ella", "amigo", "desconocido", "cliente", "usuario", "quien", "quién"}
             if name.lower() in bad:
                 return None
             return " ".join(w.capitalize() for w in name.split())
@@ -268,10 +268,15 @@ def _extract_appointment_from_text(text: str) -> Optional[str]:
 
     time_str: Optional[str] = None
 
-    m = re.search(r"\b(\d{1,2})\s*y\s*media\b", t)
-    if m:
-        h = int(m.group(1))
-        time_str = f"{h}:30"
+    # "medio dia" o "mediodía"
+    if "medio dia" in t or "mediodía" in t or "medio día" in t:
+        time_str = "12:00"
+
+    if not time_str:
+        m = re.search(r"\b(\d{1,2})\s*y\s*media\b", t)
+        if m:
+            h = int(m.group(1))
+            time_str = f"{h}:30"
 
     if not time_str:
         m = re.search(r"\b(\d{1,2})\s*:\s*(\d{2})\b", t)
@@ -343,10 +348,10 @@ def _message_confirms_appointment(text: str) -> bool:
         "vale", "ok", "okey", "si", "sí", "listo", "perfecto", 
         "nos vemos", "ahí nos vemos", "mañana nos vemos", 
         "de acuerdo", "confirmo", "gracias", "está bien", 
-        "entendido", "perfecto", "excelente", "claro"
+        "entendido", "excelente", "claro", "bien", "sale"
     ]
     
-    # Si el mensaje es EXACTAMENTE una de estas palabras (o muy corto)
+    # Si el mensaje es EXACTAMENTE una de estas palabras
     if t in confirmations:
         return True
     
@@ -365,7 +370,6 @@ def _pick_media_urls(
 ) -> List[str]:
     """
     Devuelve lista de URLs de fotos según el modelo detectado.
-
     Ahora con MEMORIA: guarda en context['photo_index'] para saber cuál foto va.
     """
     msg = _normalize_spanish(user_message)
@@ -655,12 +659,14 @@ def handle_message(
 
                     if _lead_is_valid(candidate):
                         lead_info = candidate
+                        logger.info(f"✅ Lead extraído del JSON de OpenAI: {candidate}")
                     else:
                         logger.warning(f"Lead JSON discarded (incomplete): {candidate}")
 
                 # Hide JSON from user-facing message
                 reply_clean = raw_reply.replace(json_match.group(0), "").strip()
-            except Exception:
+            except Exception as e:
+                logger.error(f"Error parseando JSON de lead: {e}")
                 reply_clean = raw_reply.replace(json_match.group(0), "").strip()
 
     except Exception as e:
@@ -692,7 +698,7 @@ def handle_message(
     reply_clean = _sanitize_reply_if_photos_attached(reply_clean, media_urls)
 
     # ============================================================
-    # MONDAY FAILSAFE (KEY FIX)
+    # MONDAY FAILSAFE (MEJORADO - AGRESIVO)
     # ============================================================
     if lead_info is None:
         candidate = {
@@ -701,21 +707,37 @@ def handle_message(
             "cita": last_appointment,
             "pago": last_payment or "Por definir",
         }
+
+        # CAMBIO 1: Validar ANTES de esperar confirmación
         if _lead_is_valid(candidate):
             lead_info = candidate
-        else:
-            # If user sends a short confirmation after appointment negotiation,
-            # retry with stored appointment info.
-            if _message_confirms_appointment(user_message) and saved_name and last_interest and last_appointment:
+            logger.info(f"✅ FAILSAFE: Lead válido encontrado sin JSON de OpenAI - {candidate}")
+        
+        # CAMBIO 2: Si hay nombre + interés + cita, Y el mensaje es corto (posible confirmación)
+        elif saved_name and last_interest and last_appointment:
+            # Verificar si el mensaje es una confirmación o respuesta corta
+            if _message_confirms_appointment(user_message) or len(user_message.strip()) <= 15:
+                # Forzar registro aunque falte algo
+                candidate["pago"] = candidate.get("pago") or "Por definir"
                 if _lead_is_valid(candidate):
                     lead_info = candidate
+                    logger.info(f"✅ FAILSAFE AGRESIVO: Mensaje corto '{user_message}' después de cita confirmada - {candidate}")
+
+    # Log para debugging de leads
+    if saved_name and last_interest and last_appointment:
+        if lead_info:
+            logger.info(f"🎯 LEAD SERÁ ENVIADO A MONDAY: {lead_info}")
+        else:
+            logger.warning(
+                f"⚠️ LEAD NO GENERADO aunque hay datos: "
+                f"nombre={saved_name}, interes={last_interest}, cita={last_appointment}, "
+                f"mensaje_usuario='{user_message}'"
+            )
 
     return {
         "reply": reply_clean,
         "new_state": "chatting",
-        "context": new_context,  # ← Usa el contexto actualizado
+        "context": new_context,
         "media_urls": media_urls,
         "lead_info": lead_info,
     }
-
-
