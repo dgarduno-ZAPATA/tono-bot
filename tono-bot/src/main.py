@@ -235,6 +235,21 @@ def _safe_log_payload(prefix: str, obj: Any) -> None:
         logger.warning(f"⚠️ No se pudo loggear payload: {e}")
 
 
+async def _evo_post(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:
+    """POST a Evolution API con retry automático en 429 (rate limit)."""
+    _MAX_RETRIES = 3
+    for _attempt in range(_MAX_RETRIES):
+        response = await client.post(url, **kwargs)
+        if response.status_code == 429 and _attempt < _MAX_RETRIES - 1:
+            retry_after = response.headers.get("retry-after")
+            backoff = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** (_attempt + 1)
+            logger.warning(f"⚠️ Evolution 429 retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s")
+            await asyncio.sleep(backoff)
+            continue
+        return response
+    return response
+
+
 # === 5. 🆕 DETECCIÓN DE MENSAJES HUMANOS ===
 def _message_looks_human(text: str) -> bool:
     """Detecta si un mensaje tiene características que el bot NO usaría."""
@@ -338,8 +353,8 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
             "convertToMp4": False
         }
 
-        response = await client.post(media_url, json=payload)
-        
+        response = await _evo_post(client, media_url, json=payload)
+
         if response.status_code not in [200, 201]:
             logger.error(f"❌ Error descargando desde Evolution: {response.status_code}")
             return ""
@@ -441,8 +456,8 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                 if i > 0:
                     await asyncio.sleep(0.5)
 
-                response = await client.post(url, json=payload)
-                
+                response = await _evo_post(client, url, json=payload)
+
                 if response.status_code >= 400:
                     logger.error(f"⚠️ Error foto {i+1}: {response.text}")
                 else:
@@ -459,8 +474,8 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
         else:
             url = f"/message/sendText/{settings.EVO_INSTANCE}"
             payload = {"number": clean_number, "text": text}
-            response = await client.post(url, json=payload)
-            
+            response = await _evo_post(client, url, json=payload)
+
             if response.status_code >= 400:
                 logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text}")
             else:
