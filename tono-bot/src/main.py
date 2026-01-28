@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     LOG_WEBHOOK_PAYLOAD: bool = True
     LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
 
+    # Handoff
+    TEAM_NUMBERS: str = ""
+    AUTO_REACTIVATE_MINUTES: int = 60
+    HUMAN_DETECTION_WINDOW_SECONDS: int = 3
+
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -57,25 +62,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotTractos")
 
-# 🆕 Configuración de Handoff
-TEAM_NUMBERS_LIST = []
-try:
-    team_numbers_str = os.getenv("TEAM_NUMBERS", "")
-    if team_numbers_str:
-        TEAM_NUMBERS_LIST = [n.strip() for n in team_numbers_str.split(",") if n.strip()]
-        logger.info(f"✅ Números del equipo configurados: {len(TEAM_NUMBERS_LIST)}")
-except Exception as e:
-    logger.warning(f"⚠️ No se pudieron cargar TEAM_NUMBERS: {e}")
-
-try:
-    AUTO_REACTIVATE_MINUTES = int(os.getenv("AUTO_REACTIVATE_MINUTES", "60"))
-except ValueError:
-    AUTO_REACTIVATE_MINUTES = 60
-
-try:
-    HUMAN_DETECTION_WINDOW_SECONDS = int(os.getenv("HUMAN_DETECTION_WINDOW_SECONDS", "3"))
-except ValueError:
-    HUMAN_DETECTION_WINDOW_SECONDS = 3
+# Handoff: lista derivada de settings
+TEAM_NUMBERS_LIST = [n.strip() for n in settings.TEAM_NUMBERS.split(",") if n.strip()]
+if TEAM_NUMBERS_LIST:
+    logger.info(f"✅ Números del equipo configurados: {len(TEAM_NUMBERS_LIST)}")
 
 
 # === 2. ESTADO GLOBAL EN RAM ===
@@ -277,7 +267,7 @@ def _is_bot_message(remote_jid: str, msg_id: str, msg_text: str) -> bool:
     last_bot_time = bot_state.last_bot_message_time.get(remote_jid, 0)
     time_diff = time.time() - last_bot_time
     
-    if time_diff < HUMAN_DETECTION_WINDOW_SECONDS:
+    if time_diff < settings.HUMAN_DETECTION_WINDOW_SECONDS:
         logger.debug(f"✓ Dentro de ventana temporal ({time_diff:.1f}s)")
         return True
     
@@ -550,8 +540,8 @@ async def process_single_event(data: Dict[str, Any]):
         is_human = _message_looks_human(msg_text)
         
         if is_human:
-            logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {AUTO_REACTIVATE_MINUTES} min)")
-            bot_state.silenced_users[remote_jid] = time.time() + (AUTO_REACTIVATE_MINUTES * 60)
+            logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {settings.AUTO_REACTIVATE_MINUTES} min)")
+            bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
             return
         
         # Mensajes ambiguos: NO silenciar automáticamente
@@ -704,7 +694,7 @@ async def health():
         "processed_leads_cache": len(bot_state.processed_lead_ids),
         "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
         "handoff_enabled": len(TEAM_NUMBERS_LIST) > 0,
-        "auto_reactivate_minutes": AUTO_REACTIVATE_MINUTES,
+        "auto_reactivate_minutes": settings.AUTO_REACTIVATE_MINUTES,
     }
 
 
