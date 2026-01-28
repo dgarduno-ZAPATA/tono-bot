@@ -337,26 +337,20 @@ def _extract_appointment_from_text(text: str) -> Optional[str]:
 def _message_confirms_appointment(text: str) -> bool:
     """
     Detecta si el mensaje es una confirmación de cita.
-    Ampliado para incluir respuestas cortas comunes.
+    Solo coincidencias exactas para evitar falsos positivos.
     """
     t = (text or "").strip().lower()
     if not t:
         return False
-    
-    # Lista ampliada de confirmaciones
+
     confirmations = [
-        "vale", "ok", "okey", "si", "sí", "listo", "perfecto", 
-        "nos vemos", "ahí nos vemos", "mañana nos vemos", 
-        "de acuerdo", "confirmo", "gracias", "está bien", 
+        "vale", "ok", "okey", "si", "sí", "listo", "perfecto",
+        "nos vemos", "ahí nos vemos", "mañana nos vemos",
+        "de acuerdo", "confirmo", "gracias", "está bien",
         "entendido", "excelente", "claro", "bien", "sale"
     ]
-    
-    # Si el mensaje es EXACTAMENTE una de estas palabras
-    if t in confirmations:
-        return True
-    
-    # O si contiene alguna de estas frases
-    return any(c in t for c in confirmations)
+
+    return t in confirmations
 
 
 # ============================================================
