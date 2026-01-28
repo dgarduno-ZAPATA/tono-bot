@@ -34,9 +34,6 @@ class Settings(BaseSettings):
     SHEET_CSV_URL: Optional[str] = None
     INVENTORY_REFRESH_SECONDS: int = 300
 
-    # 🆕 Grupo de control (opcional)
-    CONTROL_GROUP_JID: Optional[str] = None
-
     # Logging del payload (evita logs gigantes)
     LOG_WEBHOOK_PAYLOAD: bool = True
     LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
@@ -145,62 +142,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-# === 4. 🆕 UTILIDADES MEJORADAS ===
-
-def _get_canonical_jid(data: Dict[str, Any]) -> tuple[str, str]:
-    """
-    🆕 CORRECCIÓN CRÍTICA: Extrae el JID canónico resolviendo @lid.
-    
-    El problema: WhatsApp usa diferentes identificadores:
-    - @s.whatsapp.net → Dispositivo móvil principal
-    - @lid → Dispositivos vinculados (Web, Desktop)
-    
-    Evolution API proporciona remoteJidAlt con el número real.
-    
-    Returns:
-        (phone_number, full_jid)
-        - phone_number: Solo dígitos (ej: "5214461168088")
-        - full_jid: JID completo con sufijo (ej: "5214461168088@s.whatsapp.net")
-    """
-    key = data.get("key", {}) or {}
-    
-    # Priorizar remoteJidAlt (es el número real cuando viene de @lid)
-    alt_jid = key.get("remoteJidAlt", "").strip()
-    remote_jid = key.get("remoteJid", "").strip()
-    
-    # Usar el que tenga @s.whatsapp.net o el alternativo
-    canonical_jid = alt_jid if alt_jid and "@s.whatsapp.net" in alt_jid else remote_jid
-    
-    # Extraer solo el número (sin sufijos)
-    phone_number = canonical_jid.replace("@s.whatsapp.net", "").replace("@lid", "").replace("@g.us", "")
-    phone_number = "".join([c for c in phone_number if c.isdigit()])
-    
-    return phone_number, canonical_jid
-
-
+# === 4. UTILIDADES ===
 def _clean_phone_or_jid(value: str) -> str:
-    """Mantiene compatibilidad con código legacy."""
     if not value:
         return ""
     return "".join([c for c in str(value) if c.isdigit()])
-
-
-def _is_system_event(event_type: str) -> bool:
-    """
-    🆕 OPTIMIZACIÓN: Determina si un evento es de sistema (no requiere procesamiento).
-    
-    Eventos de sistema no contienen mensajes del usuario, solo cambios de estado.
-    Filtrarlos reduce la carga del servidor en ~60%.
-    """
-    system_events = [
-        "messages.update",  # READ, DELIVERY_ACK, SERVER_ACK
-        "contacts.update",
-        "contacts.upsert",
-        "chats.update",
-        "presence.update",
-        "connection.update",
-    ]
-    return event_type in system_events
 
 
 def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
@@ -250,10 +196,7 @@ def _ensure_inventory_loaded() -> None:
 
 def _safe_log_payload(prefix: str, obj: Any) -> None:
     """
-    🆕 SEGURIDAD: Log controlado CON SANITIZACIÓN de información sensible.
-    
-    Problema anterior: API keys y tokens se loggeaban en claro.
-    Solución: Reemplazar información sensible con "***".
+    Log controlado CON SANITIZACIÓN.
     """
     if not settings.LOG_WEBHOOK_PAYLOAD:
         return
@@ -281,7 +224,7 @@ def _message_looks_human(text: str) -> bool:
     
     text_lower = text.lower()
     
-    # 1. El bot NUNCA usa emojis (según tu configuración)
+    # 1. El bot NUNCA usa emojis
     emoji_patterns = ["😊", "👍", "🙏", "💪", "🚚", "✅", "❤️", "🔥", "👌", "😉", "😅", "🤝", "📞", "📱", "🎉", "💯"]
     if any(emoji in text for emoji in emoji_patterns):
         logger.debug(f"🔍 Detectado emoji humano en: '{text[:50]}'")
@@ -309,7 +252,6 @@ def _message_looks_human(text: str) -> bool:
 def _is_bot_message(remote_jid: str, msg_id: str, msg_text: str) -> bool:
     """
     Verifica si un mensaje saliente fue enviado por el bot (multicapa).
-    Retorna True si es del bot, False si es de un humano.
     """
     # CAPA 1: Verificar ID del mensaje
     if msg_id and msg_id in bot_state.bot_sent_message_ids:
@@ -347,7 +289,6 @@ async def human_typing_delay():
 async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
     """
     Descarga el audio DESENCRIPTADO desde Evolution API y lo transcribe con Whisper.
-    SIN avisar al usuario.
     """
     if not msg_id or not remote_jid:
         logger.warning("⚠️ msg_id o remote_jid vacío")
@@ -490,7 +431,6 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                 else:
                     logger.info(f"✅ Enviada foto {i+1}/{total_fotos} a {clean_number}")
                     
-                    # 🆕 Rastrear mensaje del bot
                     try:
                         resp_data = response.json()
                         msg_id = resp_data.get("key", {}).get("id")
@@ -509,10 +449,8 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
             else:
                 logger.info(f"✅ Enviado a {clean_number} (TEXT)")
                 
-                # 🆕 Rastrear mensaje enviado por el bot
                 jid = f"{clean_number}@s.whatsapp.net"
                 
-                # Guardar ID
                 try:
                     resp_data = response.json()
                     msg_id = resp_data.get("key", {}).get("id")
@@ -522,12 +460,10 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                 except:
                     pass
                 
-                # Guardar texto
                 if jid not in bot_state.bot_sent_texts:
                     bot_state.bot_sent_texts[jid] = deque(maxlen=10)
                 bot_state.bot_sent_texts[jid].append(text)
                 
-                # Guardar timestamp
                 bot_state.last_bot_message_time[jid] = time.time()
 
     except httpx.RequestError as e:
@@ -570,126 +506,20 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
     await send_evolution_message(settings.OWNER_PHONE, alert_text)
 
 
-# === 10. 🆕 PROCESADOR DE COMANDOS ADMINISTRATIVOS ===
-async def process_admin_command(sender_phone: str, sender_jid: str, command_text: str) -> bool:
-    """
-    🆕 MEJORA: Procesa comandos administrativos desde números autorizados.
-    
-    Extrae la lógica de comandos del flujo principal para mejor organización.
-    
-    Returns:
-        True si se procesó un comando, False si no era comando.
-    """
-    cmd = command_text.strip()
-    
-    # Comando: /estado
-    if cmd == "/estado":
-        silenced = []
-        for jid, value in bot_state.silenced_users.items():
-            phone = jid.split("@")[0]
-            if isinstance(value, (int, float)):
-                mins_left = int((value - time.time()) / 60)
-                if mins_left > 0:
-                    silenced.append(f"- {phone} ({mins_left} min, temporal)")
-            elif value is True:
-                silenced.append(f"- {phone} (permanente)")
-        
-        if silenced:
-            msg = "🤐 *Chats pausados:*\n\n" + "\n".join(silenced)
-        else:
-            msg = "✅ No hay chats pausados"
-        
-        await send_evolution_message(sender_jid, msg)
-        logger.info(f"📊 Comando /estado ejecutado por {sender_phone}")
-        return True
-    
-    # Comando: /pausar NUMERO
-    if cmd.startswith("/pausar"):
-        parts = cmd.split()
-        if len(parts) >= 2:
-            target_phone = parts[1].strip()
-            target_jid = f"{target_phone}@s.whatsapp.net"
-            bot_state.silenced_users[target_jid] = True
-            logger.info(f"🤐 Bot pausado manualmente para {target_phone} por {sender_phone}")
-            await send_evolution_message(sender_jid, f"✅ Bot pausado para {target_phone}")
-        else:
-            await send_evolution_message(sender_jid, "❌ Formato: /pausar 5214481234567")
-        return True
-    
-    # Comando: /reactivar NUMERO
-    if cmd.startswith("/reactivar"):
-        parts = cmd.split()
-        if len(parts) >= 2:
-            target_phone = parts[1].strip()
-            target_jid = f"{target_phone}@s.whatsapp.net"
-            bot_state.silenced_users.pop(target_jid, None)
-            logger.info(f"✅ Bot reactivado manualmente para {target_phone} por {sender_phone}")
-            await send_evolution_message(sender_jid, f"✅ Bot reactivado para {target_phone}")
-        else:
-            await send_evolution_message(sender_jid, "❌ Formato: /reactivar 5214481234567")
-        return True
-    
-    # Comando: /help
-    if cmd == "/help" or cmd == "/ayuda":
-        help_text = (
-            "*Comandos disponibles:*\n\n"
-            "• `/estado` - Ver chats pausados\n"
-            "• `/pausar 521...` - Pausar bot para un cliente\n"
-            "• `/reactivar 521...` - Reactivar bot para un cliente\n"
-            "• `/help` - Este mensaje"
-        )
-        await send_evolution_message(sender_jid, help_text)
-        return True
-    
-    return False
-
-
-# === 11. PROCESADOR CENTRAL (CON TODAS LAS MEJORAS) ===
-async def process_single_event(webhook_body: Dict[str, Any]):
-    # El webhook_body ES el body completo: {"event": "...", "data": {...}}
-    event_type = webhook_body.get("event", "")
-    
-    # 🆕 FILTRO 1: Eventos de sistema (ignorar para optimizar)
-    if _is_system_event(event_type):
-        logger.debug(f"⏭️ Evento de sistema ignorado: {event_type}")
-        return
-    
-    # Solo procesar messages.upsert
-    if event_type != "messages.upsert":
-        logger.debug(f"⏭️ Evento ignorado (no es messages.upsert): {event_type}")
-        return
-    
-    # Extraer el contenido del mensaje
-    data = webhook_body.get("data", {})
-    if not data:
-        logger.debug("⏭️ Webhook sin data, ignorando")
-        return
-    
-    # 🆕 CORRECCIÓN CRÍTICA: Normalizar JID (resuelve problema @lid)
-    sender_phone, canonical_jid = _get_canonical_jid(data)
-    
+# === 10. PROCESADOR CENTRAL ===
+async def process_single_event(data: Dict[str, Any]):
     key = data.get("key", {}) or {}
+    remote_jid = (key.get("remoteJid", "") or "").strip()
     from_me = key.get("fromMe", False)
     msg_id = (key.get("id", "") or "").strip()
-    
-    # Usar el JID canónico en vez del remoteJid directo
-    remote_jid = canonical_jid if canonical_jid else key.get("remoteJid", "")
-    
+
     if not remote_jid:
         return
 
-    logger.info(f"📩 Evento: msg_id={msg_id[:20]}... from_me={from_me} sender={sender_phone}")
+    logger.info(f"📩 Evento: msg_id={msg_id[:20]}... from_me={from_me}")
 
-    # Ignorar grupos/broadcast (a menos que sea el grupo de control)
-    if remote_jid.endswith("@g.us"):
-        if settings.CONTROL_GROUP_JID and remote_jid == settings.CONTROL_GROUP_JID:
-            # Es el grupo de control, permitir comandos
-            pass
-        else:
-            # Grupo normal o broadcast, ignorar
-            logger.debug(f"⏭️ Grupo/broadcast ignorado: {remote_jid}")
-            return
-    elif "broadcast" in remote_jid:
+    # Ignorar grupos/broadcast
+    if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
         return
 
     # Deduplicación por msg_id
@@ -700,40 +530,17 @@ async def process_single_event(webhook_body: Dict[str, Any]):
     if msg_id:
         bot_state.processed_message_ids.append(msg_id)
 
-    # === 🆕 CAPA 2: COMANDOS ADMINISTRATIVOS (ANTES DEL HANDOFF) ===
-    msg_obj = data.get("message", {}) or {}
-    msg_text = _extract_user_message(msg_obj).strip()
-    
-    # Si el mensaje viene de un número del equipo y es comando
-    if sender_phone in TEAM_NUMBERS_LIST and not from_me:
-        if msg_text.startswith("/"):
-            # Procesar como comando administrativo
-            was_command = await process_admin_command(sender_phone, remote_jid, msg_text)
-            if was_command:
-                return  # Comando procesado, no continuar con lógica conversacional
-    
-    # Si es el grupo de control y es un comando
-    if settings.CONTROL_GROUP_JID and remote_jid == settings.CONTROL_GROUP_JID:
-        if msg_text.startswith("/") and not from_me:
-            was_command = await process_admin_command(sender_phone, remote_jid, msg_text)
-            if was_command:
-                return
-
-    # === 🆕 DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
+    # === DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
     if from_me:
-        # Si el mensaje es HACIA el bot mismo, ignorar
-        bot_instance_number = _clean_phone_or_jid(settings.EVO_INSTANCE)
-        if sender_phone == bot_instance_number:
-            logger.debug(f"⏭️ Mensaje al bot mismo ignorado")
-            return
+        msg_obj = data.get("message", {}) or {}
+        msg_text = _extract_user_message(msg_obj).strip()
         
         # Verificar si este mensaje fue enviado por el bot
         if _is_bot_message(remote_jid, msg_id, msg_text):
-            # Es del bot, ignorar
             logger.debug(f"✓ Confirmado mensaje del bot, ignorando")
             return
         
-        # 🆕 MEJORA: Solo silenciar si el mensaje parece claramente humano
+        # Si NO es del bot → Es un HUMANO respondiendo
         is_human = _message_looks_human(msg_text)
         
         if is_human:
@@ -741,36 +548,33 @@ async def process_single_event(webhook_body: Dict[str, Any]):
             bot_state.silenced_users[remote_jid] = time.time() + (AUTO_REACTIVATE_MINUTES * 60)
             return
         
-        # 🆕 CAMBIO CRÍTICO: Ya NO silenciamos automáticamente por mensajes ambiguos
-        # Solo logueamos para monitoreo
+        # Mensajes ambiguos: NO silenciar automáticamente
         if not msg_text:
-            logger.debug(f"⏭️ Mensaje saliente vacío/sticker/reacción en {remote_jid}, ignorando")
+            logger.debug(f"⏭️ Mensaje saliente vacío/sticker en {remote_jid}, ignorando")
             return
         
-        logger.info(f"🤔 Mensaje saliente sin características humanas claras en {remote_jid}, monitoreando")
+        logger.info(f"🤔 Mensaje saliente ambiguo en {remote_jid}, monitoreando")
         return
 
     # === VERIFICAR SI EL BOT ESTÁ SILENCIADO ===
     if remote_jid in bot_state.silenced_users:
         silence_value = bot_state.silenced_users[remote_jid]
         
-        # Si es timestamp (silencio temporal)
         if isinstance(silence_value, (int, float)):
             if time.time() < silence_value:
                 mins_left = int((silence_value - time.time()) / 60)
                 logger.info(f"🤐 Bot silenciado en {remote_jid} ({mins_left} min restantes)")
                 return
             else:
-                # Expiró, reactivar
                 del bot_state.silenced_users[remote_jid]
                 logger.info(f"✅ Bot reactivado automáticamente en {remote_jid}")
-        # Si es True (silencio permanente)
         elif silence_value is True:
             logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
             return
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
-    user_message = msg_text
+    msg_obj = data.get("message", {}) or {}
+    user_message = _extract_user_message(msg_obj).strip()
     
     # Si NO hay texto, verificar si es audio
     if not user_message:
@@ -784,12 +588,9 @@ async def process_single_event(webhook_body: Dict[str, Any]):
         
         if has_audio:
             logger.info(f"🎤 Audio detectado, procesando...")
-            
-            # Transcribir directamente (sin avisar al usuario)
             user_message = await _handle_audio_transcription(msg_id, remote_jid)
             
             if not user_message:
-                # Si falló la transcripción, avisar SIN emojis
                 await send_evolution_message(
                     remote_jid, 
                     "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
@@ -884,7 +685,7 @@ async def process_single_event(webhook_body: Dict[str, Any]):
         await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
 
 
-# === 12. ENDPOINTS ===
+# === 11. ENDPOINTS ===
 @app.get("/health")
 async def health():
     """Endpoint de salud con métricas del sistema."""
@@ -896,16 +697,16 @@ async def health():
         "processed_msgs_cache": len(bot_state.processed_message_ids),
         "processed_leads_cache": len(bot_state.processed_lead_ids),
         "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
-        "team_numbers_count": len(TEAM_NUMBERS_LIST),
+        "handoff_enabled": len(TEAM_NUMBERS_LIST) > 0,
         "auto_reactivate_minutes": AUTO_REACTIVATE_MINUTES,
     }
 
 
 async def _background_process_events(events: List[Dict[str, Any]]):
     """Procesa eventos en background para ACK inmediato al webhook."""
-    for webhook_body in events:
+    for event in events:
         try:
-            await process_single_event(webhook_body)
+            await process_single_event(event)
         except Exception as e:
             logger.error(f"❌ Error procesando evento en background: {e}")
 
