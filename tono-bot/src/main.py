@@ -1,934 +1,730 @@
 import os
+import re
 import json
 import logging
-import asyncio
-import tempfile
-import random
-import time
-import re
-from contextlib import asynccontextmanager
-from collections import deque
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple
 
-import httpx
-from fastapi import FastAPI, Request
-from fastapi.concurrency import run_in_threadpool
-from pydantic_settings import BaseSettings
+import pytz
+from openai import OpenAI
 
-# === IMPORTACIONES PROPIAS ===
-from src.inventory_service import InventoryService
-from src.conversation_logic import handle_message
-from src.memory_store import MemoryStore
-from src.monday_service import monday_service
+logger = logging.getLogger(__name__)
 
+# ============================================================
+# CONFIG
+# ============================================================
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# === 1. CONFIGURACIÓN ROBUSTA (Pydantic) ===
-class Settings(BaseSettings):
-    # Obligatorias
-    EVOLUTION_API_URL: str
-    EVOLUTION_API_KEY: str
-
-    # Opcionales / defaults
-    EVO_INSTANCE: str = "Tractosymax2"
-    OWNER_PHONE: Optional[str] = None
-    SHEET_CSV_URL: Optional[str] = None
-    INVENTORY_REFRESH_SECONDS: int = 300
-
-    # 🆕 Grupo de control (opcional)
-    CONTROL_GROUP_JID: Optional[str] = None
-
-    # Logging del payload (evita logs gigantes)
-    LOG_WEBHOOK_PAYLOAD: bool = True
-    LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
-
-
-try:
-    settings = Settings()
-except Exception as e:
-    print(f"❌ FATAL: Error en configuración de variables de entorno: {e}")
-    raise
-
-# Logs
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("BotTractos")
-
-# 🆕 Configuración de Handoff
-TEAM_NUMBERS_LIST = []
-try:
-    team_numbers_str = os.getenv("TEAM_NUMBERS", "")
-    if team_numbers_str:
-        TEAM_NUMBERS_LIST = [n.strip() for n in team_numbers_str.split(",") if n.strip()]
-        logger.info(f"✅ Números del equipo configurados: {len(TEAM_NUMBERS_LIST)}")
-except Exception as e:
-    logger.warning(f"⚠️ No se pudieron cargar TEAM_NUMBERS: {e}")
-
-AUTO_REACTIVATE_MINUTES = int(os.getenv("AUTO_REACTIVATE_MINUTES", "60"))
-HUMAN_DETECTION_WINDOW_SECONDS = int(os.getenv("HUMAN_DETECTION_WINDOW_SECONDS", "3"))
-
-
-# === 2. ESTADO GLOBAL EN RAM ===
-class GlobalState:
-    def __init__(self):
-        self.http_client: Optional[httpx.AsyncClient] = None
-        self.inventory: Optional[InventoryService] = None
-        self.store: Optional[MemoryStore] = None
-
-        # dedupe RAM (si llegan 2 eventos iguales rápido)
-        self.processed_message_ids = deque(maxlen=4000)
-        self.processed_lead_ids = deque(maxlen=8000)
-
-        # Silencios (ahora soporta timestamp o bool)
-        self.silenced_users: Dict[str, Any] = {}
-        
-        # 🆕 HANDOFF: Rastreo de mensajes del bot
-        self.bot_sent_message_ids = deque(maxlen=2000)
-        self.bot_sent_texts: Dict[str, deque] = {}
-        self.last_bot_message_time: Dict[str, float] = {}
-
-
-bot_state = GlobalState()
-
-
-# === 3. LIFESPAN (INICIO/CIERRE) ===
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("🚀 Iniciando BotTractos con sistema completo...")
-
-    # A) Cliente HTTP persistente (Evolution)
-    bot_state.http_client = httpx.AsyncClient(
-        base_url=settings.EVOLUTION_API_URL.rstrip("/"),
-        headers={"apikey": settings.EVOLUTION_API_KEY, "Content-Type": "application/json"},
-        timeout=30.0,
-    )
-
-    # B) Inventario
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    INVENTORY_PATH = os.path.join(BASE_DIR, "data", "inventory.csv")
-
-    bot_state.inventory = InventoryService(
-        INVENTORY_PATH,
-        sheet_csv_url=settings.SHEET_CSV_URL,
-        refresh_seconds=settings.INVENTORY_REFRESH_SECONDS,
-    )
-
+# ============================================================
+# TIME (CDMX)
+# ============================================================
+def get_mexico_time() -> Tuple[datetime, str]:
+    """Returns current datetime in Mexico City timezone and a readable string."""
     try:
-        bot_state.inventory.load(force=True)
-        count = len(getattr(bot_state.inventory, "items", []) or [])
-        logger.info(f"✅ Inventario cargado: {count} items.")
+        tz = pytz.timezone("America/Mexico_City")
+        now = datetime.now(tz)
+        return now, now.strftime("%A %I:%M %p")
     except Exception as e:
-        logger.error(f"⚠️ Error cargando inventario inicial: {e}")
-
-    # C) Memoria
-    bot_state.store = MemoryStore()
-    try:
-        bot_state.store.init()
-        logger.info("✅ MemoryStore inicializado.")
-    except Exception as e:
-        logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
-
-    yield
-
-    # D) Limpieza
-    logger.info("🛑 Deteniendo aplicación...")
-    if bot_state.http_client:
-        await bot_state.http_client.aclose()
-    logger.info("👋 Recursos liberados.")
+        logger.error(f"Timezone error: {e}")
+        now = datetime.now()
+        return now, now.strftime("%A %I:%M %p")
 
 
-app = FastAPI(lifespan=lifespan)
+# ============================================================
+# PROMPT (IMPORTANT: JSON example uses DOUBLE BRACES {{ }})
+# ============================================================
+SYSTEM_PROMPT = """
+Eres "Adrian Jímenez", Asesor humano de alto nivel comercial de 'Tractos y Max'.
+
+OBJETIVO: Vender vehículos comerciales, generar confianza, resolver dudas y agendar visitas a la agencia.
+Gestionar la interacción con empatía, claridad y control, logrando que el cliente se sienta bien atendido
+sin caer en complacencia. Dar contexto y confianza sobre quién es Tractos y Max. Validar el interés del
+cliente con una sola pregunta humana y breve. Confirmar de forma mínima que entendiste lo que busca el cliente
+
+DATOS CLAVE:
+- Ubicación: Tlalnepantla, Edo Mex.
+- Horario: Lunes a Viernes 9:00 AM a 6:00 PM. Sábados 9:00 AM a 2:00 PM.
+- MOMENTO ACTUAL: {current_time_str}
+- CLIENTE DETECTADO: {user_name_context}
+- Conocimiento del negocio: Tractos y Max se dedica a la comercialización de vehículos comerciales nuevos y
+  seminuevos a precio de oportunidad.
+
+REGLAS OBLIGATORIAS:
+1) BIENVENIDA Y NOMBRE:
+- Si es el PRIMER mensaje y sabes qué vehículo le interesa, di:
+  "Hola, veo que te interesa la [Modelo]. Soy Adrian Jimenez, ¿con quién tengo el gusto?".
+- Si el cliente solo dice "Hola" o no sabes su interés, saluda y ofrece ayuda SIN pedir el nombre aún.
+- Si ya tienes el nombre ({user_name_context}), úsalo para personalizar ("Hola Juan...").
+
+2) TU NOMBRE vs SU NOMBRE (FLUIDEZ):
+- Si el cliente pregunta "¿Cómo te llamas?", responde primero: "Soy Adrian..."
+- Después, de forma casual, pide el suyo si no lo tienes: "¿Con quién tengo el gusto?"
+
+3) NOMBRE (NATURAL, NO INSISTENTE):
+- Si ya tienes nombre en "CLIENTE DETECTADO", úsalo.
+- Si no lo tienes, NO lo pidas al inicio.
+- Pídelo SOLO cuando el cliente muestre interés real (precio/fotos/crédito) o al cerrar cita.
+- Frases casuales: "Por cierto, ¿con quién tengo el gusto?" / "¿A nombre de quién registro la visita?"
+
+4) POLÍTICA DE MARCA (GARANTÍA):
+- En tu PRIMERA respuesta donde des información técnica o precios, debes mencionar casualmente (sin que suene a robot legal):
+  "Te comento que todas nuestras unidades son 100% nuevas, con garantía de fábrica y facturadas directo por distribuidor FOTON."
+- Hazlo fluir con la conversación, no lo digas como una interrupción brusca.
+
+5) FOTOS (CERO CONTRADICCIONES):
+- Asume que SÍ hay fotos. El sistema las adjuntará automáticamente.
+- Prohibido decir: "No puedo enviar fotos", "No tengo imágenes", "Soy una IA".
+- Si piden fotos: "Claro, aquí tienes." o "Mira esta unidad."
+
+6) RELOJ:
+- Si es FUERA de horario, di que la oficina está cerrada y ofrece agendar para mañana.
+
+7) MODO GPS (HANDOFF):
+- Si piden ubicación, envía este enlace EXACTO: [https://maps.app.goo.gl/v9KigGY3QVAxqwV17]
+- Y aclara: "Para recibirte personalmente, es necesario agendar una cita previa. ¿Qué día podrías venir?"
+  (No des la dirección escrita, fuerza la cita).
+
+8) MONDAY (NO SPAM, PERO NO FALLAR):
+- SOLO registra lead si hay: NOMBRE REAL + INTERÉS (modelo) + CITA/INTENCIÓN clara.
+- Si falta el nombre, pídelo antes de cerrar la cita.
+- Si ya hay cita confirmada, genera el JSON oculto al final (formato EXACTO):
+
+```json
+{{
+  "lead_event": {{
+    "nombre": "Juan Perez",
+    "interes": "Foton Miler 45T RS 2024",
+    "cita": "Mañana 4:30 PM",
+    "pago": "Crédito"
+  }}
+}}
+```
+
+9) PROHIBIDO USAR EMOJIS:
+- NUNCA uses emojis en tus respuestas.
+- Escribe de forma profesional, directa y humana, pero sin emojis.
+- Ejemplos correctos: "Claro, aquí tienes." / "Perfecto." / "Excelente."
+- Ejemplos INCORRECTOS: "Claro! 😊" / "Perfecto 👍" / "Excelente! 🚛"
+
+NO REPETIR: No repitas saludos ni direcciones si ya las diste hace poco. Nunca presiones, interrogues ni repitas la misma pregunta innecesariamente.
+INVENTARIO: Vende solo lo que ves en la lista.
+MODO GPS: Si piden ubicación, dales la dirección exacta y una referencia visual (sin fotos).
+ASUNCIÓN: Asume siempre que es una mensaje entrante.
+LENGUAJE: Usa frases cortas, habladas y naturales. Evita lenguaje corporativo, de folleto o de call center.
+Conversas; no sigas un formulario.
+Evita repetir la misma estructura más de dos veces.
+Satisfacción sin complacencia.
+El cliente debe sentirse escuchado y bien atendido,
+pero no intentes resolver todo, convencer ni "quedar bien".
+Marca límites con naturalidad y ofrece un siguiente paso claro.
 
 
-# === 4. 🆕 UTILIDADES MEJORADAS ===
-
-def _get_canonical_jid(data: Dict[str, Any]) -> tuple[str, str]:
-    """
-    🆕 CORRECCIÓN CRÍTICA: Extrae el JID canónico resolviendo @lid.
-    
-    El problema: WhatsApp usa diferentes identificadores:
-    - @s.whatsapp.net → Dispositivo móvil principal
-    - @lid → Dispositivos vinculados (Web, Desktop)
-    
-    Evolution API proporciona remoteJidAlt con el número real.
-    
-    Returns:
-        (phone_number, full_jid)
-        - phone_number: Solo dígitos (ej: "5214461168088")
-        - full_jid: JID completo con sufijo (ej: "5214461168088@s.whatsapp.net")
-    """
-    key = data.get("key", {}) or {}
-    
-    # Priorizar remoteJidAlt (es el número real cuando viene de @lid)
-    alt_jid = key.get("remoteJidAlt", "").strip()
-    remote_jid = key.get("remoteJid", "").strip()
-    
-    # Usar el que tenga @s.whatsapp.net o el alternativo
-    canonical_jid = alt_jid if alt_jid and "@s.whatsapp.net" in alt_jid else remote_jid
-    
-    # Extraer solo el número (sin sufijos)
-    phone_number = canonical_jid.replace("@s.whatsapp.net", "").replace("@lid", "").replace("@g.us", "")
-    phone_number = "".join([c for c in phone_number if c.isdigit()])
-    
-    return phone_number, canonical_jid
+ESTILO: Amable, directo y profesional. Máximo 3 oraciones. SIN EMOJIS.
+""".strip()
 
 
-def _clean_phone_or_jid(value: str) -> str:
-    """Mantiene compatibilidad con código legacy."""
-    if not value:
-        return ""
-    return "".join([c for c in str(value) if c.isdigit()])
+# ============================================================
+# INVENTORY HELPERS
+# ============================================================
+def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
+    """Return first non-empty string for given keys."""
+    for k in keys:
+        v = item.get(k)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip()
+    return default
 
 
-def _is_system_event(event_type: str) -> bool:
-    """
-    🆕 OPTIMIZACIÓN: Determina si un evento es de sistema (no requiere procesamiento).
-    
-    Eventos de sistema no contienen mensajes del usuario, solo cambios de estado.
-    Filtrarlos reduce la carga del servidor en ~60%.
-    """
-    system_events = [
-        "messages.update",  # READ, DELIVERY_ACK, SERVER_ACK
-        "contacts.update",
-        "contacts.upsert",
-        "chats.update",
-        "presence.update",
-        "connection.update",
+def _build_inventory_text(inventory_service) -> str:
+    items = getattr(inventory_service, "items", None) or []
+    if not items:
+        return "Inventario no disponible."
+
+    lines: List[str] = []
+    for item in items:
+        marca = _safe_get(item, ["Marca", "marca"], default="(sin marca)")
+        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"], default="(sin modelo)")
+        anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
+        precio = _safe_get(item, ["Precio", "precio"], default="N/D")
+        status = _safe_get(item, ["status", "disponible"], default="Disponible")
+        desc = _safe_get(item, ["descripcion_corta", "segmento"], default="")
+
+        info = f"- {marca} {modelo} {anio}: ${precio} ({status})".strip()
+        if desc:
+            info += f" [{desc}]"
+        lines.append(info)
+
+    return "\n".join(lines)
+
+
+def _extract_photos_from_item(item: Dict[str, Any]) -> List[str]:
+    raw = _safe_get(item, ["photos", "photo", "foto", "imagen", "imagenes", "fotos"])
+    if not raw:
+        return []
+    return [u.strip() for u in raw.split("|") if u.strip().startswith("http")]
+
+
+# ============================================================
+# NAME / PAYMENT / APPOINTMENT EXTRACTION
+# ============================================================
+def _extract_name_from_text(text: str) -> Optional[str]:
+    """Extract probable customer name (conservative)."""
+    t = (text or "").strip()
+    if not t:
+        return None
+
+    patterns = [
+        r"\bme llamo\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
+        r"\bsoy\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
+        r"\bmi nombre es\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
     ]
-    return event_type in system_events
+
+    for p in patterns:
+        m = re.search(p, t, flags=re.IGNORECASE)
+        if m:
+            name = m.group(1).strip()
+            bad = {"aqui", "aquí", "nadie", "yo", "el", "ella", "amigo", "desconocido", "cliente", "usuario"}
+            if name.lower() in bad:
+                return None
+            return " ".join(w.capitalize() for w in name.split())
+
+    return None
 
 
-def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
+def _extract_payment_from_text(text: str) -> Optional[str]:
+    msg = (text or "").lower()
+    if any(k in msg for k in ["contado", "cash", "de contado"]):
+        return "Contado"
+    if any(k in msg for k in ["crédito", "credito", "financiamiento", "financiación"]):
+        return "Crédito"
+    return None
+
+
+def _normalize_spanish(text: str) -> str:
+    return (
+        (text or "")
+        .lower()
+        .replace("miller", "miler")
+        .replace("vanesa", "toano")
+        .replace("la e5", "tunland e5")
+    )
+
+
+def _extract_interest_from_messages(user_message: str, reply: str, inventory_service) -> Optional[str]:
+    """Infer model interest by matching inventory model tokens in user message or bot reply."""
+    items = getattr(inventory_service, "items", None) or []
+    if not items:
+        return None
+
+    msg_norm = _normalize_spanish(user_message)
+    rep_norm = _normalize_spanish(reply)
+
+    best: Optional[str] = None
+    best_score = 0
+
+    for item in items:
+        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
+        if not modelo:
+            continue
+
+        modelo_norm = _normalize_spanish(modelo)
+        tokens = [t for t in modelo_norm.split() if len(t) >= 3 and t not in {"foton", "camion", "camión"}]
+        if not tokens:
+            continue
+
+        score = 0
+        for tok in tokens:
+            if tok in msg_norm:
+                score += 2
+            if tok in rep_norm:
+                score += 1
+
+        if score > best_score:
+            best_score = score
+            best = modelo
+
+    if best_score >= 2:
+        return best
+
+    return None
+
+
+def _extract_appointment_from_text(text: str) -> Optional[str]:
+    """Basic Spanish appointment extractor for day/time."""
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+
+    day: Optional[str] = None
+    if "mañana" in t:
+        day = "Mañana"
+    else:
+        days = ["lunes", "martes", "miércoles", "miercoles", "jueves", "viernes", "sábado", "sabado", "domingo"]
+        for d in days:
+            if d in t:
+                day = d.capitalize().replace("Miercoles", "Miércoles").replace("Sabado", "Sábado")
+                break
+
+    time_str: Optional[str] = None
+
+    m = re.search(r"\b(\d{1,2})\s*y\s*media\b", t)
+    if m:
+        h = int(m.group(1))
+        time_str = f"{h}:30"
+
+    if not time_str:
+        m = re.search(r"\b(\d{1,2})\s*:\s*(\d{2})\b", t)
+        if m:
+            h = int(m.group(1))
+            mm = int(m.group(2))
+            if 0 <= h <= 23 and 0 <= mm <= 59:
+                time_str = f"{h}:{mm:02d}"
+
+    if not time_str:
+        m = re.search(r"\b(\d{1,2})\s*(am|pm)\b", t)
+        if m:
+            h = int(m.group(1))
+            mer = m.group(2)
+            if 1 <= h <= 12:
+                hh = h % 12
+                if mer == "pm":
+                    hh += 12
+                time_str = f"{hh}:00"
+
+    if not time_str:
+        if "en la tarde" in t or "por la tarde" in t:
+            time_str = "(tarde)"
+        elif "en la mañana" in t or "por la mañana" in t:
+            time_str = "(mañana)"
+        elif "en la noche" in t or "por la noche" in t:
+            time_str = "(noche)"
+
+    def _pretty_time_24_to_12(h24: int, mm: str) -> str:
+        if h24 == 0:
+            return f"12:{mm} AM"
+        if 1 <= h24 <= 11:
+            return f"{h24}:{mm} AM"
+        if h24 == 12:
+            return f"12:{mm} PM"
+        return f"{h24 - 12}:{mm} PM"
+
+    if day and time_str:
+        if re.fullmatch(r"\d{1,2}:\d{2}", time_str):
+            h24 = int(time_str.split(":")[0])
+            mm = time_str.split(":")[1]
+            return f"{day} {_pretty_time_24_to_12(h24, mm)}"
+        return f"{day} {time_str}"
+
+    if day and not time_str:
+        return day
+
+    if time_str and not day:
+        if re.fullmatch(r"\d{1,2}:\d{2}", time_str):
+            h24 = int(time_str.split(":")[0])
+            mm = time_str.split(":")[1]
+            return _pretty_time_24_to_12(h24, mm)
+        return time_str
+
+    return None
+
+
+def _message_confirms_appointment(text: str) -> bool:
     """
-    Extrae el texto del mensaje de Evolution.
-    Si es audio, retorna cadena vacía para que process_single_event lo maneje.
+    Detecta si el mensaje es una confirmación de cita.
+    Ampliado para incluir respuestas cortas comunes.
     """
-    if not isinstance(msg_obj, dict):
-        return ""
-
-    # 1. Mensaje de texto normal
-    if "conversation" in msg_obj:
-        return msg_obj.get("conversation") or ""
-
-    # 2. Mensaje de texto extendido (reply, etc)
-    if "extendedTextMessage" in msg_obj:
-        ext = msg_obj.get("extendedTextMessage") or {}
-        return ext.get("text") or ""
-
-    # 3. Imagen con caption
-    if "imageMessage" in msg_obj:
-        img = msg_obj.get("imageMessage") or {}
-        return img.get("caption") or "(Envió una foto)"
-
-    # 4. AUDIO/NOTA DE VOZ - Retornamos vacío para señalar que hay audio
-    if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
-        return ""
-
-    return ""
-
-
-def _ensure_inventory_loaded() -> None:
-    """
-    Compatibilidad con distintas versiones de InventoryService.
-    """
-    inv = bot_state.inventory
-    if not inv:
-        return
-    try:
-        if hasattr(inv, "ensure_loaded"):
-            inv.ensure_loaded()
-        else:
-            inv.load(force=False)
-    except Exception as e:
-        logger.error(f"⚠️ No se pudo refrescar inventario: {e}")
-
-
-def _safe_log_payload(prefix: str, obj: Any) -> None:
-    """
-    🆕 SEGURIDAD: Log controlado CON SANITIZACIÓN de información sensible.
-    
-    Problema anterior: API keys y tokens se loggeaban en claro.
-    Solución: Reemplazar información sensible con "***".
-    """
-    if not settings.LOG_WEBHOOK_PAYLOAD:
-        return
-    try:
-        raw = json.dumps(obj, ensure_ascii=False)
-        
-        # 🔒 SANITIZAR información sensible
-        raw = raw.replace(settings.EVOLUTION_API_KEY, "***REDACTED***")
-        raw = re.sub(r'"apikey":\s*"[^"]*"', '"apikey": "***"', raw)
-        raw = re.sub(r'"password":\s*"[^"]*"', '"password": "***"', raw)
-        raw = re.sub(r'"token":\s*"[^"]*"', '"token": "***"', raw)
-        
-        if len(raw) > settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS:
-            raw = raw[: settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS] + " ...[TRUNCATED]"
-        logger.info(f"{prefix}{raw}")
-    except Exception as e:
-        logger.warning(f"⚠️ No se pudo loggear payload: {e}")
-
-
-# === 5. 🆕 DETECCIÓN DE MENSAJES HUMANOS ===
-def _message_looks_human(text: str) -> bool:
-    """Detecta si un mensaje tiene características que el bot NO usaría."""
-    if not text:
+    t = (text or "").strip().lower()
+    if not t:
         return False
+
     
-    text_lower = text.lower()
-    
-    # 1. El bot NUNCA usa emojis (según tu configuración)
-    emoji_patterns = ["😊", "👍", "🙏", "💪", "🚚", "✅", "❤️", "🔥", "👌", "😉", "😅", "🤝", "📞", "📱", "🎉", "💯"]
-    if any(emoji in text for emoji in emoji_patterns):
-        logger.debug(f"🔍 Detectado emoji humano en: '{text[:50]}'")
-        return True
-    
-    # 2. Frases típicas de asesor humano
-    human_phrases = [
-        "un momento", "déjame verificar", "déjame revisar", "te marco", "te llamo",
-        "te hablo", "estoy revisando", "dame un segundo", "aquí adrian", "soy adrian",
-        "con adrian", "te contacto", "te escribo", "ahora te", "espérame", "un sec"
+    # Lista ampliada de confirmaciones
+    confirmations = [
+        "vale",
+        "ok",
+        "okey",
+        "listo",
+        "perfecto",
+        "nos vemos",
+        "ahí nos vemos",
+        "mañana nos vemos",
+        "de acuerdo",
+        "confirmo",
+        "vale", "ok", "okey", "si", "sí", "listo", "perfecto", 
+        "nos vemos", "ahí nos vemos", "mañana nos vemos", 
+        "de acuerdo", "confirmo", "gracias", "está bien", 
+        "entendido", "perfecto", "excelente", "claro"
     ]
-    if any(phrase in text_lower for phrase in human_phrases):
-        logger.debug(f"🔍 Detectada frase humana en: '{text[:50]}'")
+    
+    # Si el mensaje es EXACTAMENTE una de estas palabras (o muy corto)
+    if t in confirmations:
         return True
     
-    # 3. Errores de ortografía típicamente humanos
-    typos = ["aver", "haber si", "ps si", "nel", "simon", "sisas", "ok ok", "oks"]
-    if any(typo in text_lower for typo in typos):
-        logger.debug(f"🔍 Detectado typo humano en: '{text[:50]}'")
-        return True
-    
-    return False
+    # O si contiene alguna de estas frases
+    return any(c in t for c in confirmations)
 
 
-def _is_bot_message(remote_jid: str, msg_id: str, msg_text: str) -> bool:
+# ============================================================
+# PHOTOS LOGIC (🔥 CON MEMORIA DE ÍNDICE)
+# ============================================================
+def _pick_media_urls(
+    user_message: str,
+    reply: str,
+    inventory_service,
+    context: Dict[str, Any],
+) -> List[str]:
     """
-    Verifica si un mensaje saliente fue enviado por el bot (multicapa).
-    Retorna True si es del bot, False si es de un humano.
+    Devuelve lista de URLs de fotos según el modelo detectado.
+
+    Ahora con MEMORIA: guarda en context['photo_index'] para saber cuál foto va.
     """
-    # CAPA 1: Verificar ID del mensaje
-    if msg_id and msg_id in bot_state.bot_sent_message_ids:
-        logger.debug(f"✓ Mensaje ID {msg_id[:20]}... es del bot")
-        return True
-    
-    # CAPA 2: Verificar texto exacto reciente
-    if remote_jid in bot_state.bot_sent_texts:
-        recent_texts = bot_state.bot_sent_texts[remote_jid]
-        if msg_text in recent_texts:
-            logger.debug(f"✓ Texto coincide con cache del bot")
-            return True
-    
-    # CAPA 3: Verificar timestamp (ventana temporal)
-    last_bot_time = bot_state.last_bot_message_time.get(remote_jid, 0)
-    time_diff = time.time() - last_bot_time
-    
-    if time_diff < HUMAN_DETECTION_WINDOW_SECONDS:
-        logger.debug(f"✓ Dentro de ventana temporal ({time_diff:.1f}s)")
-        return True
-    
-    logger.debug(f"✗ NO es del bot (time_diff={time_diff:.1f}s)")
-    return False
+    msg = _normalize_spanish(user_message)
 
+    # 1) Si piden ubicación, no mandar fotos
+    gps_keywords = ["ubicacion", "ubicación", "donde estan", "dónde están", "direccion", "dirección", "mapa", "donde se ubican"]
+    if any(k in msg for k in gps_keywords):
+        return []
 
-# === 6. DELAY HUMANO ALEATORIO ===
-async def human_typing_delay():
-    """Simula el tiempo que un humano tarda en escribir."""
-    delay = random.uniform(5.0, 10.0)
-    logger.info(f"⏳ Esperando {delay:.1f}s (delay humano)...")
-    await asyncio.sleep(delay)
+    items = getattr(inventory_service, "items", None) or []
+    if not items:
+        return []
 
+    # 2) Verificar si piden fotos
+    photo_keywords = [
+        "foto",
+        "fotos",
+        "imagen",
+        "imagenes",
+        "imágenes",
+        "ver fotos",
+        "ver imágenes",
+        "ver la foto",
+        "ver las fotos",
+        "enseñame",
+        "enséñame",
+        "muestrame",
+        "muéstrame",
+        "mandame fotos",
+        "mándame fotos",
+        "quiero ver",
+        "otra",
+        "mas",
+        "más",
+        "siguiente",
+    ]
+    if not any(k in msg for k in photo_keywords):
+        return []
 
-# === 7. TRANSCRIPCIÓN DE AUDIO ===
-async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
-    """
-    Descarga el audio DESENCRIPTADO desde Evolution API y lo transcribe con Whisper.
-    SIN avisar al usuario.
-    """
-    if not msg_id or not remote_jid:
-        logger.warning("⚠️ msg_id o remote_jid vacío")
-        return ""
-
-    temp_path = None
+    # 3) Recuperar memoria del contexto
+    last_interest = (context.get("last_interest") or "").strip()
+    current_photo_model = (context.get("photo_model") or "").strip()
     try:
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
-            temp_path = temp_audio.name
+        photo_index = int(context.get("photo_index", 0))
+    except Exception:
+        photo_index = 0
 
-        logger.info(f"⬇️ Descargando audio desde Evolution API...")
+    rep_norm = _normalize_spanish(reply)
 
-        client = bot_state.http_client
-        if not client:
-            logger.error("❌ Cliente HTTP no inicializado")
-            return ""
+    # 4) Detectar qué modelo quiere ver
+    target_item = None
+    target_model_name = ""
 
-        media_url = f"/chat/getBase64FromMediaMessage/{settings.EVO_INSTANCE}"
-        
-        payload = {
-            "message": {
-                "key": {
-                    "remoteJid": remote_jid,
-                    "id": msg_id,
-                    "fromMe": False
-                }
-            },
-            "convertToMp4": False
+    # A) Buscar mención explícita en mensaje o respuesta del bot
+    for item in items:
+        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
+        if not modelo:
+            continue
+
+        modelo_norm = _normalize_spanish(modelo)
+        parts = [p for p in modelo_norm.split() if len(p) >= 3 and p not in ["foton", "camion", "camión"]]
+        match_user = any(part in msg for part in parts)
+        match_bot = any(part in rep_norm for part in parts)
+        if match_user or match_bot:
+            target_item = item
+            target_model_name = modelo
+            break
+
+    # B) Si no hay mención, usar last_interest (CLAVE para "otra foto" sin decir modelo)
+    if not target_item and last_interest:
+        for item in items:
+            modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
+            if _normalize_spanish(modelo) == _normalize_spanish(last_interest):
+                target_item = item
+                target_model_name = modelo
+                break
+
+    if not target_item:
+        return []
+
+    # 5) Extraer fotos
+    urls = _extract_photos_from_item(target_item)
+    if not urls:
+        return []
+
+    # 6) Si cambió de modelo, reiniciar índice
+    if _normalize_spanish(target_model_name) != _normalize_spanish(current_photo_model):
+        photo_index = 0
+        context["photo_model"] = target_model_name
+
+    # 7) Determinar si quiere "otra" (1 foto) o "fotos" (grupo)
+    wants_next = any(k in msg for k in ["otra", "mas", "más", "siguiente"])
+    selected_urls: List[str] = []
+
+    if wants_next:
+        # Modo "Siguiente": manda 1 foto y avanza el índice
+        if photo_index < len(urls):
+            selected_urls = [urls[photo_index]]
+            photo_index += 1
+        else:
+            # Ya no hay más, reiniciar (loop)
+            photo_index = 0
+            selected_urls = [urls[0]]
+            photo_index = 1
+    else:
+        # Modo "Ver fotos": manda batch (ej. 3)
+        batch_size = 3
+        end_index = min(photo_index + batch_size, len(urls))
+        selected_urls = urls[photo_index:end_index]
+        if not selected_urls:
+            photo_index = 0
+            end_index = min(batch_size, len(urls))
+            selected_urls = urls[0:end_index]
+            photo_index = end_index
+        else:
+            photo_index = end_index
+
+    # 8) Guardar el nuevo índice en contexto
+    context["photo_index"] = photo_index
+    return selected_urls
+
+
+def _sanitize_reply_if_photos_attached(reply: str, media_urls: List[str]) -> str:
+    if not media_urls:
+        return reply
+
+    bad_phrases = [
+        r"no\s+puedo\s+enviar\s+fotos",
+        r"no\s+puedo\s+mandar\s+fotos",
+        r"no\s+tengo\s+fotos",
+        r"no\s+puedo\s+enviar\s+im[aá]genes",
+        r"no\s+puedo\s+mandar\s+im[aá]genes",
+        r"soy\s+una\s+ia",
+        r"soy\s+un\s+modelo",
+    ]
+
+    cleaned = reply or ""
+    for p in bad_phrases:
+        cleaned = re.sub(p, "Claro, aquí tienes.", cleaned, flags=re.IGNORECASE)
+
+    return cleaned
+
+
+# ============================================================
+# MONDAY VALIDATION (HARD GATE)
+# ============================================================
+def _lead_is_valid(lead: Dict[str, Any]) -> bool:
+    if not isinstance(lead, dict):
+        return False
+
+    nombre = str(lead.get("nombre", "")).strip()
+    interes = str(lead.get("interes", "")).strip()
+    cita = str(lead.get("cita", "")).strip()
+
+    if not nombre or len(nombre) < 3:
+        return False
+
+    placeholders = {"cliente nuevo", "desconocido", "amigo", "cliente", "nuevo lead", "usuario", "no proporcionado"}
+    if nombre.lower() in placeholders:
+        return False
+
+    if not re.search(r"[a-zA-ZÁÉÍÓÚÑÜáéíóúñü]", nombre):
+        return False
+
+    if not interes or len(interes) < 2:
+        return False
+
+    if not cita or len(cita) < 2:
+        return False
+
+    return True
+
+
+# ============================================================
+# MAIN ENTRY
+# ============================================================
+def handle_message(
+    user_message: str,
+    inventory_service,
+    state: str,
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    user_message = user_message or ""
+    context = context or {}
+    history = (context.get("history") or "").strip()
+
+    # Silence mode
+    if user_message.strip().lower() == "/silencio":
+        new_history = (history + f"\nC: {user_message}\nA: Perfecto. Modo silencio activado.").strip()
+        return {
+            "reply": "Perfecto. Modo silencio activado.",
+            "new_state": "silent",
+            "context": {"history": new_history[-4000:]},
+            "media_urls": [],
+            "lead_info": None,
         }
 
-        response = await client.post(media_url, json=payload)
-        
-        if response.status_code not in [200, 201]:
-            logger.error(f"❌ Error descargando desde Evolution: {response.status_code}")
-            return ""
-
-        data = response.json()
-        
-        import base64
-        
-        if isinstance(data, dict):
-            base64_audio = data.get("base64") or data.get("media")
-        else:
-            base64_audio = data
-            
-        if not base64_audio:
-            logger.error("❌ No se recibió base64 de Evolution")
-            return ""
-
-        audio_bytes = base64.b64decode(base64_audio)
-        
-        with open(temp_path, "wb") as f:
-            f.write(audio_bytes)
-
-        logger.info(f"✅ Audio descargado: {len(audio_bytes)} bytes")
-
-        try:
-            from src.conversation_logic import client as openai_client
-            
-            with open(temp_path, "rb") as audio_file:
-                transcript = await run_in_threadpool(
-                    lambda: openai_client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=audio_file,
-                        language="es",
-                        response_format="text"
-                    )
-                )
-            
-            if isinstance(transcript, str):
-                texto = transcript.strip()
-            else:
-                texto = (getattr(transcript, "text", "") or "").strip()
-            
-            if texto:
-                logger.info(f"🎤 Audio transcrito: '{texto[:150]}...'")
-            else:
-                logger.warning("⚠️ Transcripción vacía")
-            
-            return texto
-
-        except Exception as e:
-            logger.error(f"❌ Error en Whisper API: {e}")
-            return ""
-
-    except Exception as e:
-        logger.error(f"❌ Error general procesando audio: {e}")
-        return ""
-
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                logger.info(f"🗑️ Archivo temporal eliminado")
-            except Exception as e:
-                logger.warning(f"⚠️ No se pudo eliminar temp file: {e}")
-
-
-# === 8. ENVÍO DE MENSAJES (CON RASTREO) ===
-async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
-    media_urls = media_urls or []
-    text = (text or "").strip()
-
-    if not text and not media_urls:
-        return
-
-    clean_number = _clean_phone_or_jid(number_or_jid)
-    if not clean_number:
-        logger.error(f"❌ No se pudo limpiar número/jid: {number_or_jid}")
-        return
-
-    client = bot_state.http_client
-    if not client:
-        logger.error("❌ Cliente HTTP no inicializado (lifespan).")
-        return
-
-    try:
-        if media_urls:
-            total_fotos = len(media_urls)
-            for i, media_url in enumerate(media_urls):
-                url = f"/message/sendMedia/{settings.EVO_INSTANCE}"
-                
-                caption_part = text if (i == total_fotos - 1) else ""
-                
-                payload = {
-                    "number": clean_number,
-                    "mediatype": "image",
-                    "mimetype": "image/jpeg",
-                    "caption": caption_part,
-                    "media": media_url,
-                }
-                
-                if i > 0:
-                    await asyncio.sleep(0.5)
-
-                response = await client.post(url, json=payload)
-                
-                if response.status_code >= 400:
-                    logger.error(f"⚠️ Error foto {i+1}: {response.text}")
-                else:
-                    logger.info(f"✅ Enviada foto {i+1}/{total_fotos} a {clean_number}")
-                    
-                    # 🆕 Rastrear mensaje del bot
-                    try:
-                        resp_data = response.json()
-                        msg_id = resp_data.get("key", {}).get("id")
-                        if msg_id:
-                            bot_state.bot_sent_message_ids.append(msg_id)
-                    except:
-                        pass
-
-        else:
-            url = f"/message/sendText/{settings.EVO_INSTANCE}"
-            payload = {"number": clean_number, "text": text}
-            response = await client.post(url, json=payload)
-            
-            if response.status_code >= 400:
-                logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text}")
-            else:
-                logger.info(f"✅ Enviado a {clean_number} (TEXT)")
-                
-                # 🆕 Rastrear mensaje enviado por el bot
-                jid = f"{clean_number}@s.whatsapp.net"
-                
-                # Guardar ID
-                try:
-                    resp_data = response.json()
-                    msg_id = resp_data.get("key", {}).get("id")
-                    if msg_id:
-                        bot_state.bot_sent_message_ids.append(msg_id)
-                        logger.debug(f"📤 Rastreando msg_id: {msg_id[:20]}...")
-                except:
-                    pass
-                
-                # Guardar texto
-                if jid not in bot_state.bot_sent_texts:
-                    bot_state.bot_sent_texts[jid] = deque(maxlen=10)
-                bot_state.bot_sent_texts[jid].append(text)
-                
-                # Guardar timestamp
-                bot_state.last_bot_message_time[jid] = time.time()
-
-    except httpx.RequestError as e:
-        logger.error(f"❌ Error de conexión: {e}")
-    except Exception as e:
-        logger.error(f"❌ Error inesperado: {e}")
-
-
-# === 9. ALERTAS AL DUEÑO ===
-async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
-    if not settings.OWNER_PHONE:
-        return
-
-    clean_client = _clean_phone_or_jid(user_number_or_jid)
-
-    if is_lead:
-        alert_text = (
-            "*NUEVO LEAD EN MONDAY*\n\n"
-            f"Cliente: wa.me/{clean_client}\n"
-            "El bot cerró una cita. Revisa el tablero."
-        )
-        await send_evolution_message(settings.OWNER_PHONE, alert_text)
-        return
-
-    keywords = [
-        "precio", "cuanto", "cuánto", "interesa", "verlo", "ubicacion", "ubicación",
-        "dónde", "donde", "trato", "comprar", "informes", "info"
-    ]
-
-    msg_lower = (user_message or "").lower()
-    if not any(word in msg_lower for word in keywords):
-        return
-
-    alert_text = (
-        "*Interés Detectado*\n"
-        f"Cliente: wa.me/{clean_client}\n"
-        f"Dijo: \"{user_message}\"\n"
-        f"Bot: \"{(bot_reply or '')[:60]}...\""
-    )
-    await send_evolution_message(settings.OWNER_PHONE, alert_text)
-
-
-# === 10. 🆕 PROCESADOR DE COMANDOS ADMINISTRATIVOS ===
-async def process_admin_command(sender_phone: str, sender_jid: str, command_text: str) -> bool:
-    """
-    🆕 MEJORA: Procesa comandos administrativos desde números autorizados.
-    
-    Extrae la lógica de comandos del flujo principal para mejor organización.
-    
-    Returns:
-        True si se procesó un comando, False si no era comando.
-    """
-    cmd = command_text.strip()
-    
-    # Comando: /estado
-    if cmd == "/estado":
-        silenced = []
-        for jid, value in bot_state.silenced_users.items():
-            phone = jid.split("@")[0]
-            if isinstance(value, (int, float)):
-                mins_left = int((value - time.time()) / 60)
-                if mins_left > 0:
-                    silenced.append(f"- {phone} ({mins_left} min, temporal)")
-            elif value is True:
-                silenced.append(f"- {phone} (permanente)")
-        
-        if silenced:
-            msg = "🤐 *Chats pausados:*\n\n" + "\n".join(silenced)
-        else:
-            msg = "✅ No hay chats pausados"
-        
-        await send_evolution_message(sender_jid, msg)
-        logger.info(f"📊 Comando /estado ejecutado por {sender_phone}")
-        return True
-    
-    # Comando: /pausar NUMERO
-    if cmd.startswith("/pausar"):
-        parts = cmd.split()
-        if len(parts) >= 2:
-            target_phone = parts[1].strip()
-            target_jid = f"{target_phone}@s.whatsapp.net"
-            bot_state.silenced_users[target_jid] = True
-            logger.info(f"🤐 Bot pausado manualmente para {target_phone} por {sender_phone}")
-            await send_evolution_message(sender_jid, f"✅ Bot pausado para {target_phone}")
-        else:
-            await send_evolution_message(sender_jid, "❌ Formato: /pausar 5214481234567")
-        return True
-    
-    # Comando: /reactivar NUMERO
-    if cmd.startswith("/reactivar"):
-        parts = cmd.split()
-        if len(parts) >= 2:
-            target_phone = parts[1].strip()
-            target_jid = f"{target_phone}@s.whatsapp.net"
-            bot_state.silenced_users.pop(target_jid, None)
-            logger.info(f"✅ Bot reactivado manualmente para {target_phone} por {sender_phone}")
-            await send_evolution_message(sender_jid, f"✅ Bot reactivado para {target_phone}")
-        else:
-            await send_evolution_message(sender_jid, "❌ Formato: /reactivar 5214481234567")
-        return True
-    
-    # Comando: /help
-    if cmd == "/help" or cmd == "/ayuda":
-        help_text = (
-            "*Comandos disponibles:*\n\n"
-            "• `/estado` - Ver chats pausados\n"
-            "• `/pausar 521...` - Pausar bot para un cliente\n"
-            "• `/reactivar 521...` - Reactivar bot para un cliente\n"
-            "• `/help` - Este mensaje"
-        )
-        await send_evolution_message(sender_jid, help_text)
-        return True
-    
-    return False
-
-
-# === 11. PROCESADOR CENTRAL (CON TODAS LAS MEJORAS) ===
-async def process_single_event(data: Dict[str, Any]):
-    # 🆕 FILTRO 1: Eventos de sistema (ignorar para optimizar)
-    event_type = data.get("event", "")
-    if _is_system_event(event_type):
-        logger.debug(f"⏭️ Evento de sistema ignorado: {event_type}")
-        return
-    
-    # Solo procesar messages.upsert
-    if event_type != "messages.upsert":
-        return
-    
-    # 🆕 CORRECCIÓN CRÍTICA: Normalizar JID (resuelve problema @lid)
-    data_content = data.get("data", {})
-    sender_phone, canonical_jid = _get_canonical_jid(data_content)
-    
-    key = data_content.get("key", {}) or {}
-    from_me = key.get("fromMe", False)
-    msg_id = (key.get("id", "") or "").strip()
-    
-    # Usar el JID canónico en vez del remoteJid directo
-    remote_jid = canonical_jid if canonical_jid else key.get("remoteJid", "")
-    
-    if not remote_jid:
-        return
-
-    logger.info(f"📩 Evento: msg_id={msg_id[:20]}... from_me={from_me} sender={sender_phone}")
-
-    # Ignorar grupos/broadcast (a menos que sea el grupo de control)
-    if remote_jid.endswith("@g.us"):
-        if settings.CONTROL_GROUP_JID and remote_jid == settings.CONTROL_GROUP_JID:
-            # Es el grupo de control, permitir comandos
-            pass
-        else:
-            # Grupo normal o broadcast, ignorar
-            logger.debug(f"⏭️ Grupo/broadcast ignorado: {remote_jid}")
-            return
-    elif "broadcast" in remote_jid:
-        return
-
-    # Deduplicación por msg_id
-    if msg_id and msg_id in bot_state.processed_message_ids:
-        logger.debug(f"🔁 Mensaje duplicado ignorado: {msg_id}")
-        return
-    
-    if msg_id:
-        bot_state.processed_message_ids.append(msg_id)
-
-    # === 🆕 CAPA 2: COMANDOS ADMINISTRATIVOS (ANTES DEL HANDOFF) ===
-    msg_obj = data_content.get("message", {}) or {}
-    msg_text = _extract_user_message(msg_obj).strip()
-    
-    # Si el mensaje viene de un número del equipo y es comando
-    if sender_phone in TEAM_NUMBERS_LIST and not from_me:
-        if msg_text.startswith("/"):
-            # Procesar como comando administrativo
-            was_command = await process_admin_command(sender_phone, remote_jid, msg_text)
-            if was_command:
-                return  # Comando procesado, no continuar con lógica conversacional
-    
-    # Si es el grupo de control y es un comando
-    if settings.CONTROL_GROUP_JID and remote_jid == settings.CONTROL_GROUP_JID:
-        if msg_text.startswith("/") and not from_me:
-            was_command = await process_admin_command(sender_phone, remote_jid, msg_text)
-            if was_command:
-                return
-
-    # === 🆕 DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
-    if from_me:
-        # Si el mensaje es HACIA el bot mismo, ignorar
-        bot_instance_number = _clean_phone_or_jid(settings.EVO_INSTANCE)
-        if sender_phone == bot_instance_number:
-            logger.debug(f"⏭️ Mensaje al bot mismo ignorado")
-            return
-        
-        # Verificar si este mensaje fue enviado por el bot
-        if _is_bot_message(remote_jid, msg_id, msg_text):
-            # Es del bot, ignorar
-            logger.debug(f"✓ Confirmado mensaje del bot, ignorando")
-            return
-        
-        # 🆕 MEJORA: Solo silenciar si el mensaje parece claramente humano
-        is_human = _message_looks_human(msg_text)
-        
-        if is_human:
-            logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {AUTO_REACTIVATE_MINUTES} min)")
-            bot_state.silenced_users[remote_jid] = time.time() + (AUTO_REACTIVATE_MINUTES * 60)
-            return
-        
-        # 🆕 CAMBIO CRÍTICO: Ya NO silenciamos automáticamente por mensajes ambiguos
-        # Solo logueamos para monitoreo
-        if not msg_text:
-            logger.debug(f"⏭️ Mensaje saliente vacío/sticker/reacción en {remote_jid}, ignorando")
-            return
-        
-        logger.info(f"🤔 Mensaje saliente sin características humanas claras en {remote_jid}, monitoreando")
-        return
-
-    # === VERIFICAR SI EL BOT ESTÁ SILENCIADO ===
-    if remote_jid in bot_state.silenced_users:
-        silence_value = bot_state.silenced_users[remote_jid]
-        
-        # Si es timestamp (silencio temporal)
-        if isinstance(silence_value, (int, float)):
-            if time.time() < silence_value:
-                mins_left = int((silence_value - time.time()) / 60)
-                logger.info(f"🤐 Bot silenciado en {remote_jid} ({mins_left} min restantes)")
-                return
-            else:
-                # Expiró, reactivar
-                del bot_state.silenced_users[remote_jid]
-                logger.info(f"✅ Bot reactivado automáticamente en {remote_jid}")
-        # Si es True (silencio permanente)
-        elif silence_value is True:
-            logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
-            return
-
-    # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
-    user_message = msg_text
-    
-    # Si NO hay texto, verificar si es audio
-    if not user_message:
-        audio_info = msg_obj.get("audioMessage") or msg_obj.get("pttMessage") or {}
-        
-        has_audio = bool(audio_info and (
-            audio_info.get("url") or 
-            audio_info.get("directPath") or 
-            audio_info.get("mediaKey")
-        ))
-        
-        if has_audio:
-            logger.info(f"🎤 Audio detectado, procesando...")
-            
-            # Transcribir directamente (sin avisar al usuario)
-            user_message = await _handle_audio_transcription(msg_id, remote_jid)
-            
-            if not user_message:
-                # Si falló la transcripción, avisar SIN emojis
-                await send_evolution_message(
-                    remote_jid, 
-                    "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
-                )
-                return
-            
-            logger.info(f"✅ Transcripción exitosa, procesando como texto...")
-
-    if not user_message:
-        return
-
-    # === COMANDOS DEL CLIENTE ===
-    if user_message.lower() == "/silencio":
-        bot_state.silenced_users[remote_jid] = True
-        await send_evolution_message(remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
-
-        if settings.OWNER_PHONE:
-            clean_client = remote_jid.split("@")[0]
-            alerta = (
-                "*HANDOFF ACTIVADO*\n\n"
-                f"El chat con wa.me/{clean_client} ha sido pausado.\n"
-                "El bot NO responderá hasta que el cliente envíe '/activar'."
-            )
-            await send_evolution_message(settings.OWNER_PHONE, alerta)
-        return
-
-    if user_message.lower() == "/activar":
-        bot_state.silenced_users.pop(remote_jid, None)
-        await send_evolution_message(remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
-        return
-
-    # Refrescar inventario
-    _ensure_inventory_loaded()
-
-    store = bot_state.store
-    if not store:
-        logger.error("❌ MemoryStore no inicializado.")
-        return
-
-    session = store.get(remote_jid) or {"state": "start", "context": {}}
-    state = session.get("state", "start")
-    context = session.get("context", {}) or {}
-
-    # Delay humano aleatorio (5-10 segundos)
-    await human_typing_delay()
-
-    try:
-        result = await run_in_threadpool(handle_message, user_message, bot_state.inventory, state, context)
-    except Exception as e:
-        logger.error(f"❌ Error IA: {e}")
-        result = {
-            "reply": "Dame un momento...",
-            "new_state": state,
+    if state == "silent":
+        return {
+            "reply": "",
+            "new_state": "silent",
             "context": context,
             "media_urls": [],
-            "lead_info": None
+            "lead_info": None,
         }
 
-    reply_text = (result.get("reply") or "").strip()
-    media_urls = result.get("media_urls") or []
-    lead_info = result.get("lead_info")
+    # Persistent context
+    saved_name = (context.get("user_name") or "").strip()
+    last_interest = (context.get("last_interest") or "").strip()
+    last_appointment = (context.get("last_appointment") or "").strip()
+    last_payment = (context.get("last_payment") or "").strip()
+
+    # Extract from user input
+    extracted_name = _extract_name_from_text(user_message)
+    if extracted_name:
+        saved_name = extracted_name
+
+    extracted_payment = _extract_payment_from_text(user_message)
+    if extracted_payment:
+        last_payment = extracted_payment
+
+    extracted_appt = _extract_appointment_from_text(user_message)
+    if extracted_appt:
+        last_appointment = extracted_appt
+
+    # Time
+    _, current_time_str = get_mexico_time()
+
+    formatted_system_prompt = SYSTEM_PROMPT.format(
+        current_time_str=current_time_str,
+        user_name_context=saved_name if saved_name else "(Aún no dice su nombre)",
+    )
+
+    inventory_text = _build_inventory_text(inventory_service)
+
+    context_block = (
+        f"MOMENTO ACTUAL: {current_time_str}\n"
+        f"CLIENTE DETECTADO: {saved_name or '(Desconocido)'}\n"
+        f"INTERÉS DETECTADO: {last_interest or '(Sin modelo)'}\n"
+        f"CITA DETECTADA: {last_appointment or '(Sin cita)'}\n"
+        f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
+        f"INVENTARIO DISPONIBLE:\n{inventory_text}\n\n"
+        f"HISTORIAL DE CHAT:\n{history[-3000:]}"
+    )
+
+    messages = [
+        {"role": "system", "content": formatted_system_prompt},
+        {"role": "user", "content": context_block},
+        {"role": "user", "content": user_message},
+    ]
+
+    lead_info: Optional[Dict[str, Any]] = None
+    reply_clean = "Hubo un error técnico."
 
     try:
-        store.upsert(
-            remote_jid,
-            str(result.get("new_state", state)),
-            dict(result.get("context", context)),
+        resp = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=350,
         )
+        raw_reply = resp.choices[0].message.content or ""
+        reply_clean = raw_reply
+
+        # Update interest using user+bot text
+        inferred_interest = _extract_interest_from_messages(user_message, raw_reply, inventory_service)
+        if inferred_interest:
+            last_interest = inferred_interest
+
+        # Extract optional JSON from the model (inside ```json ... ```)
+        json_match = re.search(r"```json\s*({.*?})\s*```", raw_reply, flags=re.DOTALL | re.IGNORECASE)
+        if json_match:
+            try:
+                payload = json.loads(json_match.group(1))
+                candidate = payload.get("lead_event") if isinstance(payload, dict) else None
+
+                if isinstance(candidate, dict):
+                    # Inject what we already know
+                    if not str(candidate.get("nombre", "")).strip() and saved_name:
+                        candidate["nombre"] = saved_name
+                    if not str(candidate.get("interes", "")).strip() and last_interest:
+                        candidate["interes"] = last_interest
+                    if not str(candidate.get("cita", "")).strip() and last_appointment:
+                        candidate["cita"] = last_appointment
+                    if not str(candidate.get("pago", "")).strip() and last_payment:
+                        candidate["pago"] = last_payment
+
+                    if _lead_is_valid(candidate):
+                        lead_info = candidate
+                    else:
+                        logger.warning(f"Lead JSON discarded (incomplete): {candidate}")
+
+                # Hide JSON from user-facing message
+                reply_clean = raw_reply.replace(json_match.group(0), "").strip()
+            except Exception:
+                reply_clean = raw_reply.replace(json_match.group(0), "").strip()
+
     except Exception as e:
-        logger.error(f"⚠️ Error guardando memoria: {e}")
+        logger.error(f"OpenAI error: {e}")
+        reply_clean = "Dame un momento, estoy consultando sistema..."
 
-    await send_evolution_message(remote_jid, reply_text, media_urls)
+    # Clean prefixes
+    reply_clean = re.sub(
+        r"^(Adrian|Asesor|Bot)\s*:\s*",
+        "",
+        reply_clean.strip(),
+        flags=re.IGNORECASE,
+    ).strip()
 
-    if lead_info:
-        try:
-            lead_key = f"{remote_jid}|{msg_id}|lead"
-            if lead_key in bot_state.processed_lead_ids:
-                logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
-                return
-            bot_state.processed_lead_ids.append(lead_key)
-
-            lead_info["telefono"] = remote_jid.split("@")[0]
-            lead_info["external_id"] = msg_id
-
-            logger.info(f"🚀 LEAD DETECTADO: {lead_info.get('nombre')} - {lead_info.get('interes')}")
-            await monday_service.create_lead(lead_info)
-
-            await notify_owner(remote_jid, user_message, reply_text, is_lead=True)
-        except Exception as e:
-            logger.error(f"❌ Error enviando LEAD a Monday: {e}")
-    else:
-        await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
-
-
-# === 12. ENDPOINTS ===
-@app.get("/health")
-async def health():
-    """Endpoint de salud con métricas del sistema."""
-    return {
-        "status": "ok",
-        "instance": settings.EVO_INSTANCE,
-        "inventory_count": len(getattr(bot_state.inventory, "items", []) or []),
-        "silenced_chats": len(bot_state.silenced_users),
-        "processed_msgs_cache": len(bot_state.processed_message_ids),
-        "processed_leads_cache": len(bot_state.processed_lead_ids),
-        "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
-        "team_numbers_count": len(TEAM_NUMBERS_LIST),
-        "auto_reactivate_minutes": AUTO_REACTIVATE_MINUTES,
+    # 🔥 CAMBIO CLAVE: Construir new_context ANTES de llamar a _pick_media_urls
+    new_context: Dict[str, Any] = {
+        "history": (history + f"\nC: {user_message}\nA: {reply_clean}").strip()[-4000:],
+        "user_name": saved_name,
+        "last_interest": last_interest,
+        "last_appointment": last_appointment,
+        "last_payment": last_payment,
+        # Mantener valores previos de fotos si existen
+        "photo_model": context.get("photo_model"),
+        "photo_index": context.get("photo_index", 0),
     }
 
+    # Pasamos new_context (la función lo modificará)
+    media_urls = _pick_media_urls(user_message, reply_clean, inventory_service, new_context)
+    reply_clean = _sanitize_reply_if_photos_attached(reply_clean, media_urls)
 
-async def _background_process_events(events: List[Dict[str, Any]]):
-    """Procesa eventos en background para ACK inmediato al webhook."""
-    for event in events:
-        try:
-            await process_single_event(event)
-        except Exception as e:
-            logger.error(f"❌ Error procesando evento en background: {e}")
+    # ============================================================
+    # MONDAY FAILSAFE (KEY FIX)
+    # ============================================================
+    if lead_info is None:
+        candidate = {
+            "nombre": saved_name,
+            "interes": last_interest,
+            "cita": last_appointment,
+            "pago": last_payment or "Por definir",
+        }
+        if _lead_is_valid(candidate):
+            lead_info = candidate
+        else:
+            # If user sends a short confirmation after appointment negotiation,
+            # retry with stored appointment info.
+            if _message_confirms_appointment(user_message) and saved_name and last_interest and last_appointment:
+                if _lead_is_valid(candidate):
+                    lead_info = candidate
 
-
-@app.post("/webhook")
-async def evolution_webhook(request: Request):
-    """
-    Webhook anti-reintentos:
-    - SIEMPRE responde 200 rápido (ACK inmediato)
-    - Procesa en background para que Evolution no reintente
-    """
-    try:
-        body = await request.json()
-    except Exception as e:
-        logger.error(f"❌ webhook: JSON inválido: {e}")
-        return {"status": "ignored", "reason": "invalid_json"}
-
-    # Log del payload (controlado Y SANITIZADO)
-    _safe_log_payload("🧾 WEBHOOK: ", body)
-
-    try:
-        data_payload = body.get("data")
-        if not data_payload:
-            return {"status": "ignored", "reason": "no_data"}
-
-        events = data_payload if isinstance(data_payload, list) else [data_payload]
-
-        # ACK inmediato: dispara background y regresa
-        asyncio.create_task(_background_process_events(events))
-        return {"status": "accepted"}
-
-    except Exception as e:
-        logger.error(f"❌ webhook ERROR GENERAL: {e}")
-        return {"status": "error_but_acked"}
+    return {
+        "reply": reply_clean,
+        "new_state": "chatting",
+        "context": new_context,  # ← Usa el contexto actualizado
+        "media_urls": media_urls,
+        "lead_info": lead_info,
+    }
