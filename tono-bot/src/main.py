@@ -134,7 +134,7 @@ async def lifespan(app: FastAPI):
     )
 
     try:
-        bot_state.inventory.load(force=True)
+        await bot_state.inventory.load(force=True)
         count = len(getattr(bot_state.inventory, "items", []) or [])
         logger.info(f"✅ Inventario cargado: {count} items.")
     except Exception as e:
@@ -196,7 +196,7 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
     return "", False
 
 
-def _ensure_inventory_loaded() -> None:
+async def _ensure_inventory_loaded() -> None:
     """
     Compatibilidad con distintas versiones de InventoryService.
     """
@@ -205,9 +205,9 @@ def _ensure_inventory_loaded() -> None:
         return
     try:
         if hasattr(inv, "ensure_loaded"):
-            inv.ensure_loaded()
+            await inv.ensure_loaded()
         else:
-            inv.load(force=False)
+            await inv.load(force=False)
     except Exception as e:
         logger.error(f"⚠️ No se pudo refrescar inventario: {e}")
 
@@ -645,7 +645,7 @@ async def process_single_event(data: Dict[str, Any]):
         return
 
     # Refrescar inventario
-    _ensure_inventory_loaded()
+    await _ensure_inventory_loaded()
 
     store = bot_state.store
     if not store:
