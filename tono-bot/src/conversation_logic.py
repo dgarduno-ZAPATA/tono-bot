@@ -53,10 +53,13 @@ DATOS CLAVE:
 
 REGLAS OBLIGATORIAS:
 1) BIENVENIDA Y NOMBRE:
-- Si es el PRIMER mensaje y sabes qué vehículo le interesa, di:
+- SOLO di "Hola" en tu PRIMER mensaje de toda la conversación (turno 1).
+- Si es turno 1 y sabes qué vehículo le interesa, di:
   "Hola, veo que te interesa la [Modelo]. Soy Adrian Jimenez, ¿con quién tengo el gusto?".
-- Si el cliente solo dice "Hola" o no sabes su interés, saluda y ofrece ayuda SIN pedir el nombre aún.
-- Si ya tienes el nombre ({user_name_context}), úsalo para personalizar ("Hola Juan...").
+- Si es turno 1 y el cliente solo dice "Hola" o no sabes su interés, saluda y ofrece ayuda SIN pedir el nombre aún.
+- A PARTIR DEL TURNO 2: NUNCA empieces con "Hola", "Hola de nuevo", ni ningún saludo. Ve directo al punto.
+- Si ya tienes el nombre ({user_name_context}), úsalo naturalmente (ej. "Alex, te comento que...") SIN anteponer "Hola".
+- TURNO ACTUAL: {turn_number}
 
 2) TU NOMBRE vs SU NOMBRE (FLUIDEZ):
 - Si el cliente pregunta "¿Cómo te llamas?", responde primero: "Soy Adrian..."
@@ -108,7 +111,7 @@ REGLAS OBLIGATORIAS:
 - Ejemplos correctos: "Claro, aquí tienes." / "Perfecto." / "Excelente."
 - Ejemplos INCORRECTOS: "Claro! 😊" / "Perfecto 👍" / "Excelente! 🚛"
 
-NO REPETIR: No repitas saludos ni direcciones si ya las diste hace poco. Nunca presiones, interrogues ni repitas la misma pregunta innecesariamente.
+NO REPETIR: PROHIBIDO repetir "Hola" o cualquier saludo si ya lo dijiste en el historial. No repitas direcciones si ya las diste. Nunca presiones, interrogues ni repitas la misma pregunta innecesariamente.
 INVENTARIO: Vende solo lo que ves en la lista.
 MODO GPS: Si piden ubicación, dales la dirección exacta y una referencia visual (sin fotos).
 ASUNCIÓN: Asume siempre que es una mensaje entrante.
@@ -576,6 +579,10 @@ async def handle_message(
     last_interest = (context.get("last_interest") or "").strip()
     last_appointment = (context.get("last_appointment") or "").strip()
     last_payment = (context.get("last_payment") or "").strip()
+    try:
+        turn_count = int(context.get("turn_count", 0)) + 1
+    except (ValueError, TypeError):
+        turn_count = 1
 
     # Extract from user input
     extracted_name = _extract_name_from_text(user_message)
@@ -596,11 +603,13 @@ async def handle_message(
     formatted_system_prompt = SYSTEM_PROMPT.format(
         current_time_str=current_time_str,
         user_name_context=saved_name if saved_name else "(Aún no dice su nombre)",
+        turn_number=turn_count,
     )
 
     inventory_text = _build_inventory_text(inventory_service)
 
     context_block = (
+        f"TURNO: {turn_count} {'(PRIMER MENSAJE - puedes saludar)' if turn_count == 1 else '(NO saludes, ve directo al punto)'}\n"
         f"MOMENTO ACTUAL: {current_time_str}\n"
         f"CLIENTE DETECTADO: {saved_name or '(Desconocido)'}\n"
         f"INTERÉS DETECTADO: {last_interest or '(Sin modelo)'}\n"
@@ -702,6 +711,7 @@ async def handle_message(
         "last_interest": last_interest,
         "last_appointment": last_appointment,
         "last_payment": last_payment,
+        "turn_count": turn_count,
         # Mantener valores previos de fotos si existen
         "photo_model": context.get("photo_model"),
         "photo_index": context.get("photo_index", 0),
