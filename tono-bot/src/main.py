@@ -645,9 +645,11 @@ async def process_admin_command(sender_phone: str, sender_jid: str, command_text
 
 
 # === 11. PROCESADOR CENTRAL (CON TODAS LAS MEJORAS) ===
-async def process_single_event(data: Dict[str, Any]):
+async def process_single_event(webhook_body: Dict[str, Any]):
+    # El webhook_body ES el body completo: {"event": "...", "data": {...}}
+    event_type = webhook_body.get("event", "")
+    
     # 🆕 FILTRO 1: Eventos de sistema (ignorar para optimizar)
-    event_type = data.get("event", "")
     if _is_system_event(event_type):
         logger.debug(f"⏭️ Evento de sistema ignorado: {event_type}")
         return
@@ -657,13 +659,16 @@ async def process_single_event(data: Dict[str, Any]):
         logger.debug(f"⏭️ Evento ignorado (no es messages.upsert): {event_type}")
         return
     
-    # 🆕 CORRECCIÓN CRÍTICA: Normalizar JID (resuelve problema @lid)
-    # El webhook viene con la estructura: {event: "...", data: {...}}
-    # Así que data ya ES el contenido del webhook completo
-    data_content = data.get("data", {})
-    sender_phone, canonical_jid = _get_canonical_jid(data_content)
+    # Extraer el contenido del mensaje
+    data = webhook_body.get("data", {})
+    if not data:
+        logger.debug("⏭️ Webhook sin data, ignorando")
+        return
     
-    key = data_content.get("key", {}) or {}
+    # 🆕 CORRECCIÓN CRÍTICA: Normalizar JID (resuelve problema @lid)
+    sender_phone, canonical_jid = _get_canonical_jid(data)
+    
+    key = data.get("key", {}) or {}
     from_me = key.get("fromMe", False)
     msg_id = (key.get("id", "") or "").strip()
     
@@ -696,7 +701,7 @@ async def process_single_event(data: Dict[str, Any]):
         bot_state.processed_message_ids.append(msg_id)
 
     # === 🆕 CAPA 2: COMANDOS ADMINISTRATIVOS (ANTES DEL HANDOFF) ===
-    msg_obj = data_content.get("message", {}) or {}
+    msg_obj = data.get("message", {}) or {}
     msg_text = _extract_user_message(msg_obj).strip()
     
     # Si el mensaje viene de un número del equipo y es comando
@@ -898,9 +903,9 @@ async def health():
 
 async def _background_process_events(events: List[Dict[str, Any]]):
     """Procesa eventos en background para ACK inmediato al webhook."""
-    for event in events:
+    for webhook_body in events:
         try:
-            await process_single_event(event)
+            await process_single_event(webhook_body)
         except Exception as e:
             logger.error(f"❌ Error procesando evento en background: {e}")
 
