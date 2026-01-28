@@ -139,6 +139,75 @@ def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
     return default
 
 
+def _format_price(precio: str, moneda: str, iva: str) -> str:
+    """Precio limpio: '$499,000 MXN + IVA incluido'."""
+    try:
+        num = float(precio.replace(",", "").replace(" ", ""))
+        formatted = f"${num:,.0f}"
+    except (ValueError, AttributeError):
+        formatted = f"${precio}" if precio else "Consultar"
+    cur = moneda if moneda else "MXN"
+    iva_txt = " + IVA incluido" if iva and iva.upper() == "TRUE" else ""
+    return f"{formatted} {cur}{iva_txt}"
+
+
+def _summarize_motor(raw: str) -> str:
+    """Extrae lo útil del bloque MOTOR y lo resume en una frase."""
+    if not raw:
+        return ""
+    lines = [l.strip() for l in raw.replace("\r", "").split("\n") if l.strip()]
+    parts = {}
+    for line in lines:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            parts[k.strip().lower()] = v.strip()
+        else:
+            parts.setdefault("extra", line)
+
+    brand = parts.get("marca", "")
+    cil = parts.get("cilindrada", "")
+    potencia = parts.get("potencia", "")
+
+    pieces = []
+    if brand:
+        pieces.append(brand)
+    if cil:
+        pieces.append(cil)
+    if potencia:
+        pieces.append(potencia)
+    return ", ".join(pieces) if pieces else raw.split("\n")[0][:80]
+
+
+def _summarize_capacity(raw: str) -> str:
+    """'Carga maxima: 900 kg' → '900 kg'. 'Carga sobre chasis 3,700 kg' → '3.7 ton'."""
+    if not raw:
+        return ""
+    m = re.search(r"([\d,\.]+)\s*kg", raw, re.IGNORECASE)
+    if m:
+        try:
+            kg = float(m.group(1).replace(",", ""))
+            if kg >= 1000:
+                return f"{kg/1000:.1f} toneladas"
+            return f"{kg:.0f} kg"
+        except ValueError:
+            pass
+    if "tonelada" in raw.lower():
+        return raw.strip()
+    return raw.split("\n")[0].strip()[:60]
+
+
+def _normalize_fuel(raw: str) -> str:
+    """Normaliza combustible a 'Gasolina' o 'Diésel'."""
+    if not raw:
+        return ""
+    low = raw.lower()
+    if "diesel" in low or "diésel" in low:
+        return "Diésel"
+    if "gasolina" in low:
+        return "Gasolina"
+    return raw.strip()[:30]
+
+
 def _build_inventory_text(inventory_service) -> str:
     items = getattr(inventory_service, "items", None) or []
     if not items:
@@ -146,16 +215,60 @@ def _build_inventory_text(inventory_service) -> str:
 
     lines: List[str] = []
     for item in items:
-        marca = _safe_get(item, ["Marca", "marca"], default="(sin marca)")
+        marca = _safe_get(item, ["Marca", "marca"], default="Foton")
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"], default="(sin modelo)")
         anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
+        color = _safe_get(item, ["Color", "color"], default="")
+        segmento = _safe_get(item, ["segmento", "descripcion_corta"], default="")
         precio = _safe_get(item, ["Precio", "precio"], default="N/D")
-        status = _safe_get(item, ["status", "disponible"], default="Disponible")
-        desc = _safe_get(item, ["descripcion_corta", "segmento"], default="")
+        moneda = _safe_get(item, ["moneda"], default="MXN")
+        iva = _safe_get(item, ["iva_incluido"], default="")
+        combustible = _normalize_fuel(_safe_get(item, ["COMBUSTIBLE", "combustible"]))
+        motor_raw = _safe_get(item, ["MOTOR", "motor"])
+        motor = _summarize_motor(motor_raw)
+        capacidad = _summarize_capacity(_safe_get(item, ["CAPACIDAD DE CARGA"]))
+        llantas = _safe_get(item, ["LLANTAS"], default="")
+        garantia = _safe_get(item, ["garantia_texto"], default="")
+        ubicacion = _safe_get(item, ["ubicacion"], default="")
+        financiamiento = _safe_get(item, ["Financiamiento"], default="")
 
-        info = f"- {marca} {modelo} {anio}: ${precio} ({status})".strip()
-        if desc:
-            info += f" [{desc}]"
+        # Línea principal: Modelo + Precio
+        price_str = _format_price(precio, moneda, iva)
+        info = f"- {marca} {modelo} {anio}"
+        if color:
+            info += f" ({color})"
+        info += f": {price_str}"
+        if segmento:
+            info += f" [{segmento}]"
+
+        # Specs resumidas (solo lo útil para vender)
+        specs = []
+        if combustible:
+            specs.append(combustible)
+        if motor:
+            specs.append(f"Motor: {motor}")
+        if capacidad:
+            specs.append(f"Carga: {capacidad}")
+        if llantas:
+            # Extraer solo la medida, sin repetir combustible
+            llanta_clean = llantas.split("/")[0].strip() + "/" + llantas.split("/")[1].strip() if "/" in llantas else llantas
+            m_llanta = re.search(r"\d{3}/\d{2,3}", llantas)
+            if m_llanta:
+                specs.append(f"Llantas: {m_llanta.group()}")
+        if specs:
+            info += " | " + ", ".join(specs)
+
+        # Datos comerciales (una línea, sin ruido)
+        extras = []
+        if garantia:
+            extras.append(f"Garantía: {garantia}")
+        if financiamiento and financiamiento.upper() not in ("FALSE", "NO", "0", ""):
+            extras.append("Crédito disponible")
+        if ubicacion:
+            extras.append(f"Ubic: {ubicacion}")
+        if extras:
+            info += " | " + ", ".join(extras)
+
         lines.append(info)
 
     return "\n".join(lines)
