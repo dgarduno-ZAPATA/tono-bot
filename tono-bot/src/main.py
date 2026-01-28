@@ -67,8 +67,15 @@ try:
 except Exception as e:
     logger.warning(f"⚠️ No se pudieron cargar TEAM_NUMBERS: {e}")
 
-AUTO_REACTIVATE_MINUTES = int(os.getenv("AUTO_REACTIVATE_MINUTES", "60"))
-HUMAN_DETECTION_WINDOW_SECONDS = int(os.getenv("HUMAN_DETECTION_WINDOW_SECONDS", "3"))
+try:
+    AUTO_REACTIVATE_MINUTES = int(os.getenv("AUTO_REACTIVATE_MINUTES", "60"))
+except ValueError:
+    AUTO_REACTIVATE_MINUTES = 60
+
+try:
+    HUMAN_DETECTION_WINDOW_SECONDS = int(os.getenv("HUMAN_DETECTION_WINDOW_SECONDS", "3"))
+except ValueError:
+    HUMAN_DETECTION_WINDOW_SECONDS = 3
 
 
 # === 2. ESTADO GLOBAL EN RAM ===
