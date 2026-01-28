@@ -8,12 +8,11 @@ import time
 import re
 import base64
 from contextlib import asynccontextmanager
-from collections import deque
+from collections import deque, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.concurrency import run_in_threadpool
 from pydantic_settings import BaseSettings
 
 # === IMPORTACIONES PROPIAS ===
@@ -69,21 +68,42 @@ if TEAM_NUMBERS_LIST:
 
 
 # === 2. ESTADO GLOBAL EN RAM ===
+class BoundedOrderedSet:
+    """Set con O(1) lookup y evicción FIFO al llegar al límite."""
+
+    def __init__(self, maxlen: int):
+        self._data: OrderedDict = OrderedDict()
+        self._maxlen = maxlen
+
+    def add(self, key):
+        if key in self._data:
+            return
+        if len(self._data) >= self._maxlen:
+            self._data.popitem(last=False)
+        self._data[key] = None
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __len__(self):
+        return len(self._data)
+
+
 class GlobalState:
     def __init__(self):
         self.http_client: Optional[httpx.AsyncClient] = None
         self.inventory: Optional[InventoryService] = None
         self.store: Optional[MemoryStore] = None
 
-        # dedupe RAM (si llegan 2 eventos iguales rápido)
-        self.processed_message_ids = deque(maxlen=4000)
-        self.processed_lead_ids = deque(maxlen=8000)
+        # dedupe RAM (O(1) lookup con evicción FIFO)
+        self.processed_message_ids = BoundedOrderedSet(maxlen=4000)
+        self.processed_lead_ids = BoundedOrderedSet(maxlen=8000)
 
         # Silencios (ahora soporta timestamp o bool)
         self.silenced_users: Dict[str, Any] = {}
         
         # 🆕 HANDOFF: Rastreo de mensajes del bot
-        self.bot_sent_message_ids = deque(maxlen=2000)
+        self.bot_sent_message_ids = BoundedOrderedSet(maxlen=2000)
         self.bot_sent_texts: Dict[str, deque] = {}
         self.last_bot_message_time: Dict[str, float] = {}
 
@@ -114,7 +134,7 @@ async def lifespan(app: FastAPI):
     )
 
     try:
-        bot_state.inventory.load(force=True)
+        await bot_state.inventory.load(force=True)
         count = len(getattr(bot_state.inventory, "items", []) or [])
         logger.info(f"✅ Inventario cargado: {count} items.")
     except Exception as e:
@@ -176,7 +196,7 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
     return "", False
 
 
-def _ensure_inventory_loaded() -> None:
+async def _ensure_inventory_loaded() -> None:
     """
     Compatibilidad con distintas versiones de InventoryService.
     """
@@ -185,9 +205,9 @@ def _ensure_inventory_loaded() -> None:
         return
     try:
         if hasattr(inv, "ensure_loaded"):
-            inv.ensure_loaded()
+            await inv.ensure_loaded()
         else:
-            inv.load(force=False)
+            await inv.load(force=False)
     except Exception as e:
         logger.error(f"⚠️ No se pudo refrescar inventario: {e}")
 
@@ -212,6 +232,21 @@ def _safe_log_payload(prefix: str, obj: Any) -> None:
         logger.info(f"{prefix}{raw}")
     except Exception as e:
         logger.warning(f"⚠️ No se pudo loggear payload: {e}")
+
+
+async def _evo_post(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:
+    """POST a Evolution API con retry automático en 429 (rate limit)."""
+    _MAX_RETRIES = 3
+    for _attempt in range(_MAX_RETRIES):
+        response = await client.post(url, **kwargs)
+        if response.status_code == 429 and _attempt < _MAX_RETRIES - 1:
+            retry_after = response.headers.get("retry-after")
+            backoff = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** (_attempt + 1)
+            logger.warning(f"⚠️ Evolution 429 retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s")
+            await asyncio.sleep(backoff)
+            continue
+        return response
+    return response
 
 
 # === 5. 🆕 DETECCIÓN DE MENSAJES HUMANOS ===
@@ -317,8 +352,8 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
             "convertToMp4": False
         }
 
-        response = await client.post(media_url, json=payload)
-        
+        response = await _evo_post(client, media_url, json=payload)
+
         if response.status_code not in [200, 201]:
             logger.error(f"❌ Error descargando desde Evolution: {response.status_code}")
             return ""
@@ -343,15 +378,13 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
 
         try:
             from src.conversation_logic import client as openai_client
-            
+
             with open(temp_path, "rb") as audio_file:
-                transcript = await run_in_threadpool(
-                    lambda: openai_client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=audio_file,
-                        language="es",
-                        response_format="text"
-                    )
+                transcript = await openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="es",
+                    response_format="text"
                 )
             
             if isinstance(transcript, str):
@@ -420,8 +453,8 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                 if i > 0:
                     await asyncio.sleep(0.5)
 
-                response = await client.post(url, json=payload)
-                
+                response = await _evo_post(client, url, json=payload)
+
                 if response.status_code >= 400:
                     logger.error(f"⚠️ Error foto {i+1}: {response.text}")
                 else:
@@ -431,15 +464,15 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                         resp_data = response.json()
                         msg_id = resp_data.get("key", {}).get("id")
                         if msg_id:
-                            bot_state.bot_sent_message_ids.append(msg_id)
+                            bot_state.bot_sent_message_ids.add(msg_id)
                     except Exception:
                         pass
 
         else:
             url = f"/message/sendText/{settings.EVO_INSTANCE}"
             payload = {"number": clean_number, "text": text}
-            response = await client.post(url, json=payload)
-            
+            response = await _evo_post(client, url, json=payload)
+
             if response.status_code >= 400:
                 logger.error(f"⚠️ Error Evolution API ({response.status_code}): {response.text}")
             else:
@@ -451,7 +484,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                     resp_data = response.json()
                     msg_id = resp_data.get("key", {}).get("id")
                     if msg_id:
-                        bot_state.bot_sent_message_ids.append(msg_id)
+                        bot_state.bot_sent_message_ids.add(msg_id)
                         logger.debug(f"📤 Rastreando msg_id: {msg_id[:20]}...")
                 except Exception:
                     pass
@@ -524,7 +557,7 @@ async def process_single_event(data: Dict[str, Any]):
         return
     
     if msg_id:
-        bot_state.processed_message_ids.append(msg_id)
+        bot_state.processed_message_ids.add(msg_id)
 
     # === DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
     if from_me:
@@ -612,7 +645,7 @@ async def process_single_event(data: Dict[str, Any]):
         return
 
     # Refrescar inventario
-    _ensure_inventory_loaded()
+    await _ensure_inventory_loaded()
 
     store = bot_state.store
     if not store:
@@ -627,7 +660,7 @@ async def process_single_event(data: Dict[str, Any]):
     await human_typing_delay()
 
     try:
-        result = await run_in_threadpool(handle_message, user_message, bot_state.inventory, state, context)
+        result = await handle_message(user_message, bot_state.inventory, state, context)
     except Exception as e:
         logger.error(f"❌ Error IA: {e}")
         result = {
@@ -659,7 +692,7 @@ async def process_single_event(data: Dict[str, Any]):
             if lead_key in bot_state.processed_lead_ids:
                 logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
                 return
-            bot_state.processed_lead_ids.append(lead_key)
+            bot_state.processed_lead_ids.add(lead_key)
 
             lead_info["telefono"] = remote_jid.split("@")[0]
             lead_info["external_id"] = msg_id

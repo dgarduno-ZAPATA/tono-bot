@@ -1,7 +1,7 @@
 import csv
 import os
 import time
-import requests
+import httpx
 from io import StringIO
 
 def _clean_price(value):
@@ -23,7 +23,7 @@ class InventoryService:
         self.items = []
         self._last_load_ts = 0
 
-    def load(self, force: bool = False):
+    async def load(self, force: bool = False):
         now = time.time()
         if not force and self.items and (now - self._last_load_ts) < self.refresh_seconds:
             return
@@ -31,7 +31,8 @@ class InventoryService:
         rows = []
         if self.sheet_csv_url:
             url = (self.sheet_csv_url or "").strip()
-            r = requests.get(url, timeout=20)
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                r = await client.get(url)
             r.raise_for_status()
             content = r.text
 
@@ -67,6 +68,6 @@ class InventoryService:
         self.items = normalized
         self._last_load_ts = now
 
-    def ensure_loaded(self):
-        self.load(force=False)
+    async def ensure_loaded(self):
+        await self.load(force=False)
 
