@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI):
     # C) Memoria
     bot_state.store = MemoryStore()
     try:
-        bot_state.store.init()
+        await bot_state.store.init()
         logger.info("✅ MemoryStore inicializado.")
     except Exception as e:
         logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
@@ -152,6 +152,8 @@ async def lifespan(app: FastAPI):
 
     # D) Limpieza
     logger.info("🛑 Deteniendo aplicación...")
+    if bot_state.store:
+        await bot_state.store.close()
     if bot_state.http_client:
         await bot_state.http_client.aclose()
     logger.info("👋 Recursos liberados.")
@@ -652,7 +654,7 @@ async def process_single_event(data: Dict[str, Any]):
         logger.error("❌ MemoryStore no inicializado.")
         return
 
-    session = store.get(remote_jid) or {"state": "start", "context": {}}
+    session = await store.get(remote_jid) or {"state": "start", "context": {}}
     state = session.get("state", "start")
     context = session.get("context", {}) or {}
 
@@ -676,7 +678,7 @@ async def process_single_event(data: Dict[str, Any]):
     lead_info = result.get("lead_info")
 
     try:
-        store.upsert(
+        await store.upsert(
             remote_jid,
             str(result.get("new_state", state)),
             dict(result.get("context", context)),
