@@ -31,7 +31,7 @@ class InventoryService:
         rows = []
         if self.sheet_csv_url:
             url = (self.sheet_csv_url or "").strip()
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
                 r = await client.get(url)
             r.raise_for_status()
             content = r.text
