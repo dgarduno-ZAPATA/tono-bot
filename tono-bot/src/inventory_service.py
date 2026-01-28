@@ -60,8 +60,22 @@ class InventoryService:
                 "Marca": row.get("Marca", "Foton"),
                 "Modelo": row.get("Modelo", ""),
                 "Año": row.get("Año", row.get("Anio", "")),
+                "Color": row.get("Color", ""),
+                "segmento": row.get("segmento", ""),
                 "Precio": _clean_price(row.get("Precio", row.get("Precio Distribuidor", row.get(" Precio Distribuidor", "")))),
+                "moneda": row.get("moneda", ""),
+                "iva_incluido": row.get("iva_incluido", ""),
+                "garantia_texto": row.get("garantia_texto", ""),
+                "ubicacion": row.get("ubicacion", ""),
+                "descripcion_corta": row.get("descripcion_corta", ""),
+                "Financiamiento": row.get("Financiamiento", ""),
+                "Tipo de financiamiento": row.get("Tipo de financiamiento", ""),
+                "Banco": row.get("Banco", ""),
                 "photos": row.get("photos", ""),
+                "CAPACIDAD DE CARGA": row.get("CAPACIDAD DE CARGA", ""),
+                "LLANTAS": row.get("LLANTAS", ""),
+                "COMBUSTIBLE": row.get("COMBUSTIBLE", ""),
+                "MOTOR": row.get("MOTOR", ""),
             }
             normalized.append(item)
 

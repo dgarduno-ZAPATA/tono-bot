@@ -149,13 +149,57 @@ def _build_inventory_text(inventory_service) -> str:
         marca = _safe_get(item, ["Marca", "marca"], default="(sin marca)")
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"], default="(sin modelo)")
         anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
+        color = _safe_get(item, ["Color", "color"], default="")
         precio = _safe_get(item, ["Precio", "precio"], default="N/D")
-        status = _safe_get(item, ["status", "disponible"], default="Disponible")
+        moneda = _safe_get(item, ["moneda"], default="MXN")
+        iva = _safe_get(item, ["iva_incluido"], default="")
         desc = _safe_get(item, ["descripcion_corta", "segmento"], default="")
+        capacidad = _safe_get(item, ["CAPACIDAD DE CARGA"], default="")
+        llantas = _safe_get(item, ["LLANTAS"], default="")
+        combustible = _safe_get(item, ["COMBUSTIBLE", "combustible"], default="")
+        motor = _safe_get(item, ["MOTOR", "motor"], default="")
+        garantia = _safe_get(item, ["garantia_texto"], default="")
+        ubicacion = _safe_get(item, ["ubicacion"], default="")
+        financiamiento = _safe_get(item, ["Financiamiento"], default="")
+        tipo_fin = _safe_get(item, ["Tipo de financiamiento"], default="")
+        banco = _safe_get(item, ["Banco"], default="")
 
-        info = f"- {marca} {modelo} {anio}: ${precio} ({status})".strip()
+        info = f"- {marca} {modelo} {anio}"
+        if color:
+            info += f" {color}"
+        info += f": ${precio} {moneda}"
+        if iva and iva.upper() == "TRUE":
+            info += " (IVA incluido)"
         if desc:
             info += f" [{desc}]"
+
+        # Specs técnicas
+        specs = []
+        if motor:
+            specs.append(f"Motor: {motor}")
+        if combustible:
+            specs.append(f"Combustible: {combustible}")
+        if capacidad:
+            specs.append(f"Carga: {capacidad}")
+        if llantas:
+            specs.append(f"Llantas: {llantas}")
+        if specs:
+            info += " | " + ", ".join(specs)
+
+        # Financiamiento
+        if financiamiento:
+            fin_parts = [financiamiento]
+            if tipo_fin:
+                fin_parts.append(tipo_fin)
+            if banco:
+                fin_parts.append(banco)
+            info += f" | Financiamiento: {' / '.join(fin_parts)}"
+
+        if garantia:
+            info += f" | Garantía: {garantia}"
+        if ubicacion:
+            info += f" | Ubic: {ubicacion}"
+
         lines.append(info)
 
     return "\n".join(lines)
