@@ -108,13 +108,12 @@ class GlobalState:
         self.last_bot_message_time: Dict[str, float] = {}
 
 
-bot_state = GlobalState()
-
-
 # === 3. LIFESPAN (INICIO/CIERRE) ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 Iniciando BotTractos con sistema completo...")
+
+    bot_state = GlobalState()
 
     # A) Cliente HTTP persistente (Evolution)
     bot_state.http_client = httpx.AsyncClient(
@@ -147,6 +146,9 @@ async def lifespan(app: FastAPI):
         logger.info("✅ MemoryStore inicializado.")
     except Exception as e:
         logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
+
+    # Inyectar estado en app para acceso desde endpoints
+    app.state.bot = bot_state
 
     yield
 
@@ -198,7 +200,7 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
     return "", False
 
 
-async def _ensure_inventory_loaded() -> None:
+async def _ensure_inventory_loaded(bot_state: GlobalState) -> None:
     """
     Compatibilidad con distintas versiones de InventoryService.
     """
@@ -284,7 +286,7 @@ def _message_looks_human(text: str) -> bool:
     return False
 
 
-def _is_bot_message(remote_jid: str, msg_id: str, msg_text: str) -> bool:
+def _is_bot_message(bot_state: GlobalState, remote_jid: str, msg_id: str, msg_text: str) -> bool:
     """
     Verifica si un mensaje saliente fue enviado por el bot (multicapa).
     """
@@ -321,7 +323,7 @@ async def human_typing_delay():
 
 
 # === 7. TRANSCRIPCIÓN DE AUDIO ===
-async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
+async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remote_jid: str) -> str:
     """
     Descarga el audio DESENCRIPTADO desde Evolution API y lo transcribe con Whisper.
     """
@@ -419,7 +421,7 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
 
 
 # === 8. ENVÍO DE MENSAJES (CON RASTREO) ===
-async def send_evolution_message(number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
+async def send_evolution_message(bot_state: GlobalState, number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
     media_urls = media_urls or []
     text = (text or "").strip()
 
@@ -504,7 +506,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
 
 
 # === 9. ALERTAS AL DUEÑO ===
-async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
+async def notify_owner(bot_state: GlobalState, user_number_or_jid: str, user_message: str, bot_reply: str, is_lead: bool = False):
     if not settings.OWNER_PHONE:
         return
 
@@ -516,7 +518,7 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
             f"Cliente: wa.me/{clean_client}\n"
             "El bot cerró una cita. Revisa el tablero."
         )
-        await send_evolution_message(settings.OWNER_PHONE, alert_text)
+        await send_evolution_message(bot_state, settings.OWNER_PHONE, alert_text)
         return
 
     keywords = [
@@ -534,11 +536,11 @@ async def notify_owner(user_number_or_jid: str, user_message: str, bot_reply: st
         f"Dijo: \"{user_message}\"\n"
         f"Bot: \"{(bot_reply or '')[:60]}...\""
     )
-    await send_evolution_message(settings.OWNER_PHONE, alert_text)
+    await send_evolution_message(bot_state, settings.OWNER_PHONE, alert_text)
 
 
 # === 10. PROCESADOR CENTRAL ===
-async def process_single_event(data: Dict[str, Any]):
+async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
     key = data.get("key", {}) or {}
     remote_jid = (key.get("remoteJid", "") or "").strip()
     from_me = key.get("fromMe", False)
@@ -557,7 +559,7 @@ async def process_single_event(data: Dict[str, Any]):
     if msg_id and msg_id in bot_state.processed_message_ids:
         logger.debug(f"🔁 Mensaje duplicado ignorado: {msg_id}")
         return
-    
+
     if msg_id:
         bot_state.processed_message_ids.add(msg_id)
 
@@ -566,32 +568,32 @@ async def process_single_event(data: Dict[str, Any]):
         msg_obj = data.get("message", {}) or {}
         msg_text, _ = _extract_user_message(msg_obj)
         msg_text = msg_text.strip()
-        
+
         # Verificar si este mensaje fue enviado por el bot
-        if _is_bot_message(remote_jid, msg_id, msg_text):
+        if _is_bot_message(bot_state, remote_jid, msg_id, msg_text):
             logger.debug(f"✓ Confirmado mensaje del bot, ignorando")
             return
-        
+
         # Si NO es del bot → Es un HUMANO respondiendo
         is_human = _message_looks_human(msg_text)
-        
+
         if is_human:
             logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {settings.AUTO_REACTIVATE_MINUTES} min)")
             bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
             return
-        
+
         # Mensajes ambiguos: NO silenciar automáticamente
         if not msg_text:
             logger.debug(f"⏭️ Mensaje saliente vacío/sticker en {remote_jid}, ignorando")
             return
-        
+
         logger.info(f"🤔 Mensaje saliente ambiguo en {remote_jid}, monitoreando")
         return
 
     # === VERIFICAR SI EL BOT ESTÁ SILENCIADO ===
     if remote_jid in bot_state.silenced_users:
         silence_value = bot_state.silenced_users[remote_jid]
-        
+
         if isinstance(silence_value, (int, float)):
             if time.time() < silence_value:
                 mins_left = int((silence_value - time.time()) / 60)
@@ -612,11 +614,11 @@ async def process_single_event(data: Dict[str, Any]):
     # Si NO hay texto y es audio, transcribir
     if not user_message and is_audio:
         logger.info(f"🎤 Audio detectado, procesando...")
-        user_message = await _handle_audio_transcription(msg_id, remote_jid)
+        user_message = await _handle_audio_transcription(bot_state, msg_id, remote_jid)
 
         if not user_message:
             await send_evolution_message(
-                remote_jid,
+                bot_state, remote_jid,
                 "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
             )
             return
@@ -629,7 +631,7 @@ async def process_single_event(data: Dict[str, Any]):
     # === COMANDOS DEL CLIENTE ===
     if user_message.lower() == "/silencio":
         bot_state.silenced_users[remote_jid] = True
-        await send_evolution_message(remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
+        await send_evolution_message(bot_state, remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
 
         if settings.OWNER_PHONE:
             clean_client = remote_jid.split("@")[0]
@@ -638,16 +640,16 @@ async def process_single_event(data: Dict[str, Any]):
                 f"El chat con wa.me/{clean_client} ha sido pausado.\n"
                 "El bot NO responderá hasta que el cliente envíe '/activar'."
             )
-            await send_evolution_message(settings.OWNER_PHONE, alerta)
+            await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
         return
 
     if user_message.lower() == "/activar":
         bot_state.silenced_users.pop(remote_jid, None)
-        await send_evolution_message(remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
+        await send_evolution_message(bot_state, remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
         return
 
     # Refrescar inventario
-    await _ensure_inventory_loaded()
+    await _ensure_inventory_loaded(bot_state)
 
     store = bot_state.store
     if not store:
@@ -686,7 +688,7 @@ async def process_single_event(data: Dict[str, Any]):
     except Exception as e:
         logger.error(f"⚠️ Error guardando memoria: {e}")
 
-    await send_evolution_message(remote_jid, reply_text, media_urls)
+    await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
 
     if lead_info:
         try:
@@ -702,17 +704,18 @@ async def process_single_event(data: Dict[str, Any]):
             logger.info(f"🚀 LEAD DETECTADO: {lead_info.get('nombre')} - {lead_info.get('interes')}")
             await monday_service.create_lead(lead_info)
 
-            await notify_owner(remote_jid, user_message, reply_text, is_lead=True)
+            await notify_owner(bot_state, remote_jid, user_message, reply_text, is_lead=True)
         except Exception as e:
             logger.error(f"❌ Error enviando LEAD a Monday: {e}")
     else:
-        await notify_owner(remote_jid, user_message, reply_text, is_lead=False)
+        await notify_owner(bot_state, remote_jid, user_message, reply_text, is_lead=False)
 
 
 # === 11. ENDPOINTS ===
 @app.get("/health")
-async def health():
+async def health(request: Request):
     """Endpoint de salud con métricas del sistema."""
+    bot_state: GlobalState = request.app.state.bot
     return {
         "status": "ok",
         "instance": settings.EVO_INSTANCE,
@@ -726,11 +729,11 @@ async def health():
     }
 
 
-async def _background_process_events(events: List[Dict[str, Any]]):
+async def _background_process_events(bot_state: GlobalState, events: List[Dict[str, Any]]):
     """Procesa eventos en background para ACK inmediato al webhook."""
     for event in events:
         try:
-            await process_single_event(event)
+            await process_single_event(bot_state, event)
         except Exception as e:
             logger.error(f"❌ Error procesando evento en background: {e}")
 
@@ -759,7 +762,8 @@ async def evolution_webhook(request: Request):
         events = data_payload if isinstance(data_payload, list) else [data_payload]
 
         # ACK inmediato: dispara background y regresa
-        asyncio.create_task(_background_process_events(events))
+        bot_state: GlobalState = request.app.state.bot
+        asyncio.create_task(_background_process_events(bot_state, events))
         return {"status": "accepted"}
 
     except Exception as e:
