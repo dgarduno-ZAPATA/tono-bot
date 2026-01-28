@@ -9,7 +9,7 @@ import re
 import base64
 from contextlib import asynccontextmanager
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, Request
@@ -147,33 +147,33 @@ def _clean_phone_or_jid(value: str) -> str:
     return "".join([c for c in str(value) if c.isdigit()])
 
 
-def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
+def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
     """
     Extrae el texto del mensaje de Evolution.
-    Si es audio, retorna cadena vacía para que process_single_event lo maneje.
+    Retorna (texto, is_audio).
     """
     if not isinstance(msg_obj, dict):
-        return ""
+        return "", False
 
     # 1. Mensaje de texto normal
     if "conversation" in msg_obj:
-        return msg_obj.get("conversation") or ""
+        return msg_obj.get("conversation") or "", False
 
     # 2. Mensaje de texto extendido (reply, etc)
     if "extendedTextMessage" in msg_obj:
         ext = msg_obj.get("extendedTextMessage") or {}
-        return ext.get("text") or ""
+        return ext.get("text") or "", False
 
     # 3. Imagen con caption
     if "imageMessage" in msg_obj:
         img = msg_obj.get("imageMessage") or {}
-        return img.get("caption") or "(Envió una foto)"
+        return img.get("caption") or "(Envió una foto)", False
 
-    # 4. AUDIO/NOTA DE VOZ - Retornamos vacío para señalar que hay audio
+    # 4. AUDIO/NOTA DE VOZ
     if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
-        return ""
+        return "", True
 
-    return ""
+    return "", False
 
 
 def _ensure_inventory_loaded() -> None:
@@ -529,7 +529,8 @@ async def process_single_event(data: Dict[str, Any]):
     # === DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
     if from_me:
         msg_obj = data.get("message", {}) or {}
-        msg_text = _extract_user_message(msg_obj).strip()
+        msg_text, _ = _extract_user_message(msg_obj)
+        msg_text = msg_text.strip()
         
         # Verificar si este mensaje fue enviado por el bot
         if _is_bot_message(remote_jid, msg_id, msg_text):
@@ -570,30 +571,22 @@ async def process_single_event(data: Dict[str, Any]):
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
     msg_obj = data.get("message", {}) or {}
-    user_message = _extract_user_message(msg_obj).strip()
-    
-    # Si NO hay texto, verificar si es audio
-    if not user_message:
-        audio_info = msg_obj.get("audioMessage") or msg_obj.get("pttMessage") or {}
-        
-        has_audio = bool(audio_info and (
-            audio_info.get("url") or 
-            audio_info.get("directPath") or 
-            audio_info.get("mediaKey")
-        ))
-        
-        if has_audio:
-            logger.info(f"🎤 Audio detectado, procesando...")
-            user_message = await _handle_audio_transcription(msg_id, remote_jid)
-            
-            if not user_message:
-                await send_evolution_message(
-                    remote_jid, 
-                    "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
-                )
-                return
-            
-            logger.info(f"✅ Transcripción exitosa, procesando como texto...")
+    user_message, is_audio = _extract_user_message(msg_obj)
+    user_message = user_message.strip()
+
+    # Si NO hay texto y es audio, transcribir
+    if not user_message and is_audio:
+        logger.info(f"🎤 Audio detectado, procesando...")
+        user_message = await _handle_audio_transcription(msg_id, remote_jid)
+
+        if not user_message:
+            await send_evolution_message(
+                remote_jid,
+                "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
+            )
+            return
+
+        logger.info(f"✅ Transcripción exitosa, procesando como texto...")
 
     if not user_message:
         return
