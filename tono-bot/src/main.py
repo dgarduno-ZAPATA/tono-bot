@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.concurrency import run_in_threadpool
 from pydantic_settings import BaseSettings
 
 # === IMPORTACIONES PROPIAS ===
@@ -379,15 +378,13 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
 
         try:
             from src.conversation_logic import client as openai_client
-            
+
             with open(temp_path, "rb") as audio_file:
-                transcript = await run_in_threadpool(
-                    lambda: openai_client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=audio_file,
-                        language="es",
-                        response_format="text"
-                    )
+                transcript = await openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="es",
+                    response_format="text"
                 )
             
             if isinstance(transcript, str):
@@ -663,7 +660,7 @@ async def process_single_event(data: Dict[str, Any]):
     await human_typing_delay()
 
     try:
-        result = await run_in_threadpool(handle_message, user_message, bot_state.inventory, state, context)
+        result = await handle_message(user_message, bot_state.inventory, state, context)
     except Exception as e:
         logger.error(f"❌ Error IA: {e}")
         result = {

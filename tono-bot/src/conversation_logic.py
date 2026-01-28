@@ -2,19 +2,19 @@ import os
 import re
 import json
 import logging
-import time
+import asyncio
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 import pytz
-from openai import OpenAI, APITimeoutError, RateLimitError, APIStatusError
+from openai import AsyncOpenAI, APITimeoutError, RateLimitError, APIStatusError
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
 # CONFIG
 # ============================================================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # ============================================================
@@ -541,7 +541,7 @@ def _lead_is_valid(lead: Dict[str, Any]) -> bool:
 # ============================================================
 # MAIN ENTRY
 # ============================================================
-def handle_message(
+async def handle_message(
     user_message: str,
     inventory_service,
     state: str,
@@ -623,7 +623,7 @@ def handle_message(
         _MAX_RETRIES = 3
         for _attempt in range(_MAX_RETRIES):
             try:
-                resp = client.chat.completions.create(
+                resp = await client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages,
                     temperature=0.3,
@@ -634,14 +634,14 @@ def handle_message(
                 if _attempt < _MAX_RETRIES - 1:
                     backoff = 2 ** (_attempt + 1)
                     logger.warning(f"⚠️ OpenAI retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
-                    time.sleep(backoff)
+                    await asyncio.sleep(backoff)
                 else:
                     raise
             except APIStatusError as e:
                 if e.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
                     backoff = 2 ** (_attempt + 1)
                     logger.warning(f"⚠️ OpenAI 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
-                    time.sleep(backoff)
+                    await asyncio.sleep(backoff)
                 else:
                     raise
 
