@@ -435,7 +435,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                         msg_id = resp_data.get("key", {}).get("id")
                         if msg_id:
                             bot_state.bot_sent_message_ids.append(msg_id)
-                    except:
+                    except Exception:
                         pass
 
         else:
@@ -456,9 +456,9 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                     if msg_id:
                         bot_state.bot_sent_message_ids.append(msg_id)
                         logger.debug(f"📤 Rastreando msg_id: {msg_id[:20]}...")
-                except:
+                except Exception:
                     pass
-                
+
                 if jid not in bot_state.bot_sent_texts:
                     bot_state.bot_sent_texts[jid] = deque(maxlen=10)
                 bot_state.bot_sent_texts[jid].append(text)
