@@ -6,6 +6,7 @@ import tempfile
 import random
 import time
 import re
+import base64
 from contextlib import asynccontextmanager
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -326,9 +327,7 @@ async def _handle_audio_transcription(msg_id: str, remote_jid: str) -> str:
             return ""
 
         data = response.json()
-        
-        import base64
-        
+
         if isinstance(data, dict):
             base64_audio = data.get("base64") or data.get("media")
         else:
