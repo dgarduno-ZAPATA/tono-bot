@@ -1,4 +1,5 @@
 import os
+import asyncio
 import httpx
 import json
 import logging
@@ -34,16 +35,34 @@ class MondayService:
     async def _graphql(self, query: str, variables: dict):
         if not self.api_key:
             raise RuntimeError("MONDAY_API_KEY no configurada")
-        
+
         headers = {"Authorization": self.api_key, "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=25.0) as client:
-            resp = await client.post(self.api_url, json={"query": query, "variables": variables}, headers=headers)
-        
-        data = resp.json()
-        if "errors" in data:
-            logger.error(f"Monday API Error: {data['errors']}")
-            # No lanzamos error fatal para que el bot siga funcionando, pero logueamos
-        return data
+        payload = {"query": query, "variables": variables}
+
+        _MAX_RETRIES = 3
+        for _attempt in range(_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=25.0) as client:
+                    resp = await client.post(self.api_url, json=payload, headers=headers)
+
+                if resp.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
+                    backoff = 2 ** (_attempt + 1)
+                    logger.warning(f"⚠️ Monday 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {resp.status_code}")
+                    await asyncio.sleep(backoff)
+                    continue
+
+                data = resp.json()
+                if "errors" in data:
+                    logger.error(f"Monday API Error: {data['errors']}")
+                return data
+
+            except (httpx.TimeoutException, httpx.RequestError) as e:
+                if _attempt < _MAX_RETRIES - 1:
+                    backoff = 2 ** (_attempt + 1)
+                    logger.warning(f"⚠️ Monday retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    await asyncio.sleep(backoff)
+                else:
+                    raise
 
     async def _find_item_by_phone(self, phone_limpio: str):
         """Busca usando la columna de TEXTO (Dedupe)"""

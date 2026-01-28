@@ -2,11 +2,12 @@ import os
 import re
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 import pytz
-from openai import OpenAI
+from openai import OpenAI, APITimeoutError, RateLimitError, APIStatusError
 
 logger = logging.getLogger(__name__)
 
@@ -619,12 +620,31 @@ def handle_message(
     reply_clean = "Hubo un error técnico."
 
     try:
-        resp = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=350,
-        )
+        _MAX_RETRIES = 3
+        for _attempt in range(_MAX_RETRIES):
+            try:
+                resp = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=350,
+                )
+                break
+            except (APITimeoutError, RateLimitError) as e:
+                if _attempt < _MAX_RETRIES - 1:
+                    backoff = 2 ** (_attempt + 1)
+                    logger.warning(f"⚠️ OpenAI retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    time.sleep(backoff)
+                else:
+                    raise
+            except APIStatusError as e:
+                if e.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
+                    backoff = 2 ** (_attempt + 1)
+                    logger.warning(f"⚠️ OpenAI 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    time.sleep(backoff)
+                else:
+                    raise
+
         raw_reply = resp.choices[0].message.content or ""
         reply_clean = raw_reply
 
