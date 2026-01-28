@@ -8,7 +8,7 @@ import time
 import re
 import base64
 from contextlib import asynccontextmanager
-from collections import deque
+from collections import deque, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -69,21 +69,42 @@ if TEAM_NUMBERS_LIST:
 
 
 # === 2. ESTADO GLOBAL EN RAM ===
+class BoundedOrderedSet:
+    """Set con O(1) lookup y evicción FIFO al llegar al límite."""
+
+    def __init__(self, maxlen: int):
+        self._data: OrderedDict = OrderedDict()
+        self._maxlen = maxlen
+
+    def add(self, key):
+        if key in self._data:
+            return
+        if len(self._data) >= self._maxlen:
+            self._data.popitem(last=False)
+        self._data[key] = None
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __len__(self):
+        return len(self._data)
+
+
 class GlobalState:
     def __init__(self):
         self.http_client: Optional[httpx.AsyncClient] = None
         self.inventory: Optional[InventoryService] = None
         self.store: Optional[MemoryStore] = None
 
-        # dedupe RAM (si llegan 2 eventos iguales rápido)
-        self.processed_message_ids = deque(maxlen=4000)
-        self.processed_lead_ids = deque(maxlen=8000)
+        # dedupe RAM (O(1) lookup con evicción FIFO)
+        self.processed_message_ids = BoundedOrderedSet(maxlen=4000)
+        self.processed_lead_ids = BoundedOrderedSet(maxlen=8000)
 
         # Silencios (ahora soporta timestamp o bool)
         self.silenced_users: Dict[str, Any] = {}
         
         # 🆕 HANDOFF: Rastreo de mensajes del bot
-        self.bot_sent_message_ids = deque(maxlen=2000)
+        self.bot_sent_message_ids = BoundedOrderedSet(maxlen=2000)
         self.bot_sent_texts: Dict[str, deque] = {}
         self.last_bot_message_time: Dict[str, float] = {}
 
@@ -431,7 +452,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                         resp_data = response.json()
                         msg_id = resp_data.get("key", {}).get("id")
                         if msg_id:
-                            bot_state.bot_sent_message_ids.append(msg_id)
+                            bot_state.bot_sent_message_ids.add(msg_id)
                     except Exception:
                         pass
 
@@ -451,7 +472,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                     resp_data = response.json()
                     msg_id = resp_data.get("key", {}).get("id")
                     if msg_id:
-                        bot_state.bot_sent_message_ids.append(msg_id)
+                        bot_state.bot_sent_message_ids.add(msg_id)
                         logger.debug(f"📤 Rastreando msg_id: {msg_id[:20]}...")
                 except Exception:
                     pass
@@ -524,7 +545,7 @@ async def process_single_event(data: Dict[str, Any]):
         return
     
     if msg_id:
-        bot_state.processed_message_ids.append(msg_id)
+        bot_state.processed_message_ids.add(msg_id)
 
     # === DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
     if from_me:
@@ -659,7 +680,7 @@ async def process_single_event(data: Dict[str, Any]):
             if lead_key in bot_state.processed_lead_ids:
                 logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
                 return
-            bot_state.processed_lead_ids.append(lead_key)
+            bot_state.processed_lead_ids.add(lead_key)
 
             lead_info["telefono"] = remote_jid.split("@")[0]
             lead_info["external_id"] = msg_id
