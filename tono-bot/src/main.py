@@ -9,7 +9,7 @@ import re
 import base64
 from contextlib import asynccontextmanager
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, Request
@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     LOG_WEBHOOK_PAYLOAD: bool = True
     LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
 
+    # Handoff
+    TEAM_NUMBERS: str = ""
+    AUTO_REACTIVATE_MINUTES: int = 60
+    HUMAN_DETECTION_WINDOW_SECONDS: int = 3
+
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -57,18 +62,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotTractos")
 
-# 🆕 Configuración de Handoff
-TEAM_NUMBERS_LIST = []
-try:
-    team_numbers_str = os.getenv("TEAM_NUMBERS", "")
-    if team_numbers_str:
-        TEAM_NUMBERS_LIST = [n.strip() for n in team_numbers_str.split(",") if n.strip()]
-        logger.info(f"✅ Números del equipo configurados: {len(TEAM_NUMBERS_LIST)}")
-except Exception as e:
-    logger.warning(f"⚠️ No se pudieron cargar TEAM_NUMBERS: {e}")
-
-AUTO_REACTIVATE_MINUTES = int(os.getenv("AUTO_REACTIVATE_MINUTES", "60"))
-HUMAN_DETECTION_WINDOW_SECONDS = int(os.getenv("HUMAN_DETECTION_WINDOW_SECONDS", "3"))
+# Handoff: lista derivada de settings
+TEAM_NUMBERS_LIST = [n.strip() for n in settings.TEAM_NUMBERS.split(",") if n.strip()]
+if TEAM_NUMBERS_LIST:
+    logger.info(f"✅ Números del equipo configurados: {len(TEAM_NUMBERS_LIST)}")
 
 
 # === 2. ESTADO GLOBAL EN RAM ===
@@ -150,33 +147,33 @@ def _clean_phone_or_jid(value: str) -> str:
     return "".join([c for c in str(value) if c.isdigit()])
 
 
-def _extract_user_message(msg_obj: Dict[str, Any]) -> str:
+def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
     """
     Extrae el texto del mensaje de Evolution.
-    Si es audio, retorna cadena vacía para que process_single_event lo maneje.
+    Retorna (texto, is_audio).
     """
     if not isinstance(msg_obj, dict):
-        return ""
+        return "", False
 
     # 1. Mensaje de texto normal
     if "conversation" in msg_obj:
-        return msg_obj.get("conversation") or ""
+        return msg_obj.get("conversation") or "", False
 
     # 2. Mensaje de texto extendido (reply, etc)
     if "extendedTextMessage" in msg_obj:
         ext = msg_obj.get("extendedTextMessage") or {}
-        return ext.get("text") or ""
+        return ext.get("text") or "", False
 
     # 3. Imagen con caption
     if "imageMessage" in msg_obj:
         img = msg_obj.get("imageMessage") or {}
-        return img.get("caption") or "(Envió una foto)"
+        return img.get("caption") or "(Envió una foto)", False
 
-    # 4. AUDIO/NOTA DE VOZ - Retornamos vacío para señalar que hay audio
+    # 4. AUDIO/NOTA DE VOZ
     if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
-        return ""
+        return "", True
 
-    return ""
+    return "", False
 
 
 def _ensure_inventory_loaded() -> None:
@@ -270,7 +267,7 @@ def _is_bot_message(remote_jid: str, msg_id: str, msg_text: str) -> bool:
     last_bot_time = bot_state.last_bot_message_time.get(remote_jid, 0)
     time_diff = time.time() - last_bot_time
     
-    if time_diff < HUMAN_DETECTION_WINDOW_SECONDS:
+    if time_diff < settings.HUMAN_DETECTION_WINDOW_SECONDS:
         logger.debug(f"✓ Dentro de ventana temporal ({time_diff:.1f}s)")
         return True
     
@@ -435,7 +432,7 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                         msg_id = resp_data.get("key", {}).get("id")
                         if msg_id:
                             bot_state.bot_sent_message_ids.append(msg_id)
-                    except:
+                    except Exception:
                         pass
 
         else:
@@ -456,9 +453,9 @@ async def send_evolution_message(number_or_jid: str, text: str, media_urls: Opti
                     if msg_id:
                         bot_state.bot_sent_message_ids.append(msg_id)
                         logger.debug(f"📤 Rastreando msg_id: {msg_id[:20]}...")
-                except:
+                except Exception:
                     pass
-                
+
                 if jid not in bot_state.bot_sent_texts:
                     bot_state.bot_sent_texts[jid] = deque(maxlen=10)
                 bot_state.bot_sent_texts[jid].append(text)
@@ -532,7 +529,8 @@ async def process_single_event(data: Dict[str, Any]):
     # === DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
     if from_me:
         msg_obj = data.get("message", {}) or {}
-        msg_text = _extract_user_message(msg_obj).strip()
+        msg_text, _ = _extract_user_message(msg_obj)
+        msg_text = msg_text.strip()
         
         # Verificar si este mensaje fue enviado por el bot
         if _is_bot_message(remote_jid, msg_id, msg_text):
@@ -543,8 +541,8 @@ async def process_single_event(data: Dict[str, Any]):
         is_human = _message_looks_human(msg_text)
         
         if is_human:
-            logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {AUTO_REACTIVATE_MINUTES} min)")
-            bot_state.silenced_users[remote_jid] = time.time() + (AUTO_REACTIVATE_MINUTES * 60)
+            logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {settings.AUTO_REACTIVATE_MINUTES} min)")
+            bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
             return
         
         # Mensajes ambiguos: NO silenciar automáticamente
@@ -573,30 +571,22 @@ async def process_single_event(data: Dict[str, Any]):
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
     msg_obj = data.get("message", {}) or {}
-    user_message = _extract_user_message(msg_obj).strip()
-    
-    # Si NO hay texto, verificar si es audio
-    if not user_message:
-        audio_info = msg_obj.get("audioMessage") or msg_obj.get("pttMessage") or {}
-        
-        has_audio = bool(audio_info and (
-            audio_info.get("url") or 
-            audio_info.get("directPath") or 
-            audio_info.get("mediaKey")
-        ))
-        
-        if has_audio:
-            logger.info(f"🎤 Audio detectado, procesando...")
-            user_message = await _handle_audio_transcription(msg_id, remote_jid)
-            
-            if not user_message:
-                await send_evolution_message(
-                    remote_jid, 
-                    "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
-                )
-                return
-            
-            logger.info(f"✅ Transcripción exitosa, procesando como texto...")
+    user_message, is_audio = _extract_user_message(msg_obj)
+    user_message = user_message.strip()
+
+    # Si NO hay texto y es audio, transcribir
+    if not user_message and is_audio:
+        logger.info(f"🎤 Audio detectado, procesando...")
+        user_message = await _handle_audio_transcription(msg_id, remote_jid)
+
+        if not user_message:
+            await send_evolution_message(
+                remote_jid,
+                "Tuve un problema escuchando el audio. ¿Me lo puedes escribir o mandar de nuevo?"
+            )
+            return
+
+        logger.info(f"✅ Transcripción exitosa, procesando como texto...")
 
     if not user_message:
         return
@@ -697,7 +687,7 @@ async def health():
         "processed_leads_cache": len(bot_state.processed_lead_ids),
         "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
         "handoff_enabled": len(TEAM_NUMBERS_LIST) > 0,
-        "auto_reactivate_minutes": AUTO_REACTIVATE_MINUTES,
+        "auto_reactivate_minutes": settings.AUTO_REACTIVATE_MINUTES,
     }
 
 
