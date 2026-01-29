@@ -26,6 +26,12 @@ class MondayService:
         # 4. Columna STATUS para etapa del funnel
         self.stage_col_id = os.getenv("MONDAY_STAGE_COLUMN_ID")
 
+        # Log de configuración
+        if self.stage_col_id:
+            logger.info(f"✅ Monday Stage Column configurada: {self.stage_col_id}")
+        else:
+            logger.warning("⚠️ MONDAY_STAGE_COLUMN_ID no configurada - funnel no actualizará estado")
+
     def _sanitize_phone(self, phone: str) -> str:
         """
         Limpia el teléfono para que la búsqueda sea exacta.
@@ -143,6 +149,9 @@ class MondayService:
         # Etapa del funnel (solo si se especifica y la columna existe)
         if stage and self.stage_col_id:
             col_vals[self.stage_col_id] = {"label": stage}
+            logger.info(f"📊 Configurando estado: {self.stage_col_id} = {stage}")
+        elif stage and not self.stage_col_id:
+            logger.warning(f"⚠️ Stage '{stage}' no aplicada - MONDAY_STAGE_COLUMN_ID no configurada")
 
         # 4. CREAR O ACTUALIZAR
         is_new = False
