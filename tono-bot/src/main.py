@@ -690,23 +690,66 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
 
     await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
 
+    # ============================================================
+    # FUNNEL TRACKING - Crear/actualizar lead en Monday según etapa
+    # ============================================================
+    funnel_stage = result.get("funnel_stage", "MENSAJE")
+    funnel_data = result.get("funnel_data", {})
+    previous_stage = context.get("funnel_stage", "")
+
+    # Determinar si debemos crear/actualizar en Monday
+    # Crear lead a partir de ENGANCHE (turno > 1 = cliente respondió)
+    should_update_monday = (
+        funnel_stage in ("ENGANCHE", "INTENCION", "CALIFICADO") and
+        funnel_stage != previous_stage  # Solo si la etapa cambió
+    )
+
+    if should_update_monday:
+        try:
+            funnel_key = f"{remote_jid}|{funnel_stage}"
+            if funnel_key not in bot_state.processed_lead_ids:
+                bot_state.processed_lead_ids.add(funnel_key)
+
+                lead_data = {
+                    "telefono": remote_jid.split("@")[0],
+                    "external_id": msg_id,
+                    "nombre": funnel_data.get("nombre") or "Lead WhatsApp",
+                    "interes": funnel_data.get("interes") or "Por definir",
+                    "cita": funnel_data.get("cita"),
+                    "pago": funnel_data.get("pago"),
+                }
+
+                # Nota descriptiva según la etapa
+                stage_notes = {
+                    "ENGANCHE": f"💬 Cliente interactuando (turno {funnel_data.get('turn_count', '?')})",
+                    "INTENCION": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
+                    "CALIFICADO": f"✅ Cita confirmada: {funnel_data.get('cita', 'N/A')}",
+                }
+                note = stage_notes.get(funnel_stage)
+
+                logger.info(f"📊 FUNNEL [{funnel_stage}]: {lead_data.get('telefono')} - {lead_data.get('interes')}")
+                await monday_service.create_or_update_lead(lead_data, stage=funnel_stage, add_note=note)
+
+        except Exception as e:
+            logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+
+    # Lead calificado tradicional (con cita) - notificar al owner
     if lead_info:
         try:
             lead_key = f"{remote_jid}|{msg_id}|lead"
             if lead_key in bot_state.processed_lead_ids:
                 logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
-                return
-            bot_state.processed_lead_ids.add(lead_key)
+            else:
+                bot_state.processed_lead_ids.add(lead_key)
 
-            lead_info["telefono"] = remote_jid.split("@")[0]
-            lead_info["external_id"] = msg_id
+                lead_info["telefono"] = remote_jid.split("@")[0]
+                lead_info["external_id"] = msg_id
 
-            logger.info(f"🚀 LEAD DETECTADO: {lead_info.get('nombre')} - {lead_info.get('interes')}")
-            await monday_service.create_lead(lead_info)
-
-            await notify_owner(bot_state, remote_jid, user_message, reply_text, is_lead=True)
+                logger.info(f"🚀 LEAD CALIFICADO: {lead_info.get('nombre')} - {lead_info.get('interes')}")
+                # Ya se actualizó arriba con create_or_update_lead, solo notificamos
+                await notify_owner(bot_state, remote_jid, user_message, reply_text, is_lead=True)
         except Exception as e:
-            logger.error(f"❌ Error enviando LEAD a Monday: {e}")
+            logger.error(f"❌ Error procesando LEAD calificado: {e}")
     else:
         await notify_owner(bot_state, remote_jid, user_message, reply_text, is_lead=False)
 

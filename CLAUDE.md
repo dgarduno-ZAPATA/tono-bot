@@ -74,7 +74,30 @@ MONDAY_BOARD_ID=""                     # Monday.com board ID
 MONDAY_DEDUPE_COLUMN_ID=""             # Monday.com dedup column
 MONDAY_LAST_MSG_ID_COLUMN_ID=""        # Monday.com message tracking column
 MONDAY_PHONE_REAL_COLUMN_ID=""         # Monday.com phone column
+MONDAY_STAGE_COLUMN_ID=""              # Monday.com funnel stage column (STATUS type)
 ```
+
+## Sales Funnel System
+
+The bot automatically tracks leads through a 4-stage sales funnel in Monday.com:
+
+| Stage | Trigger | What it means |
+|-------|---------|---------------|
+| `MENSAJE` | First contact | Client sent initial message |
+| `ENGANCHE` | Turn > 1 | Client is actively responding |
+| `INTENCION` | Model mentioned | Client interested in specific vehicle |
+| `CALIFICADO` | Appointment confirmed | Ready to visit dealership |
+
+### How it works
+1. Lead is created in Monday.com when client reaches `ENGANCHE` (responds to bot)
+2. Stage updates automatically as conversation progresses
+3. Notes are added at each stage transition with relevant details
+4. Leads are captured even WITHOUT confirmed appointments (unlike before)
+
+### Monday.com Setup
+1. Create a STATUS column in your board for the funnel stages
+2. Add labels: `MENSAJE`, `ENGANCHE`, `INTENCION`, `CALIFICADO`
+3. Set `MONDAY_STAGE_COLUMN_ID` to the column ID
 
 ## Key Architecture Patterns
 

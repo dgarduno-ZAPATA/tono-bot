@@ -871,10 +871,37 @@ async def handle_message(
                 f"mensaje_usuario='{user_message}'"
             )
 
+    # ============================================================
+    # FUNNEL STAGE CALCULATION
+    # ============================================================
+    # Determinar etapa del funnel basado en datos de la conversación
+    # MENSAJE -> ENGANCHE -> INTENCION -> CALIFICADO
+    funnel_stage = "MENSAJE"  # Default: primer contacto
+
+    if turn_count > 1:
+        funnel_stage = "ENGANCHE"  # Cliente respondió, hay interacción
+
+    if last_interest:
+        funnel_stage = "INTENCION"  # Modelo específico mencionado
+
+    if last_appointment:
+        funnel_stage = "CALIFICADO"  # Cita confirmada
+
+    # Agregar etapa al contexto para tracking
+    new_context["funnel_stage"] = funnel_stage
+
     return {
         "reply": reply_clean,
         "new_state": "chatting",
         "context": new_context,
         "media_urls": media_urls,
         "lead_info": lead_info,
+        "funnel_stage": funnel_stage,
+        "funnel_data": {
+            "nombre": saved_name or None,
+            "interes": last_interest or None,
+            "cita": last_appointment or None,
+            "pago": last_payment or None,
+            "turn_count": turn_count,
+        }
     }
