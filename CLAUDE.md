@@ -73,7 +73,7 @@ MONDAY_API_KEY=""                      # Monday.com API key
 MONDAY_BOARD_ID=""                     # Monday.com board ID
 MONDAY_DEDUPE_COLUMN_ID=""             # Monday.com dedup column
 MONDAY_LAST_MSG_ID_COLUMN_ID=""        # Monday.com message tracking column
-MONDAY_PHONE_REAL_COLUMN_ID=""         # Monday.com phone column
+MONDAY_PHONE_COLUMN_ID=""              # Monday.com phone column
 MONDAY_STAGE_COLUMN_ID=""              # Monday.com funnel stage column (STATUS type)
 ```
 

@@ -21,7 +21,7 @@ class MondayService:
         self.last_msg_id_col_id = os.getenv("MONDAY_LAST_MSG_ID_COLUMN_ID")
 
         # 3. Columna TIPO PHONE (la del icono de teléfono) -> Debe ser phone_mkzwh34a
-        self.phone_real_col_id = os.getenv("MONDAY_PHONE_REAL_COLUMN_ID")
+        self.phone_real_col_id = os.getenv("MONDAY_PHONE_COLUMN_ID")
 
         # 4. Columna STATUS para etapa del funnel
         self.stage_col_id = os.getenv("MONDAY_STAGE_COLUMN_ID")
