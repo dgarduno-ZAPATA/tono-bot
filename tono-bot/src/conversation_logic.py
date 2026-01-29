@@ -46,7 +46,9 @@ Solo sugiere cita cuando hayas resuelto la duda actual del cliente.
 DATOS CLAVE:
 - Ubicación: Tlalnepantla, Edo Mex.
 - Horario: Lunes a Viernes 9:00 AM a 6:00 PM. Sábados 9:00 AM a 2:00 PM.
+- DOMINGOS: CERRADO. NO AGENDES CITAS EN DOMINGO.
 - MOMENTO ACTUAL: {current_time_str}
+- FECHA ACTUAL: {current_date_str}
 - CLIENTE DETECTADO: {user_name_context}
 - TURNO ACTUAL: {turn_number}
 - Tractos y Max comercializa vehículos comerciales nuevos y seminuevos a precio de oportunidad.
@@ -102,8 +104,12 @@ REGLAS OBLIGATORIAS:
 - Si ya tienes el nombre, di: "Perfecto [nombre], un asesor te preparará la cotización y te contacta en breve."
 - PROHIBIDO inventar números de mensualidades, intereses o montos de enganche.
 
-9) RELOJ:
+9) HORARIO Y CITAS:
+- Días abiertos: Lunes a Viernes 9-6, Sábados 9-2.
+- DOMINGOS: CERRADO. NUNCA agendes citas en domingo.
+- Si el cliente propone domingo, di: "Los domingos no abrimos. ¿Te parece el lunes o sábado?"
 - Fuera de horario: informa que la oficina está cerrada y ofrece agendar para el siguiente día hábil.
+- USA LA FECHA ACTUAL para validar días. Hoy es {current_date_str}.
 
 10) CITA Y LEAD (MONDAY):
 - Solo sugiere cita cuando hayas resuelto las dudas del cliente, no antes.
@@ -715,11 +721,23 @@ async def handle_message(
     if extracted_appt:
         last_appointment = extracted_appt
 
-    # Time
-    _, current_time_str = get_mexico_time()
+    # Time and date
+    now_dt, current_time_str = get_mexico_time()
+    # Formatear fecha en español manualmente (el servidor tiene locale inglés)
+    meses_es = {
+        1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+        5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+        9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
+    }
+    dias_es = {
+        0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves",
+        4: "viernes", 5: "sábado", 6: "domingo"
+    }
+    current_date_str = f"{dias_es[now_dt.weekday()]} {now_dt.day} de {meses_es[now_dt.month]} de {now_dt.year}"
 
     formatted_system_prompt = SYSTEM_PROMPT.format(
         current_time_str=current_time_str,
+        current_date_str=current_date_str,
         user_name_context=saved_name if saved_name else "(Aún no dice su nombre)",
         turn_number=turn_count,
     )

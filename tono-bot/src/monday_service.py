@@ -21,10 +21,16 @@ class MondayService:
         self.last_msg_id_col_id = os.getenv("MONDAY_LAST_MSG_ID_COLUMN_ID")
 
         # 3. Columna TIPO PHONE (la del icono de teléfono) -> Debe ser phone_mkzwh34a
-        self.phone_real_col_id = os.getenv("MONDAY_PHONE_REAL_COLUMN_ID")
+        self.phone_real_col_id = os.getenv("MONDAY_PHONE_COLUMN_ID")
 
         # 4. Columna STATUS para etapa del funnel
         self.stage_col_id = os.getenv("MONDAY_STAGE_COLUMN_ID")
+
+        # Log de configuración
+        if self.stage_col_id:
+            logger.info(f"✅ Monday Stage Column configurada: {self.stage_col_id}")
+        else:
+            logger.warning("⚠️ MONDAY_STAGE_COLUMN_ID no configurada - funnel no actualizará estado")
 
     def _sanitize_phone(self, phone: str) -> str:
         """
@@ -143,6 +149,9 @@ class MondayService:
         # Etapa del funnel (solo si se especifica y la columna existe)
         if stage and self.stage_col_id:
             col_vals[self.stage_col_id] = {"label": stage}
+            logger.info(f"📊 Configurando estado: {self.stage_col_id} = {stage}")
+        elif stage and not self.stage_col_id:
+            logger.warning(f"⚠️ Stage '{stage}' no aplicada - MONDAY_STAGE_COLUMN_ID no configurada")
 
         # 4. CREAR O ACTUALIZAR
         is_new = False

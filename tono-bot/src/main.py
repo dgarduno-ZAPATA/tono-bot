@@ -564,6 +564,8 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         bot_state.processed_message_ids.add(msg_id)
 
     # === DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
+    # Si el mensaje sale del WhatsApp del negocio (from_me=true)
+    # y NO fue enviado por el bot → es un HUMANO ASESOR → silenciar bot
     if from_me:
         msg_obj = data.get("message", {}) or {}
         msg_text, _ = _extract_user_message(msg_obj)
@@ -574,20 +576,10 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
             logger.debug(f"✓ Confirmado mensaje del bot, ignorando")
             return
 
-        # Si NO es del bot → Es un HUMANO respondiendo
-        is_human = _message_looks_human(msg_text)
-
-        if is_human:
-            logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} (silencio por {settings.AUTO_REACTIVATE_MINUTES} min)")
-            bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
-            return
-
-        # Mensajes ambiguos: NO silenciar automáticamente
-        if not msg_text:
-            logger.debug(f"⏭️ Mensaje saliente vacío/sticker en {remote_jid}, ignorando")
-            return
-
-        logger.info(f"🤔 Mensaje saliente ambiguo en {remote_jid}, monitoreando")
+        # Si NO es del bot → Es un HUMANO respondiendo → SILENCIAR
+        # No importa el contenido, cualquier mensaje humano silencia al bot
+        logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} - silenciando bot por {settings.AUTO_REACTIVATE_MINUTES} min")
+        bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
         return
 
     # === VERIFICAR SI EL BOT ESTÁ SILENCIADO ===
