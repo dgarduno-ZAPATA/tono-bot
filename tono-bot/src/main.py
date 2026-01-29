@@ -698,9 +698,9 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
     previous_stage = context.get("funnel_stage", "")
 
     # Determinar si debemos crear/actualizar en Monday
-    # Crear lead a partir de ENGANCHE (turno > 1 = cliente respondió)
+    # Crear lead a partir de Enganche (turno > 1 = cliente respondió)
     should_update_monday = (
-        funnel_stage in ("ENGANCHE", "INTENCION", "CALIFICADO") and
+        funnel_stage in ("Enganche", "Intencion", "Cita agendada") and
         funnel_stage != previous_stage  # Solo si la etapa cambió
     )
 
@@ -721,9 +721,9 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
 
                 # Nota descriptiva según la etapa
                 stage_notes = {
-                    "ENGANCHE": f"💬 Cliente interactuando (turno {funnel_data.get('turn_count', '?')})",
-                    "INTENCION": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
-                    "CALIFICADO": f"✅ Cita confirmada: {funnel_data.get('cita', 'N/A')}",
+                    "Enganche": f"💬 Cliente interactuando (turno {funnel_data.get('turn_count', '?')})",
+                    "Intencion": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
+                    "Cita agendada": f"✅ Cita confirmada: {funnel_data.get('cita', 'N/A')}",
                 }
                 note = stage_notes.get(funnel_stage)
 

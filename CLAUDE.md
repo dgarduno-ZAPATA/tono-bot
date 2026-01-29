@@ -79,25 +79,28 @@ MONDAY_STAGE_COLUMN_ID=""              # Monday.com funnel stage column (STATUS 
 
 ## Sales Funnel System
 
-The bot automatically tracks leads through a 4-stage sales funnel in Monday.com:
+The bot automatically tracks leads through a 6-stage sales funnel in Monday.com:
 
-| Stage | Trigger | What it means |
-|-------|---------|---------------|
-| `MENSAJE` | First contact | Client sent initial message |
-| `ENGANCHE` | Turn > 1 | Client is actively responding |
-| `INTENCION` | Model mentioned | Client interested in specific vehicle |
-| `CALIFICADO` | Appointment confirmed | Ready to visit dealership |
+| Stage | Trigger | Who moves it |
+|-------|---------|--------------|
+| `Mensaje` | First contact | Bot (auto) |
+| `Enganche` | Turn > 1 | Bot (auto) |
+| `Intencion` | Model mentioned | Bot (auto) |
+| `Cita agendada` | Appointment confirmed | Bot (auto) |
+| `No vino` | Client didn't show | Human (manual) |
+| `Venta Cerrada` | Sale completed | Human (manual) |
 
 ### How it works
-1. Lead is created in Monday.com when client reaches `ENGANCHE` (responds to bot)
+1. Lead is created in Monday.com when client reaches `Enganche` (responds to bot)
 2. Stage updates automatically as conversation progresses
 3. Notes are added at each stage transition with relevant details
-4. Leads are captured even WITHOUT confirmed appointments (unlike before)
+4. Leads are captured even WITHOUT confirmed appointments
+5. Human stages (`No vino`, `Venta Cerrada`) are updated manually after visit
 
 ### Monday.com Setup
-1. Create a STATUS column in your board for the funnel stages
-2. Add labels: `MENSAJE`, `ENGANCHE`, `INTENCION`, `CALIFICADO`
-3. Set `MONDAY_STAGE_COLUMN_ID` to the column ID
+1. Use existing STATUS column "Estado" (column ID: `status`)
+2. Labels: `Mensaje`, `Enganche`, `Intencion`, `Cita agendada`, `No vino`, `Venta Cerrada`
+3. Set `MONDAY_STAGE_COLUMN_ID=status`
 
 ## Key Architecture Patterns
 
