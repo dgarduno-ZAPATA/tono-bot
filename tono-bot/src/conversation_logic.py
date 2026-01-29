@@ -723,7 +723,17 @@ async def handle_message(
 
     # Time and date
     now_dt, current_time_str = get_mexico_time()
-    current_date_str = now_dt.strftime("%d de %B de %Y")  # "29 de enero de 2026"
+    # Formatear fecha en español manualmente (el servidor tiene locale inglés)
+    meses_es = {
+        1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+        5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+        9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre"
+    }
+    dias_es = {
+        0: "lunes", 1: "martes", 2: "miércoles", 3: "jueves",
+        4: "viernes", 5: "sábado", 6: "domingo"
+    }
+    current_date_str = f"{dias_es[now_dt.weekday()]} {now_dt.day} de {meses_es[now_dt.month]} de {now_dt.year}"
 
     formatted_system_prompt = SYSTEM_PROMPT.format(
         current_time_str=current_time_str,
