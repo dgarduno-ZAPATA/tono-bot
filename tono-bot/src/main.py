@@ -317,7 +317,7 @@ def _is_bot_message(bot_state: GlobalState, remote_jid: str, msg_id: str, msg_te
 # === 6. DELAY HUMANO ALEATORIO ===
 async def human_typing_delay():
     """Simula el tiempo que un humano tarda en escribir."""
-    delay = random.uniform(5.0, 10.0)
+    delay = random.uniform(25.0, 30.0)
     logger.info(f"⏳ Esperando {delay:.1f}s (delay humano)...")
     await asyncio.sleep(delay)
 
