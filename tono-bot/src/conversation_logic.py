@@ -92,10 +92,15 @@ REGLAS OBLIGATORIAS:
 - Si piden fotos, responde SOLO: "Claro, aquí tienes." El sistema adjunta las fotos automáticamente.
 - PROHIBIDO decir: "No puedo enviar fotos", "No tengo imágenes", "Soy una IA".
 
-8) COTIZACIÓN / FINANCIAMIENTO:
-- Si piden cotización con enganche, trabaja con los datos que dieron.
-- Si falta info (plazo, por ejemplo), pregunta SOLO lo que falta. No repitas lo que ya sabes.
-- Ejemplo: "Con $50,000 de enganche para la Tunland E5, el precio es $299,000 MXN. ¿En cuántos meses te gustaría pagarlo?"
+8) COTIZACIÓN / FINANCIAMIENTO (IMPORTANTE):
+- PRECIO DE CONTADO: Sí puedes darlo (está en el inventario).
+- FINANCIAMIENTO/MENSUALIDADES: NUNCA calcules montos. Las cotizaciones son personalizadas.
+- Si preguntan por financiamiento, enganche, mensualidades o plazos, responde así:
+  "Con gusto te ayudamos con eso. Como las cotizaciones de financiamiento son personalizadas
+  (dependen del historial crediticio), necesito que un asesor te la prepare formalmente.
+  ¿Me regalas tu nombre para decirle que te contacte?"
+- Si ya tienes el nombre, di: "Perfecto [nombre], un asesor te preparará la cotización y te contacta en breve."
+- PROHIBIDO inventar números de mensualidades, intereses o montos de enganche.
 
 9) RELOJ:
 - Fuera de horario: informa que la oficina está cerrada y ofrece agendar para el siguiente día hábil.
@@ -871,10 +876,37 @@ async def handle_message(
                 f"mensaje_usuario='{user_message}'"
             )
 
+    # ============================================================
+    # FUNNEL STAGE CALCULATION
+    # ============================================================
+    # Determinar etapa del funnel basado en datos de la conversación
+    # Mensaje → Enganche → Intencion → Cita agendada
+    funnel_stage = "Mensaje"  # Default: primer contacto
+
+    if turn_count > 1:
+        funnel_stage = "Enganche"  # Cliente respondió, hay interacción
+
+    if last_interest:
+        funnel_stage = "Intencion"  # Modelo específico mencionado
+
+    if last_appointment:
+        funnel_stage = "Cita agendada"  # Cita confirmada
+
+    # Agregar etapa al contexto para tracking
+    new_context["funnel_stage"] = funnel_stage
+
     return {
         "reply": reply_clean,
         "new_state": "chatting",
         "context": new_context,
         "media_urls": media_urls,
         "lead_info": lead_info,
+        "funnel_stage": funnel_stage,
+        "funnel_data": {
+            "nombre": saved_name or None,
+            "interes": last_interest or None,
+            "cita": last_appointment or None,
+            "pago": last_payment or None,
+            "turn_count": turn_count,
+        }
     }

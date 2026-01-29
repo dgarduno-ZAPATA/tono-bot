@@ -23,6 +23,9 @@ class MondayService:
         # 3. Columna TIPO PHONE (la del icono de teléfono) -> Debe ser phone_mkzwh34a
         self.phone_real_col_id = os.getenv("MONDAY_PHONE_REAL_COLUMN_ID")
 
+        # 4. Columna STATUS para etapa del funnel
+        self.stage_col_id = os.getenv("MONDAY_STAGE_COLUMN_ID")
+
     def _sanitize_phone(self, phone: str) -> str:
         """
         Limpia el teléfono para que la búsqueda sea exacta.
@@ -94,39 +97,59 @@ class MondayService:
             return items[0]["id"]
         return None
 
-    async def create_lead(self, lead_data: dict):
+    async def create_or_update_lead(self, lead_data: dict, stage: str = None, add_note: str = None):
+        """
+        Crea o actualiza un lead en Monday.com con soporte de funnel.
+
+        Etapas del funnel:
+        - MENSAJE: Primer contacto
+        - ENGANCHE: Cliente interactuando
+        - INTENCION: Modelo/precio mencionado
+        - CALIFICADO: Cita confirmada
+
+        Args:
+            lead_data: dict con telefono, nombre, interes, etc.
+            stage: Etapa del funnel (opcional, solo actualiza si es "mayor")
+            add_note: Nota adicional para agregar (opcional)
+        """
         # 1. PREPARAR DATOS
         raw_phone = str(lead_data.get("telefono", ""))
         phone_limpio = self._sanitize_phone(raw_phone)
-        nombre = str(lead_data.get("nombre", "Lead WhatsApp")).strip()
-        msg_id = str(lead_data.get("external_id", "")).strip() # ID del mensaje de Evolution API
+        nombre = str(lead_data.get("nombre", "")).strip() or "Lead WhatsApp"
+        msg_id = str(lead_data.get("external_id", "")).strip()
 
         if not phone_limpio:
             logger.warning("⚠️ Lead sin teléfono, no se puede procesar.")
-            return
+            return None
 
         # 2. BUSCAR DUPLICADO (Lógica Find-First)
         item_id = await self._find_item_by_phone(phone_limpio)
 
         # 3. DEFINIR VALORES DE COLUMNAS
         col_vals = {}
-        
+
         # Siempre aseguramos que la columna Dedupe tenga el numero limpio
         if self.phone_dedupe_col_id:
             col_vals[self.phone_dedupe_col_id] = phone_limpio
-            
+
         # Guardamos el ID del mensaje para evitar loops
         if self.last_msg_id_col_id and msg_id:
             col_vals[self.last_msg_id_col_id] = msg_id
-            
+
         # Guardamos en la columna real de teléfono (Formato Monday: {phone, country})
         if self.phone_real_col_id:
             col_vals[self.phone_real_col_id] = {"phone": phone_limpio, "countryShortName": "MX"}
 
+        # Etapa del funnel (solo si se especifica y la columna existe)
+        if stage and self.stage_col_id:
+            col_vals[self.stage_col_id] = {"label": stage}
+
         # 4. CREAR O ACTUALIZAR
+        is_new = False
         if not item_id:
             # --- CREAR NUEVO ---
-            logger.info(f"🆕 Creando nuevo lead: {phone_limpio}")
+            is_new = True
+            logger.info(f"🆕 Creando lead [{stage or 'SIN_ETAPA'}]: {phone_limpio}")
             query_create = """
             mutation ($board_id: ID!, $name: String!, $vals: JSON!) {
                 create_item (board_id: $board_id, item_name: $name, column_values: $vals) { id }
@@ -134,47 +157,77 @@ class MondayService:
             """
             # Nombre del item: "Nombre | Telefono"
             item_name_display = f"{nombre} | {phone_limpio}"
-            
+
             vars_create = {
                 "board_id": int(self.board_id),
                 "name": item_name_display,
                 "vals": json.dumps(col_vals)
             }
             res = await self._graphql(query_create, vars_create)
-            # Obtenemos el ID nuevo para agregarle la nota abajo
             item_id = res.get("data", {}).get("create_item", {}).get("id")
-            
+
         else:
             # --- ACTUALIZAR EXISTENTE ---
-            logger.info(f"♻️ Lead ya existe (ID: {item_id}). Actualizando columnas clave.")
-            query_update = """
-            mutation ($item_id: ID!, $board_id: ID!, $vals: JSON!) {
-                change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
-            }
-            """
-            vars_update = {
-                "item_id": int(item_id),
-                "board_id": int(self.board_id),
-                "vals": json.dumps(col_vals)
-            }
-            await self._graphql(query_update, vars_update)
+            logger.info(f"♻️ Actualizando lead [{stage or 'SIN_ETAPA'}] (ID: {item_id})")
 
-        # 5. AGREGAR NOTA (UPDATE) CON DETALLES
-        # Esto siempre pasa, sea nuevo o viejo
-        if item_id:
-            detalles = (
-                f"👤 Nombre: {nombre}\n"
-                f"📞 Tel: {phone_limpio}\n"
-                f"📧 Email: {lead_data.get('email', 'N/A')}\n"
-                f"📝 Interés: {lead_data.get('interes', 'N/A')}\n"
-                f"🆔 MsgID: {msg_id}"
-            )
+            # Solo actualizar nombre si cambió de "Lead WhatsApp" a algo real
+            if nombre and nombre != "Lead WhatsApp":
+                # Actualizar también el nombre del item
+                query_update_name = """
+                mutation ($item_id: ID!, $board_id: ID!, $name: String!, $vals: JSON!) {
+                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
+                }
+                """
+                vars_update = {
+                    "item_id": int(item_id),
+                    "board_id": int(self.board_id),
+                    "vals": json.dumps(col_vals)
+                }
+                await self._graphql(query_update_name, vars_update)
+            elif col_vals:
+                query_update = """
+                mutation ($item_id: ID!, $board_id: ID!, $vals: JSON!) {
+                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
+                }
+                """
+                vars_update = {
+                    "item_id": int(item_id),
+                    "board_id": int(self.board_id),
+                    "vals": json.dumps(col_vals)
+                }
+                await self._graphql(query_update, vars_update)
+
+        # 5. AGREGAR NOTA (si es nuevo o si se especifica nota adicional)
+        if item_id and (is_new or add_note):
+            if is_new:
+                # Nota inicial con todos los datos
+                detalles = (
+                    f"📊 ETAPA: {stage or 'MENSAJE'}\n"
+                    f"👤 Nombre: {nombre}\n"
+                    f"📞 Tel: {phone_limpio}\n"
+                    f"📝 Interés: {lead_data.get('interes', 'N/A')}\n"
+                )
+                if lead_data.get('cita'):
+                    detalles += f"📅 Cita: {lead_data.get('cita')}\n"
+                if lead_data.get('pago'):
+                    detalles += f"💰 Pago: {lead_data.get('pago')}\n"
+            else:
+                # Solo la nota adicional
+                detalles = add_note or f"📊 Actualizado a etapa: {stage}"
+
             query_note = """
             mutation ($item_id: ID!, $body: String!) {
                 create_update (item_id: $item_id, body: $body) { id }
             }
             """
             await self._graphql(query_note, {"item_id": int(item_id), "body": detalles})
+
+        return item_id
+
+    # Mantener compatibilidad con código existente
+    async def create_lead(self, lead_data: dict):
+        """Wrapper de compatibilidad - crea lead en etapa CALIFICADO."""
+        return await self.create_or_update_lead(lead_data, stage="CALIFICADO")
 
 # Instancia lista para usar
 monday_service = MondayService()
