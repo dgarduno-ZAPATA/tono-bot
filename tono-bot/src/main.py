@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     AUTO_REACTIVATE_MINUTES: int = 60
     HUMAN_DETECTION_WINDOW_SECONDS: int = 3
 
+    # Acumulación de mensajes rápidos
+    MESSAGE_ACCUMULATION_SECONDS: float = 4.0  # Espera para acumular mensajes seguidos
+
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -101,11 +104,16 @@ class GlobalState:
 
         # Silencios (ahora soporta timestamp o bool)
         self.silenced_users: Dict[str, Any] = {}
-        
+
         # 🆕 HANDOFF: Rastreo de mensajes del bot
         self.bot_sent_message_ids = BoundedOrderedSet(maxlen=2000)
         self.bot_sent_texts: Dict[str, deque] = {}
         self.last_bot_message_time: Dict[str, float] = {}
+
+        # 🆕 ACUMULACIÓN DE MENSAJES: Agrupa mensajes rápidos del cliente
+        self.pending_messages: Dict[str, List[str]] = {}  # jid -> [msg1, msg2, ...]
+        self.pending_message_tasks: Dict[str, asyncio.Task] = {}  # jid -> task
+        self.last_user_message_time: Dict[str, float] = {}  # jid -> timestamp
 
 
 # === 3. LIFESPAN (INICIO/CIERRE) ===
@@ -350,9 +358,170 @@ def _is_bot_message(bot_state: GlobalState, remote_jid: str, msg_id: str, msg_te
 # === 6. DELAY HUMANO ALEATORIO ===
 async def human_typing_delay():
     """Simula el tiempo que un humano tarda en escribir."""
-    delay = random.uniform(25.0, 30.0)
+    delay = random.uniform(5.0, 8.0)
     logger.info(f"⏳ Esperando {delay:.1f}s (delay humano)...")
     await asyncio.sleep(delay)
+
+
+# === 6.5 PROCESAMIENTO DE MENSAJES ACUMULADOS ===
+async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str):
+    """
+    Procesa todos los mensajes acumulados de un usuario como uno solo.
+    Se ejecuta después de MESSAGE_ACCUMULATION_SECONDS sin nuevos mensajes.
+    """
+    # Obtener y limpiar mensajes pendientes
+    messages = bot_state.pending_messages.pop(remote_jid, [])
+    bot_state.pending_message_tasks.pop(remote_jid, None)
+
+    if not messages:
+        return
+
+    # Combinar mensajes en uno solo
+    if len(messages) == 1:
+        combined_message = messages[0]
+    else:
+        combined_message = " | ".join(messages)
+        logger.info(f"📦 Mensajes acumulados ({len(messages)}): '{combined_message[:100]}...'")
+
+    # === Verificar silenciamiento ===
+    if remote_jid in bot_state.silenced_users:
+        silence_value = bot_state.silenced_users[remote_jid]
+        if isinstance(silence_value, (int, float)):
+            if time.time() < silence_value:
+                mins_left = int((silence_value - time.time()) / 60)
+                logger.info(f"🤐 Bot silenciado en {remote_jid} ({mins_left} min restantes)")
+                return
+            else:
+                del bot_state.silenced_users[remote_jid]
+                logger.info(f"✅ Bot reactivado automáticamente en {remote_jid}")
+        elif silence_value is True:
+            logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
+            return
+
+    # === Comandos especiales ===
+    if combined_message.lower() == "/silencio":
+        bot_state.silenced_users[remote_jid] = True
+        await send_evolution_message(bot_state, remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
+        if settings.OWNER_PHONE:
+            clean_client = remote_jid.split("@")[0]
+            alerta = f"*HANDOFF ACTIVADO*\n\nEl chat con wa.me/{clean_client} ha sido pausado."
+            await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
+        return
+
+    if combined_message.lower() == "/activar":
+        bot_state.silenced_users.pop(remote_jid, None)
+        await send_evolution_message(bot_state, remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
+        return
+
+    # === Refrescar inventario ===
+    await _ensure_inventory_loaded(bot_state)
+
+    store = bot_state.store
+    if not store:
+        logger.error("❌ MemoryStore no inicializado.")
+        return
+
+    session = await store.get(remote_jid) or {"state": "start", "context": {}}
+    state = session.get("state", "start")
+    context = session.get("context", {}) or {}
+
+    # Delay humano
+    await human_typing_delay()
+
+    # === Procesar con IA ===
+    try:
+        result = await handle_message(combined_message, bot_state.inventory, state, context)
+    except Exception as e:
+        logger.error(f"❌ Error IA: {e}")
+        result = {
+            "reply": "Dame un momento...",
+            "new_state": state,
+            "context": context,
+            "media_urls": [],
+            "lead_info": None
+        }
+
+    reply_text = (result.get("reply") or "").strip()
+    media_urls = result.get("media_urls") or []
+    lead_info = result.get("lead_info")
+
+    # Guardar estado
+    try:
+        await store.upsert(
+            remote_jid,
+            str(result.get("new_state", state)),
+            dict(result.get("context", context)),
+        )
+    except Exception as e:
+        logger.error(f"⚠️ Error guardando memoria: {e}")
+
+    # Enviar respuesta
+    await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
+
+    # === FUNNEL TRACKING ===
+    funnel_stage = result.get("funnel_stage", "MENSAJE")
+    funnel_data = result.get("funnel_data", {})
+    previous_stage = context.get("funnel_stage", "")
+
+    should_update_monday = (
+        funnel_stage in ("Enganche", "Intencion", "Cita agendada") and
+        funnel_stage != previous_stage
+    )
+
+    if should_update_monday:
+        try:
+            funnel_key = f"{remote_jid}|{funnel_stage}"
+            if funnel_key not in bot_state.processed_lead_ids:
+                bot_state.processed_lead_ids.add(funnel_key)
+
+                lead_data = {
+                    "telefono": remote_jid.split("@")[0],
+                    "external_id": f"accumulated_{int(time.time())}",
+                    "nombre": funnel_data.get("nombre") or "Lead WhatsApp",
+                    "interes": funnel_data.get("interes") or "Por definir",
+                    "cita": funnel_data.get("cita"),
+                    "pago": funnel_data.get("pago"),
+                }
+
+                stage_notes = {
+                    "Enganche": f"💬 Cliente interactuando (turno {funnel_data.get('turn_count', '?')})",
+                    "Intencion": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
+                    "Cita agendada": f"✅ Cita confirmada: {funnel_data.get('cita', 'N/A')}",
+                }
+                note = stage_notes.get(funnel_stage)
+
+                logger.info(f"📊 FUNNEL [{funnel_stage}]: {lead_data.get('telefono')} - {lead_data.get('interes')}")
+                await monday_service.create_or_update_lead(lead_data, stage=funnel_stage, add_note=note)
+
+        except Exception as e:
+            logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+
+    # Lead calificado - notificar
+    if lead_info:
+        try:
+            lead_key = f"{remote_jid}|lead"
+            if lead_key not in bot_state.processed_lead_ids:
+                bot_state.processed_lead_ids.add(lead_key)
+                await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=True)
+        except Exception as e:
+            logger.error(f"❌ Error procesando LEAD calificado: {e}")
+    else:
+        await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=False)
+
+
+async def _schedule_accumulated_processing(bot_state: GlobalState, remote_jid: str):
+    """
+    Espera MESSAGE_ACCUMULATION_SECONDS y luego procesa los mensajes acumulados.
+    Si llegan más mensajes, esta tarea se cancela y se crea una nueva.
+    """
+    try:
+        await asyncio.sleep(settings.MESSAGE_ACCUMULATION_SECONDS)
+        await _process_accumulated_messages(bot_state, remote_jid)
+    except asyncio.CancelledError:
+        # Se canceló porque llegó otro mensaje - normal
+        pass
+    except Exception as e:
+        logger.error(f"❌ Error en procesamiento acumulado: {e}")
 
 
 # === 7. TRANSCRIPCIÓN DE AUDIO ===
@@ -620,22 +789,6 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
         return
 
-    # === VERIFICAR SI EL BOT ESTÁ SILENCIADO ===
-    if remote_jid in bot_state.silenced_users:
-        silence_value = bot_state.silenced_users[remote_jid]
-
-        if isinstance(silence_value, (int, float)):
-            if time.time() < silence_value:
-                mins_left = int((silence_value - time.time()) / 60)
-                logger.info(f"🤐 Bot silenciado en {remote_jid} ({mins_left} min restantes)")
-                return
-            else:
-                del bot_state.silenced_users[remote_jid]
-                logger.info(f"✅ Bot reactivado automáticamente en {remote_jid}")
-        elif silence_value is True:
-            logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
-            return
-
     # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
     msg_obj = data.get("message", {}) or {}
     user_message, is_audio = _extract_user_message(msg_obj)
@@ -658,130 +811,27 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
     if not user_message:
         return
 
-    # === COMANDOS DEL CLIENTE ===
-    if user_message.lower() == "/silencio":
-        bot_state.silenced_users[remote_jid] = True
-        await send_evolution_message(bot_state, remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
+    # === ACUMULACIÓN DE MENSAJES RÁPIDOS ===
+    # En lugar de procesar inmediatamente, acumulamos y esperamos
+    # para ver si el cliente envía más mensajes seguidos
 
-        if settings.OWNER_PHONE:
-            clean_client = remote_jid.split("@")[0]
-            alerta = (
-                "*HANDOFF ACTIVADO*\n\n"
-                f"El chat con wa.me/{clean_client} ha sido pausado.\n"
-                "El bot NO responderá hasta que el cliente envíe '/activar'."
-            )
-            await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
-        return
+    # Agregar mensaje a la lista pendiente
+    if remote_jid not in bot_state.pending_messages:
+        bot_state.pending_messages[remote_jid] = []
+    bot_state.pending_messages[remote_jid].append(user_message)
 
-    if user_message.lower() == "/activar":
-        bot_state.silenced_users.pop(remote_jid, None)
-        await send_evolution_message(bot_state, remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
-        return
+    logger.info(f"📥 Mensaje acumulado ({len(bot_state.pending_messages[remote_jid])} pendientes): '{user_message[:50]}...'")
 
-    # Refrescar inventario
-    await _ensure_inventory_loaded(bot_state)
+    # Cancelar tarea anterior si existe (reinicia el timer)
+    if remote_jid in bot_state.pending_message_tasks:
+        old_task = bot_state.pending_message_tasks[remote_jid]
+        if not old_task.done():
+            old_task.cancel()
+            logger.debug(f"⏱️ Timer reiniciado para {remote_jid}")
 
-    store = bot_state.store
-    if not store:
-        logger.error("❌ MemoryStore no inicializado.")
-        return
-
-    session = await store.get(remote_jid) or {"state": "start", "context": {}}
-    state = session.get("state", "start")
-    context = session.get("context", {}) or {}
-
-    # Delay humano aleatorio (5-10 segundos)
-    await human_typing_delay()
-
-    try:
-        result = await handle_message(user_message, bot_state.inventory, state, context)
-    except Exception as e:
-        logger.error(f"❌ Error IA: {e}")
-        result = {
-            "reply": "Dame un momento...",
-            "new_state": state,
-            "context": context,
-            "media_urls": [],
-            "lead_info": None
-        }
-
-    reply_text = (result.get("reply") or "").strip()
-    media_urls = result.get("media_urls") or []
-    lead_info = result.get("lead_info")
-
-    try:
-        await store.upsert(
-            remote_jid,
-            str(result.get("new_state", state)),
-            dict(result.get("context", context)),
-        )
-    except Exception as e:
-        logger.error(f"⚠️ Error guardando memoria: {e}")
-
-    await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
-
-    # ============================================================
-    # FUNNEL TRACKING - Crear/actualizar lead en Monday según etapa
-    # ============================================================
-    funnel_stage = result.get("funnel_stage", "MENSAJE")
-    funnel_data = result.get("funnel_data", {})
-    previous_stage = context.get("funnel_stage", "")
-
-    # Determinar si debemos crear/actualizar en Monday
-    # Crear lead a partir de Enganche (turno > 1 = cliente respondió)
-    should_update_monday = (
-        funnel_stage in ("Enganche", "Intencion", "Cita agendada") and
-        funnel_stage != previous_stage  # Solo si la etapa cambió
-    )
-
-    if should_update_monday:
-        try:
-            funnel_key = f"{remote_jid}|{funnel_stage}"
-            if funnel_key not in bot_state.processed_lead_ids:
-                bot_state.processed_lead_ids.add(funnel_key)
-
-                lead_data = {
-                    "telefono": remote_jid.split("@")[0],
-                    "external_id": msg_id,
-                    "nombre": funnel_data.get("nombre") or "Lead WhatsApp",
-                    "interes": funnel_data.get("interes") or "Por definir",
-                    "cita": funnel_data.get("cita"),
-                    "pago": funnel_data.get("pago"),
-                }
-
-                # Nota descriptiva según la etapa
-                stage_notes = {
-                    "Enganche": f"💬 Cliente interactuando (turno {funnel_data.get('turn_count', '?')})",
-                    "Intencion": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
-                    "Cita agendada": f"✅ Cita confirmada: {funnel_data.get('cita', 'N/A')}",
-                }
-                note = stage_notes.get(funnel_stage)
-
-                logger.info(f"📊 FUNNEL [{funnel_stage}]: {lead_data.get('telefono')} - {lead_data.get('interes')}")
-                await monday_service.create_or_update_lead(lead_data, stage=funnel_stage, add_note=note)
-
-        except Exception as e:
-            logger.error(f"❌ Error actualizando funnel en Monday: {e}")
-
-    # Lead calificado tradicional (con cita) - notificar al owner
-    if lead_info:
-        try:
-            lead_key = f"{remote_jid}|{msg_id}|lead"
-            if lead_key in bot_state.processed_lead_ids:
-                logger.info(f"🧱 Lead duplicado bloqueado: {lead_key}")
-            else:
-                bot_state.processed_lead_ids.add(lead_key)
-
-                lead_info["telefono"] = remote_jid.split("@")[0]
-                lead_info["external_id"] = msg_id
-
-                logger.info(f"🚀 LEAD CALIFICADO: {lead_info.get('nombre')} - {lead_info.get('interes')}")
-                # Ya se actualizó arriba con create_or_update_lead, solo notificamos
-                await notify_owner(bot_state, remote_jid, user_message, reply_text, is_lead=True)
-        except Exception as e:
-            logger.error(f"❌ Error procesando LEAD calificado: {e}")
-    else:
-        await notify_owner(bot_state, remote_jid, user_message, reply_text, is_lead=False)
+    # Programar nuevo procesamiento después de MESSAGE_ACCUMULATION_SECONDS
+    task = asyncio.create_task(_schedule_accumulated_processing(bot_state, remote_jid))
+    bot_state.pending_message_tasks[remote_jid] = task
 
 
 # === 11. ENDPOINTS ===
@@ -797,8 +847,10 @@ async def health(request: Request):
         "processed_msgs_cache": len(bot_state.processed_message_ids),
         "processed_leads_cache": len(bot_state.processed_lead_ids),
         "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
+        "pending_message_queues": len(bot_state.pending_messages),
         "handoff_enabled": len(TEAM_NUMBERS_LIST) > 0,
         "auto_reactivate_minutes": settings.AUTO_REACTIVATE_MINUTES,
+        "message_accumulation_seconds": settings.MESSAGE_ACCUMULATION_SECONDS,
     }
 
 
