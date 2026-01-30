@@ -87,7 +87,7 @@ REGLAS OBLIGATORIAS:
 6) RESPONDE SOLO LO QUE PREGUNTAN:
 - Precio → Da el precio del modelo en conversación.
 - Fotos → "Claro, aquí tienes."
-- Ubicación → https://maps.app.goo.gl/v9KigGY3QVAxqwV17
+- Ubicación → "Estamos en Tlalnepantla, Edo Mex: https://maps.app.goo.gl/v9KigGY3QVAxqwV17" (NUNCA uses formato [texto](url), solo el URL directo)
 - Garantía/Servicio → "Puede hacer servicio en cualquier distribuidor FOTON autorizado sin perder garantía."
 - "Muy bien" / "Ok" → "Perfecto." y espera.
 
@@ -127,6 +127,7 @@ REGLAS OBLIGATORIAS:
 - Calcular financiamiento
 - Pedir nombre antes de dar el tuyo
 - Cambiar de modelo sin confirmación del cliente
+- Formato markdown para links (NO uses [texto](url), WhatsApp no lo soporta)
 """.strip()
 
 
@@ -666,6 +667,19 @@ def _sanitize_reply_if_photos_attached(reply: str, media_urls: List[str]) -> str
     return cleaned
 
 
+def _strip_markdown_links(text: str) -> str:
+    """
+    Convierte links markdown [texto](url) a solo el URL.
+    WhatsApp no soporta markdown links y se ven mal.
+    Ejemplo: '[Ubicación](https://maps.app.goo.gl/xxx)' -> 'https://maps.app.goo.gl/xxx'
+    """
+    if not text:
+        return text
+    # Pattern: [cualquier texto](url)
+    # Reemplaza con solo la URL
+    return re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'\2', text)
+
+
 # ============================================================
 # MONDAY VALIDATION (HARD GATE)
 # ============================================================
@@ -887,6 +901,9 @@ async def handle_message(
     # Pasamos new_context (la función lo modificará)
     media_urls = _pick_media_urls(user_message, reply_clean, inventory_service, new_context)
     reply_clean = _sanitize_reply_if_photos_attached(reply_clean, media_urls)
+
+    # Quitar markdown links que WhatsApp no soporta
+    reply_clean = _strip_markdown_links(reply_clean)
 
     # ============================================================
     # MONDAY FAILSAFE (MEJORADO - AGRESIVO)
