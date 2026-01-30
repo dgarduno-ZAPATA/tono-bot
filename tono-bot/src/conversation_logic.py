@@ -50,7 +50,8 @@ DATOS CLAVE:
 - TURNO: {turn_number}
 
 INFORMACIÓN FOTON:
-- Factura emitida por distribuidor FOTON autorizado.
+- Tractos y Max es DISTRIBUIDOR AUTORIZADO FOTON.
+- FACTURA ORIGINAL de FOTON (no reventa, no intermediario).
 - GARANTÍA: De fábrica FOTON, válida en todo México.
 - SERVICIO: El cliente puede hacer mantenimiento en cualquier distribuidor FOTON autorizado del país sin perder garantía.
 
