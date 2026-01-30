@@ -464,7 +464,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
     previous_stage = context.get("funnel_stage", "")
 
     should_update_monday = (
-        funnel_stage in ("Enganche", "Intencion", "Cita agendada") and
+        funnel_stage in ("Enganche", "Intención", "Cita agendada") and
         funnel_stage != previous_stage
     )
 
@@ -485,7 +485,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
 
                 stage_notes = {
                     "Enganche": f"💬 Cliente interactuando (turno {funnel_data.get('turn_count', '?')})",
-                    "Intencion": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
+                    "Intención": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
                     "Cita agendada": f"✅ Cita confirmada: {funnel_data.get('cita', 'N/A')}",
                 }
                 note = stage_notes.get(funnel_stage)
