@@ -258,15 +258,15 @@ def _message_looks_human(text: str) -> bool:
     """Detecta si un mensaje tiene características que el bot NO usaría."""
     if not text:
         return False
-    
+
     text_lower = text.lower()
-    
+
     # 1. El bot NUNCA usa emojis
     emoji_patterns = ["😊", "👍", "🙏", "💪", "🚚", "✅", "❤️", "🔥", "👌", "😉", "😅", "🤝", "📞", "📱", "🎉", "💯"]
     if any(emoji in text for emoji in emoji_patterns):
         logger.debug(f"🔍 Detectado emoji humano en: '{text[:50]}'")
         return True
-    
+
     # 2. Frases típicas de asesor humano
     human_phrases = [
         "un momento", "déjame verificar", "déjame revisar", "te marco", "te llamo",
@@ -276,13 +276,46 @@ def _message_looks_human(text: str) -> bool:
     if any(phrase in text_lower for phrase in human_phrases):
         logger.debug(f"🔍 Detectada frase humana en: '{text[:50]}'")
         return True
-    
+
     # 3. Errores de ortografía típicamente humanos
     typos = ["aver", "haber si", "ps si", "nel", "simon", "sisas", "ok ok", "oks"]
     if any(typo in text_lower for typo in typos):
         logger.debug(f"🔍 Detectado typo humano en: '{text[:50]}'")
         return True
-    
+
+    return False
+
+
+def _is_automated_greeting(text: str) -> bool:
+    """
+    Detecta mensajes automáticos de WhatsApp Business o sistemas externos (n8n, etc).
+    Estos mensajes NO deben silenciar al bot.
+    """
+    if not text:
+        return False
+
+    text_lower = text.lower()
+
+    # Patrones de mensajes de bienvenida automáticos
+    automated_patterns = [
+        # WhatsApp Business greeting messages
+        ("bienvenido" in text_lower and "wa.me" in text_lower),
+        ("catálogo" in text_lower and "wa.me" in text_lower),
+        ("catalogo" in text_lower and "wa.me" in text_lower),
+        # Links de catálogo de WhatsApp
+        "wa.me/c/" in text_lower,
+        # Mensajes de ausencia típicos
+        ("no estamos disponibles" in text_lower),
+        ("fuera de horario" in text_lower),
+        ("te contactaremos" in text_lower and "pronto" in text_lower),
+        # Mensajes de bienvenida genéricos sin contexto
+        (text_lower.startswith("hola") and "bienvenido" in text_lower and len(text) < 200),
+    ]
+
+    if any(automated_patterns):
+        logger.info(f"🤖 Mensaje automático detectado (NO silencia): '{text[:80]}...'")
+        return True
+
     return False
 
 
@@ -565,19 +598,24 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
 
     # === DETECCIÓN DE HANDOFF (MENSAJE SALIENTE) ===
     # Si el mensaje sale del WhatsApp del negocio (from_me=true)
-    # y NO fue enviado por el bot → es un HUMANO ASESOR → silenciar bot
+    # y NO fue enviado por el bot → PODRÍA ser un HUMANO ASESOR
     if from_me:
         msg_obj = data.get("message", {}) or {}
         msg_text, _ = _extract_user_message(msg_obj)
         msg_text = msg_text.strip()
 
-        # Verificar si este mensaje fue enviado por el bot
+        # 1. Verificar si este mensaje fue enviado por el bot
         if _is_bot_message(bot_state, remote_jid, msg_id, msg_text):
             logger.debug(f"✓ Confirmado mensaje del bot, ignorando")
             return
 
-        # Si NO es del bot → Es un HUMANO respondiendo → SILENCIAR
-        # No importa el contenido, cualquier mensaje humano silencia al bot
+        # 2. Verificar si es un mensaje automático (WhatsApp Business greeting, n8n, etc)
+        #    Estos NO deben silenciar al bot
+        if _is_automated_greeting(msg_text):
+            logger.info(f"✓ Mensaje automático ignorado (bot sigue activo)")
+            return
+
+        # 3. Si NO es del bot Y NO es automático → Es un HUMANO → SILENCIAR
         logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} - silenciando bot por {settings.AUTO_REACTIVATE_MINUTES} min")
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
         return
