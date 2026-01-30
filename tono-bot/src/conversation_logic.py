@@ -103,6 +103,9 @@ REGLAS OBLIGATORIAS:
 
 10) CITAS:
 - DOMINGOS CERRADO. Si propone domingo: "Los domingos no abrimos. ¿Te parece el lunes o sábado?"
+- ANTI-INSISTENCIA: NO termines cada mensaje con "¿Te gustaría agendar una cita?"
+- Solo menciona la cita cuando sea NATURAL: después de dar precio, después de 3-4 intercambios, o si el cliente pregunta cuándo puede ir.
+- Si ya sugeriste cita y el cliente NO respondió sobre eso, NO insistas. Espera a que él pregunte.
 
 11) LEAD (JSON):
 - SOLO genera JSON si hay: NOMBRE + MODELO + CITA CONFIRMADA.
@@ -346,7 +349,8 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
             continue
 
         modelo_norm = _normalize_spanish(modelo)
-        tokens = [t for t in modelo_norm.split() if len(t) >= 3 and t not in {"foton", "camion", "camión"}]
+        # CAMBIO: Permitir tokens de 2 caracteres para detectar G9, E5, G7, etc.
+        tokens = [t for t in modelo_norm.split() if len(t) >= 2 and t not in {"foton", "camion", "camión"}]
         if not tokens:
             continue
 
@@ -494,8 +498,9 @@ def _pick_media_urls(
     if not items:
         return []
 
-    # 2) Verificar si piden fotos
-    photo_keywords = [
+    # 2) Verificar si piden fotos EXPLÍCITAMENTE
+    # Keywords que SIEMPRE indican petición de fotos
+    explicit_photo_keywords = [
         "foto",
         "fotos",
         "imagen",
@@ -505,19 +510,24 @@ def _pick_media_urls(
         "ver imágenes",
         "ver la foto",
         "ver las fotos",
-        "enseñame",
-        "enséñame",
-        "muestrame",
-        "muéstrame",
-        "mandame fotos",
-        "mándame fotos",
-        "quiero ver",
-        "otra",
-        "mas",
-        "más",
-        "siguiente",
+        "enseñame foto",
+        "enséñame foto",
+        "muestrame foto",
+        "muéstrame foto",
+        "mandame foto",
+        "mándame foto",
     ]
-    if not any(k in msg for k in photo_keywords):
+
+    # Keywords que SOLO funcionan si ya hay contexto de fotos (photo_model existe)
+    # Evita mandar fotos cuando dicen "otra cosa", "más información", etc.
+    context_photo_keywords = ["otra foto", "mas fotos", "más fotos", "siguiente foto", "otra imagen"]
+
+    current_photo_model = (context.get("photo_model") or "").strip()
+
+    explicit_request = any(k in msg for k in explicit_photo_keywords)
+    context_request = current_photo_model and any(k in msg for k in context_photo_keywords)
+
+    if not explicit_request and not context_request:
         return []
 
     # 3) Recuperar memoria del contexto
@@ -534,22 +544,54 @@ def _pick_media_urls(
     target_item = None
     target_model_name = ""
 
-    # A) Buscar mención explícita en mensaje o respuesta del bot
-    for item in items:
-        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
-        if not modelo:
-            continue
+    # A) PRIORIDAD 1: Si last_interest existe y coincide con el mensaje, usarlo
+    #    Esto evita que "fotos de la G9" muestre otro modelo
+    if last_interest:
+        interest_norm = _normalize_spanish(last_interest)
+        # Extraer tokens relevantes del interés guardado (incluir g9, e5, g7, etc.)
+        interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in ["foton", "camion", "camión"]]
 
-        modelo_norm = _normalize_spanish(modelo)
-        parts = [p for p in modelo_norm.split() if len(p) >= 3 and p not in ["foton", "camion", "camión"]]
-        match_user = any(part in msg for part in parts)
-        match_bot = any(part in rep_norm for part in parts)
-        if match_user or match_bot:
-            target_item = item
-            target_model_name = modelo
-            break
+        # Verificar si el mensaje menciona el modelo de interés
+        if any(tok in msg for tok in interest_tokens):
+            for item in items:
+                modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
+                if _normalize_spanish(modelo) == interest_norm or any(tok in _normalize_spanish(modelo) for tok in interest_tokens):
+                    target_item = item
+                    target_model_name = modelo
+                    break
 
-    # B) Si no hay mención, usar last_interest (CLAVE para "otra foto" sin decir modelo)
+    # B) PRIORIDAD 2: Buscar mención explícita en mensaje o respuesta del bot (con scoring)
+    if not target_item:
+        best_item = None
+        best_model = ""
+        best_score = 0
+
+        for item in items:
+            modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
+            if not modelo:
+                continue
+
+            modelo_norm = _normalize_spanish(modelo)
+            # CAMBIO: Permitir tokens de 2 caracteres (g9, e5, g7, etc.)
+            parts = [p for p in modelo_norm.split() if len(p) >= 2 and p not in ["foton", "camion", "camión"]]
+
+            score = 0
+            for part in parts:
+                if part in msg:
+                    score += 3  # Match en mensaje del usuario = alta prioridad
+                if part in rep_norm:
+                    score += 1  # Match en respuesta del bot = menor prioridad
+
+            if score > best_score:
+                best_score = score
+                best_item = item
+                best_model = modelo
+
+        if best_score >= 2:  # Mínimo 2 puntos para considerar
+            target_item = best_item
+            target_model_name = best_model
+
+    # C) PRIORIDAD 3: Usar last_interest sin mención (para "otra foto" sin decir modelo)
     if not target_item and last_interest:
         for item in items:
             modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
