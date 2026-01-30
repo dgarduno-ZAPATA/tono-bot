@@ -946,14 +946,14 @@ async def handle_message(
     # FUNNEL STAGE CALCULATION
     # ============================================================
     # Determinar etapa del funnel basado en datos de la conversación
-    # Mensaje → Enganche → Intencion → Cita agendada
+    # Mensaje → Enganche → Intención → Cita agendada
     funnel_stage = "Mensaje"  # Default: primer contacto
 
     if turn_count > 1:
         funnel_stage = "Enganche"  # Cliente respondió, hay interacción
 
     if last_interest:
-        funnel_stage = "Intencion"  # Modelo específico mencionado
+        funnel_stage = "Intención"  # Modelo específico mencionado
 
     if last_appointment:
         funnel_stage = "Cita agendada"  # Cita confirmada
