@@ -4,8 +4,30 @@ import httpx
 import json
 import logging
 import re
+from datetime import datetime
+
+import pytz
 
 logger = logging.getLogger(__name__)
+
+# Meses en español para nombres de grupos en Monday
+MESES_ES = {
+    1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL",
+    5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
+    9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE"
+}
+
+
+def _get_current_month_group_name() -> str:
+    """Retorna el nombre del grupo del mes actual: 'FEBRERO 2026'"""
+    try:
+        tz = pytz.timezone("America/Mexico_City")
+        now = datetime.now(tz)
+    except Exception:
+        now = datetime.now()
+
+    mes = MESES_ES.get(now.month, "")
+    return f"{mes} {now.year}"
 
 class MondayService:
     def __init__(self):
@@ -91,16 +113,50 @@ class MondayService:
         }
         """
         variables = {
-            "board_id": int(self.board_id), 
-            "col_id": self.phone_dedupe_col_id, 
+            "board_id": int(self.board_id),
+            "col_id": self.phone_dedupe_col_id,
             "val": phone_limpio
         }
-        
+
         data = await self._graphql(query, variables)
         items = data.get("data", {}).get("items_page_by_column_values", {}).get("items", [])
-        
+
         if items:
             return items[0]["id"]
+        return None
+
+    async def _get_group_id_by_name(self, group_name: str):
+        """Busca un grupo por nombre y retorna su ID."""
+        if not group_name:
+            return None
+
+        query = """
+        query ($board_id: ID!) {
+          boards(ids: [$board_id]) {
+            groups {
+              id
+              title
+            }
+          }
+        }
+        """
+        variables = {"board_id": int(self.board_id)}
+
+        data = await self._graphql(query, variables)
+        boards = data.get("data", {}).get("boards", [])
+
+        if not boards:
+            return None
+
+        groups = boards[0].get("groups", [])
+
+        # Buscar grupo que coincida con el nombre (case insensitive)
+        for group in groups:
+            if group.get("title", "").upper() == group_name.upper():
+                logger.info(f"✅ Grupo encontrado: '{group['title']}' (ID: {group['id']})")
+                return group["id"]
+
+        logger.warning(f"⚠️ Grupo '{group_name}' no encontrado en el tablero")
         return None
 
     async def create_or_update_lead(self, lead_data: dict, stage: str = None, add_note: str = None):
@@ -158,12 +214,26 @@ class MondayService:
         if not item_id:
             # --- CREAR NUEVO ---
             is_new = True
-            logger.info(f"🆕 Creando lead [{stage or 'SIN_ETAPA'}]: {phone_limpio}")
-            query_create = """
-            mutation ($board_id: ID!, $name: String!, $vals: JSON!) {
-                create_item (board_id: $board_id, item_name: $name, column_values: $vals) { id }
-            }
-            """
+
+            # Buscar grupo del mes actual (ej. "FEBRERO 2026")
+            month_group_name = _get_current_month_group_name()
+            group_id = await self._get_group_id_by_name(month_group_name)
+
+            if group_id:
+                logger.info(f"🆕 Creando lead [{stage or 'SIN_ETAPA'}] en grupo '{month_group_name}': {phone_limpio}")
+                query_create = """
+                mutation ($board_id: ID!, $group_id: String!, $name: String!, $vals: JSON!) {
+                    create_item (board_id: $board_id, group_id: $group_id, item_name: $name, column_values: $vals) { id }
+                }
+                """
+            else:
+                logger.info(f"🆕 Creando lead [{stage or 'SIN_ETAPA'}] (sin grupo): {phone_limpio}")
+                query_create = """
+                mutation ($board_id: ID!, $name: String!, $vals: JSON!) {
+                    create_item (board_id: $board_id, item_name: $name, column_values: $vals) { id }
+                }
+                """
+
             # Nombre del item: "Nombre | Telefono"
             item_name_display = f"{nombre} | {phone_limpio}"
 
@@ -172,6 +242,9 @@ class MondayService:
                 "name": item_name_display,
                 "vals": json.dumps(col_vals)
             }
+            if group_id:
+                vars_create["group_id"] = group_id
+
             res = await self._graphql(query_create, vars_create)
             item_id = res.get("data", {}).get("create_item", {}).get("id")
 
