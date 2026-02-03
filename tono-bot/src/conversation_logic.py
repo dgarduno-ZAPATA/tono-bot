@@ -91,9 +91,22 @@ REGLAS OBLIGATORIAS:
 - Garantía/Servicio → "Puede hacer servicio en cualquier distribuidor FOTON autorizado sin perder garantía."
 - "Muy bien" / "Ok" → "Perfecto." y espera.
 
-7) FINANCIAMIENTO:
-- NUNCA calcules montos, mensualidades ni intereses.
-- Di: "Las cotizaciones son personalizadas. ¿Me regalas tu nombre para que un asesor te contacte?"
+7) FINANCIAMIENTO (REGLAS DE ORO):
+- PUEDES dar información de corridas financieras BASE cuando pregunten.
+- DATOS BASE que SÍ puedes dar:
+  * Enganche mínimo: SIEMPRE es 20% del valor factura.
+  * Plazo base: SIEMPRE es 48 meses (4 años).
+  * Mensualidad estimada: USA los datos de CORRIDAS FINANCIERAS abajo.
+  * Las mensualidades YA INCLUYEN intereses, IVA de intereses y seguros.
+- OBLIGATORIO: SIEMPRE que menciones un número (enganche, mensualidad, precio financiado), di que es ILUSTRATIVO.
+  * Ejemplo: "El enganche mínimo sería de $90,000 y la mensualidad aproximada de $12,396, esto es ilustrativo."
+  * Ejemplo: "Con enganche del 20% ($144,000) quedarían mensualidades de aproximadamente $19,291, como referencia ilustrativa."
+- ESCALAR A ASESOR cuando pidan:
+  * Más enganche (mayor al 20%) → "Sí es posible, un asesor te contacta para personalizar."
+  * Otro plazo (diferente a 48 meses) → "El plazo base es 48 meses. Para ajustarlo, un asesor te contacta."
+  * Bajar intereses / cambiar tasa → "Un asesor te contacta para ver opciones."
+  * Quitar seguros / otra personalización → "Un asesor te contacta."
+- Para ESCALAR pide: Nombre, Teléfono (si no lo tienes), Ciudad, Modelo de interés.
 
 8) MODO ESPERA:
 - Si dice "déjame ver", "ocupado", etc: "Sin problema, aquí quedo pendiente." y PARA.
@@ -129,6 +142,62 @@ REGLAS OBLIGATORIAS:
 - Cambiar de modelo sin confirmación del cliente
 - Formato markdown para links (NO uses [texto](url), WhatsApp no lo soporta)
 """.strip()
+
+
+# ============================================================
+# FINANCING DATA
+# ============================================================
+_FINANCING_DATA: Optional[Dict[str, Any]] = None
+
+
+def _load_financing_data() -> Dict[str, Any]:
+    """Load financing data from JSON file (cached)."""
+    global _FINANCING_DATA
+    if _FINANCING_DATA is not None:
+        return _FINANCING_DATA
+
+    financing_path = os.path.join(os.path.dirname(__file__), "..", "data", "financing.json")
+    try:
+        with open(financing_path, "r", encoding="utf-8") as f:
+            _FINANCING_DATA = json.load(f)
+            logger.info(f"✅ Financing data loaded: {len(_FINANCING_DATA)} models")
+    except FileNotFoundError:
+        logger.warning(f"⚠️ Financing file not found: {financing_path}")
+        _FINANCING_DATA = {}
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Error parsing financing JSON: {e}")
+        _FINANCING_DATA = {}
+
+    return _FINANCING_DATA
+
+
+def _build_financing_text() -> str:
+    """Build financing info text for GPT context."""
+    data = _load_financing_data()
+    if not data:
+        return "Corridas de financiamiento no disponibles."
+
+    lines = ["CORRIDAS FINANCIERAS (Banorte - Ilustrativas):"]
+    lines.append("Enganche mínimo: 20% | Plazo base: 48 meses | Mensualidades YA incluyen intereses y seguros\n")
+
+    for key, info in data.items():
+        nombre = info.get("nombre", "")
+        anio = info.get("anio", "")
+        valor = info.get("valor_factura", 0)
+        enganche = info.get("enganche_min", 0)
+        mensualidad = info.get("pago_mensual_total_mes_1", 0)
+        tasa = info.get("tasa_anual_pct", 0)
+        cat = info.get("cat_sin_iva_pct", 0)
+
+        lines.append(
+            f"- {nombre} {anio}: "
+            f"Factura ${valor:,.0f} | "
+            f"Enganche 20% = ${enganche:,.0f} | "
+            f"Mensualidad ~${mensualidad:,.2f} | "
+            f"Tasa {tasa}% | CAT {cat}%"
+        )
+
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -788,6 +857,7 @@ async def handle_message(
     )
 
     inventory_text = _build_inventory_text(inventory_service)
+    financing_text = _build_financing_text()
 
     context_block = (
         f"TURNO: {turn_count} {'(PRIMER MENSAJE - puedes saludar)' if turn_count == 1 else '(NO saludes, ve directo al punto)'}\n"
@@ -797,6 +867,7 @@ async def handle_message(
         f"CITA DETECTADA: {last_appointment or '(Sin cita)'}\n"
         f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
         f"INVENTARIO DISPONIBLE:\n{inventory_text}\n\n"
+        f"{financing_text}\n\n"
         f"HISTORIAL DE CHAT:\n{history[-3000:]}"
     )
 
