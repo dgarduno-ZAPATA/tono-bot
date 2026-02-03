@@ -444,6 +444,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
     reply_text = (result.get("reply") or "").strip()
     media_urls = result.get("media_urls") or []
     lead_info = result.get("lead_info")
+    pdf_info = result.get("pdf_info")
 
     # Guardar estado
     try:
@@ -455,8 +456,19 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
     except Exception as e:
         logger.error(f"⚠️ Error guardando memoria: {e}")
 
-    # Enviar respuesta
-    await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
+    # Verificar si hay que enviar un PDF
+    if pdf_info and pdf_info.get("pdf_url"):
+        # Enviar texto + PDF
+        await send_evolution_document(
+            bot_state,
+            remote_jid,
+            reply_text,
+            pdf_info.get("pdf_url"),
+            pdf_info.get("filename", "documento.pdf")
+        )
+    else:
+        # Enviar respuesta normal (texto + fotos si las hay)
+        await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
 
     # === FUNNEL TRACKING ===
     funnel_stage = result.get("funnel_stage", "MENSAJE")
@@ -705,6 +717,74 @@ async def send_evolution_message(bot_state: GlobalState, number_or_jid: str, tex
         logger.error(f"❌ Error de conexión: {e}")
     except Exception as e:
         logger.error(f"❌ Error inesperado: {e}")
+
+
+async def send_evolution_document(bot_state: GlobalState, number_or_jid: str, text: str, pdf_url: str, filename: str):
+    """
+    Envía primero un mensaje de texto y luego un PDF como documento.
+    El texto se envía antes del PDF para dar contexto al usuario.
+    """
+    clean_number = _clean_phone_or_jid(number_or_jid)
+    if not clean_number:
+        logger.error(f"❌ No se pudo limpiar número/jid: {number_or_jid}")
+        return
+
+    client = bot_state.http_client
+    if not client:
+        logger.error("❌ Cliente HTTP no inicializado (lifespan).")
+        return
+
+    try:
+        # 1. Enviar texto primero
+        if text:
+            url_text = f"/message/sendText/{settings.EVO_INSTANCE}"
+            payload_text = {"number": clean_number, "text": text}
+            response = await _evo_post(client, url_text, json=payload_text)
+
+            if response.status_code >= 400:
+                logger.error(f"⚠️ Error enviando texto antes de PDF: {response.text}")
+            else:
+                logger.info(f"✅ Texto enviado antes de PDF a {clean_number}")
+                try:
+                    resp_data = response.json()
+                    msg_id = resp_data.get("key", {}).get("id")
+                    if msg_id:
+                        bot_state.bot_sent_message_ids.add(msg_id)
+                except Exception:
+                    pass
+
+            # Pequeña espera para que WhatsApp ordene los mensajes
+            await asyncio.sleep(1.2)
+
+        # 2. Enviar PDF como documento
+        url_media = f"/message/sendMedia/{settings.EVO_INSTANCE}"
+        payload_pdf = {
+            "number": clean_number,
+            "mediatype": "document",
+            "mimetype": "application/pdf",
+            "media": pdf_url,
+            "fileName": filename,
+            "caption": ""
+        }
+
+        response = await _evo_post(client, url_media, json=payload_pdf)
+
+        if response.status_code >= 400:
+            logger.error(f"⚠️ Error enviando PDF: {response.text}")
+        else:
+            logger.info(f"✅ PDF enviado a {clean_number}: {filename}")
+            try:
+                resp_data = response.json()
+                msg_id = resp_data.get("key", {}).get("id")
+                if msg_id:
+                    bot_state.bot_sent_message_ids.add(msg_id)
+            except Exception:
+                pass
+
+    except httpx.RequestError as e:
+        logger.error(f"❌ Error de conexión enviando PDF: {e}")
+    except Exception as e:
+        logger.error(f"❌ Error inesperado enviando PDF: {e}")
 
 
 # === 9. ALERTAS AL DUEÑO ===

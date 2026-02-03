@@ -114,13 +114,19 @@ REGLAS OBLIGATORIAS:
 9) FOTOS:
 - Si piden fotos: "Claro, aquí tienes." (el sistema las adjunta).
 
-10) CITAS:
+10) PDFs (FICHA TÉCNICA Y CORRIDA FINANCIERA):
+- Si piden "ficha técnica", "especificaciones", "specs": responde "Claro, te comparto la ficha técnica en PDF." (el sistema adjunta el PDF).
+- Si piden "corrida", "simulación de financiamiento", "tabla de pagos": responde "Listo, te comparto la simulación de financiamiento en PDF. Es ilustrativa e incluye intereses." (el sistema adjunta el PDF).
+- Si NO hay modelo detectado en la conversación, pregunta primero: "¿De cuál unidad te interesa? Tenemos Toano Panel, Tunland G9, Tunland E5, EST-A y Miller."
+- Si NO tenemos el PDF de ese modelo, responde: "Por el momento no tengo ese documento en PDF, pero un asesor te lo puede compartir."
+
+11) CITAS:
 - DOMINGOS CERRADO. Si propone domingo: "Los domingos no abrimos. ¿Te parece el lunes o sábado?"
 - ANTI-INSISTENCIA: NO termines cada mensaje con "¿Te gustaría agendar una cita?"
 - Solo menciona la cita cuando sea NATURAL: después de dar precio, después de 3-4 intercambios, o si el cliente pregunta cuándo puede ir.
 - Si ya sugeriste cita y el cliente NO respondió sobre eso, NO insistas. Espera a que él pregunte.
 
-11) LEAD (JSON):
+12) LEAD (JSON):
 - SOLO genera JSON si hay: NOMBRE + MODELO + CITA CONFIRMADA.
 ```json
 {{
@@ -133,7 +139,7 @@ REGLAS OBLIGATORIAS:
 }}
 ```
 
-12) PROHIBIDO:
+13) PROHIBIDO:
 - Emojis
 - Explicaciones largas
 - Inventar información
@@ -198,6 +204,93 @@ def _build_financing_text() -> str:
         )
 
     return "\n".join(lines)
+
+
+def _detect_pdf_request(user_message: str, last_interest: str) -> Optional[Dict[str, Any]]:
+    """
+    Detecta si el usuario pide un PDF (ficha técnica o corrida).
+    Retorna dict con: tipo, pdf_url, filename, mensaje_previo
+    O None si no pide PDF.
+    """
+    msg = (user_message or "").lower()
+
+    # Detectar tipo de PDF solicitado
+    ficha_keywords = ["ficha", "ficha tecnica", "ficha técnica", "especificaciones", "specs", "caracteristicas", "características"]
+    corrida_keywords = ["corrida", "simulacion", "simulación", "financiamiento", "tabla de pagos", "mensualidades pdf", "pagos mensuales"]
+
+    pdf_type = None
+    if any(k in msg for k in ficha_keywords):
+        pdf_type = "ficha"
+    elif any(k in msg for k in corrida_keywords):
+        pdf_type = "corrida"
+
+    if not pdf_type:
+        return None
+
+    # Necesitamos un modelo detectado
+    if not last_interest:
+        return {"tipo": pdf_type, "sin_modelo": True}
+
+    # Buscar el modelo en los datos de financiamiento
+    data = _load_financing_data()
+    if not data:
+        return {"tipo": pdf_type, "sin_datos": True}
+
+    # Normalizar el interés para buscar
+    interest_norm = last_interest.lower().replace("foton", "").replace("diesel", "").replace("4x4", "").strip()
+
+    # Buscar coincidencia
+    matched_key = None
+    matched_info = None
+
+    for key, info in data.items():
+        nombre = info.get("nombre", "").lower()
+        anio = str(info.get("anio", ""))
+
+        # Tokens del modelo
+        key_tokens = key.lower().replace("_", " ").split()
+        nombre_tokens = nombre.split()
+
+        # Verificar si hay coincidencia
+        score = 0
+        for token in key_tokens + nombre_tokens:
+            if token in interest_norm and len(token) >= 2:
+                score += 1
+
+        # También verificar año
+        if anio in interest_norm or anio in last_interest:
+            score += 2
+
+        if score >= 2:
+            if matched_key is None or score > matched_info.get("_score", 0):
+                matched_key = key
+                matched_info = info.copy()
+                matched_info["_score"] = score
+
+    if not matched_info:
+        return {"tipo": pdf_type, "sin_modelo": True}
+
+    # Obtener URL del PDF
+    if pdf_type == "ficha":
+        pdf_url = matched_info.get("pdf_ficha_tecnica")
+        if not pdf_url:
+            return {"tipo": pdf_type, "sin_pdf": True, "modelo": matched_info.get("nombre", "")}
+        filename = f"Ficha_Tecnica_{matched_info.get('nombre', 'Foton').replace(' ', '_')}_{matched_info.get('anio', '')}.pdf"
+        mensaje = "Claro, te comparto la ficha tecnica en PDF."
+    else:
+        pdf_url = matched_info.get("pdf_corrida")
+        if not pdf_url:
+            return {"tipo": pdf_type, "sin_pdf": True, "modelo": matched_info.get("nombre", "")}
+        filename = f"Corrida_Financiamiento_{matched_info.get('nombre', 'Foton').replace(' ', '_')}_{matched_info.get('anio', '')}.pdf"
+        mensaje = "Listo, te comparto la simulacion de financiamiento en PDF. Es ilustrativa e incluye intereses."
+
+    return {
+        "tipo": pdf_type,
+        "pdf_url": pdf_url,
+        "filename": filename,
+        "mensaje": mensaje,
+        "modelo": f"{matched_info.get('nombre', '')} {matched_info.get('anio', '')}"
+    }
 
 
 # ============================================================
@@ -1032,6 +1125,23 @@ async def handle_message(
     # Agregar etapa al contexto para tracking
     new_context["funnel_stage"] = funnel_stage
 
+    # ============================================================
+    # PDF DETECTION (FICHA TÉCNICA / CORRIDA)
+    # ============================================================
+    pdf_info = _detect_pdf_request(user_message, last_interest)
+    if pdf_info:
+        if pdf_info.get("sin_modelo"):
+            # No hay modelo detectado, el bot debe preguntar
+            logger.info(f"📄 PDF solicitado ({pdf_info.get('tipo')}) pero sin modelo detectado")
+        elif pdf_info.get("sin_pdf"):
+            # No tenemos el PDF de ese modelo
+            logger.info(f"📄 PDF solicitado ({pdf_info.get('tipo')}) pero no disponible para {pdf_info.get('modelo')}")
+        elif pdf_info.get("pdf_url"):
+            # Tenemos el PDF, lo vamos a enviar
+            logger.info(f"📄 PDF detectado: {pdf_info.get('tipo')} - {pdf_info.get('modelo')} - {pdf_info.get('filename')}")
+            # Reemplazar la respuesta del bot con el mensaje apropiado
+            reply_clean = pdf_info.get("mensaje", reply_clean)
+
     return {
         "reply": reply_clean,
         "new_state": "chatting",
@@ -1045,5 +1155,6 @@ async def handle_message(
             "cita": last_appointment or None,
             "pago": last_payment or None,
             "turn_count": turn_count,
-        }
+        },
+        "pdf_info": pdf_info,
     }

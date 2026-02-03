@@ -10,7 +10,9 @@
     "cat_sin_iva_pct": 35.5,
     "pago_mensual_total_mes_1": 18766.87,
     "incluye_intereses": true,
-    "seguros": "Anual Financiado"
+    "seguros": "Anual Financiado",
+    "pdf_ficha_tecnica": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/fichas/foton_toano_panel_2024.pdf",
+    "pdf_corrida": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/corridas/corrida_foton_toano_panel_2024.pdf"
   },
   "foton_toano_panel_2025": {
     "nombre": "Foton Toano Panel",
@@ -23,7 +25,9 @@
     "cat_sin_iva_pct": 35.5,
     "pago_mensual_total_mes_1": 19291.50,
     "incluye_intereses": true,
-    "seguros": "Anual Financiado"
+    "seguros": "Anual Financiado",
+    "pdf_ficha_tecnica": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/fichas/foton_toano_panel_2025.pdf",
+    "pdf_corrida": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/corridas/corrida_foton_toano_panel_2025.pdf"
   },
   "foton_tunland_g9_2025": {
     "nombre": "Foton Tunland G9",
@@ -36,7 +40,9 @@
     "cat_sin_iva_pct": 37.7,
     "pago_mensual_total_mes_1": 12396.45,
     "incluye_intereses": true,
-    "seguros": "Anual Financiado"
+    "seguros": "Anual Financiado",
+    "pdf_ficha_tecnica": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/fichas/foton_tunland_g9_2025.pdf",
+    "pdf_corrida": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/corridas/corrida_foton_tunland_G9_2025.pdf"
   },
   "foton_tunland_e5_2024": {
     "nombre": "Foton Tunland E5",
@@ -49,10 +55,12 @@
     "cat_sin_iva_pct": 39.3,
     "pago_mensual_total_mes_1": 8419.32,
     "incluye_intereses": true,
-    "seguros": "Anual Financiado"
+    "seguros": "Anual Financiado",
+    "pdf_ficha_tecnica": null,
+    "pdf_corrida": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/corridas/corrida_foton_tunland_E5_2024.pdf"
   },
   "foton_esta_6x4_x13_2024_n": {
-    "nombre": "Foton Auman EST-A 6x4 x13 (Versión N)",
+    "nombre": "Foton Auman EST-A 6x4 x13 (Version N)",
     "anio": 2024,
     "valor_factura": 1845000.00,
     "enganche_min_pct": 0.20,
@@ -62,7 +70,9 @@
     "cat_sin_iva_pct": 50.6,
     "pago_mensual_total_mes_1": 39503.67,
     "incluye_intereses": true,
-    "seguros": "Anual Contado"
+    "seguros": "Anual Contado",
+    "pdf_ficha_tecnica": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/fichas/foton_esta_6x4_2024.pdf",
+    "pdf_corrida": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/corridas/corrida_foton_esta_6x4_2024_N.pdf"
   },
   "foton_miler_45t_rs_2024": {
     "nombre": "Foton Miler 45T RS",
@@ -75,6 +85,8 @@
     "cat_sin_iva_pct": 36.2,
     "pago_mensual_total_mes_1": 13520.59,
     "incluye_intereses": true,
-    "seguros": "Anual Financiado"
+    "seguros": "Anual Financiado",
+    "pdf_ficha_tecnica": null,
+    "pdf_corrida": "https://raw.githubusercontent.com/dgarduno-ZAPATA/foton-pdfs/main/pdfs/corridas/corrida_foton_miller_2024.pdf"
   }
 }
