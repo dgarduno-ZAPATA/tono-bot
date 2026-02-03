@@ -213,14 +213,14 @@ def _safe_get(item: Dict[str, Any], keys: List[str], default: str = "") -> str:
 
 
 def _format_price(precio: str, moneda: str, iva: str) -> str:
-    """Precio limpio: '$499,000 MXN + IVA incluido'."""
+    """Precio limpio: '$499,000 MXN IVA incluido'."""
     try:
         num = float(precio.replace(",", "").replace(" ", ""))
         formatted = f"${num:,.0f}"
     except (ValueError, AttributeError):
         formatted = f"${precio}" if precio else "Consultar"
     cur = moneda if moneda else "MXN"
-    iva_txt = " + IVA incluido" if iva and iva.upper() == "TRUE" else ""
+    iva_txt = " IVA incluido" if iva and iva.upper() == "TRUE" else ""
     return f"{formatted} {cur}{iva_txt}"
 
 
