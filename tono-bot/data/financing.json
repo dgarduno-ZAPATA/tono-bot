@@ -1,0 +1,80 @@
+{
+  "foton_toano_panel_2024": {
+    "nombre": "Foton Toano Panel",
+    "anio": 2024,
+    "valor_factura": 700000.00,
+    "enganche_min_pct": 0.20,
+    "enganche_min": 140000.00,
+    "plazo_meses_base": 48,
+    "tasa_anual_pct": 15.99,
+    "cat_sin_iva_pct": 35.5,
+    "pago_mensual_total_mes_1": 18766.87,
+    "incluye_intereses": true,
+    "seguros": "Anual Financiado"
+  },
+  "foton_toano_panel_2025": {
+    "nombre": "Foton Toano Panel",
+    "anio": 2025,
+    "valor_factura": 720000.00,
+    "enganche_min_pct": 0.20,
+    "enganche_min": 144000.00,
+    "plazo_meses_base": 48,
+    "tasa_anual_pct": 15.99,
+    "cat_sin_iva_pct": 35.5,
+    "pago_mensual_total_mes_1": 19291.50,
+    "incluye_intereses": true,
+    "seguros": "Anual Financiado"
+  },
+  "foton_tunland_g9_2025": {
+    "nombre": "Foton Tunland G9",
+    "anio": 2025,
+    "valor_factura": 450000.00,
+    "enganche_min_pct": 0.20,
+    "enganche_min": 90000.00,
+    "plazo_meses_base": 48,
+    "tasa_anual_pct": 15.99,
+    "cat_sin_iva_pct": 37.7,
+    "pago_mensual_total_mes_1": 12396.45,
+    "incluye_intereses": true,
+    "seguros": "Anual Financiado"
+  },
+  "foton_tunland_e5_2024": {
+    "nombre": "Foton Tunland E5",
+    "anio": 2024,
+    "valor_factura": 300000.00,
+    "enganche_min_pct": 0.20,
+    "enganche_min": 60000.00,
+    "plazo_meses_base": 48,
+    "tasa_anual_pct": 15.99,
+    "cat_sin_iva_pct": 39.3,
+    "pago_mensual_total_mes_1": 8419.32,
+    "incluye_intereses": true,
+    "seguros": "Anual Financiado"
+  },
+  "foton_esta_6x4_x13_2024_n": {
+    "nombre": "Foton Auman EST-A 6x4 x13 (Versión N)",
+    "anio": 2024,
+    "valor_factura": 1845000.00,
+    "enganche_min_pct": 0.20,
+    "enganche_min": 369000.00,
+    "plazo_meses_base": 48,
+    "tasa_anual_pct": 15.99,
+    "cat_sin_iva_pct": 50.6,
+    "pago_mensual_total_mes_1": 39503.67,
+    "incluye_intereses": true,
+    "seguros": "Anual Contado"
+  },
+  "foton_miler_45t_rs_2024": {
+    "nombre": "Foton Miler 45T RS",
+    "anio": 2024,
+    "valor_factura": 500000.00,
+    "enganche_min_pct": 0.20,
+    "enganche_min": 100000.00,
+    "plazo_meses_base": 48,
+    "tasa_anual_pct": 15.99,
+    "cat_sin_iva_pct": 36.2,
+    "pago_mensual_total_mes_1": 13520.59,
+    "incluye_intereses": true,
+    "seguros": "Anual Financiado"
+  }
+}
