@@ -457,15 +457,22 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
         logger.error(f"⚠️ Error guardando memoria: {e}")
 
     # Verificar si hay que enviar un PDF
-    if pdf_info and pdf_info.get("pdf_url"):
-        # Enviar texto + PDF
-        await send_evolution_document(
-            bot_state,
-            remote_jid,
-            reply_text,
-            pdf_info.get("pdf_url"),
-            pdf_info.get("filename", "documento.pdf")
-        )
+    if pdf_info:
+        logger.info(f"📄 PDF info recibido: {pdf_info}")
+        if pdf_info.get("pdf_url"):
+            # Enviar texto + PDF
+            logger.info(f"📤 Enviando PDF: {pdf_info.get('filename')} -> {remote_jid}")
+            await send_evolution_document(
+                bot_state,
+                remote_jid,
+                reply_text,
+                pdf_info.get("pdf_url"),
+                pdf_info.get("filename", "documento.pdf")
+            )
+        else:
+            # PDF detectado pero no disponible - enviar solo texto
+            logger.info(f"📄 PDF detectado pero no disponible: {pdf_info}")
+            await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
     else:
         # Enviar respuesta normal (texto + fotos si las hay)
         await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
