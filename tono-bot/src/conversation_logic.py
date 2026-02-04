@@ -206,69 +206,128 @@ def _build_financing_text() -> str:
     return "\n".join(lines)
 
 
-def _detect_pdf_request(user_message: str, last_interest: str) -> Optional[Dict[str, Any]]:
+def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
     """
     Detecta si el usuario pide un PDF (ficha técnica o corrida).
     Retorna dict con: tipo, pdf_url, filename, mensaje_previo
     O None si no pide PDF.
+
+    Ahora con soporte de contexto para:
+    - Typos comunes ("fiche", "fixa", "corrda")
+    - Peticiones genéricas ("pásamela", "mándamela") si hubo PDF previo
     """
     msg = (user_message or "").lower()
+    context = context or {}
 
-    # Detectar tipo de PDF solicitado
-    ficha_keywords = ["ficha", "ficha tecnica", "ficha técnica", "especificaciones", "specs", "caracteristicas", "características"]
-    corrida_keywords = ["corrida", "simulacion", "simulación", "financiamiento", "tabla de pagos", "mensualidades pdf", "pagos mensuales"]
+    # Detectar tipo de PDF solicitado (con typos comunes)
+    ficha_keywords = [
+        "ficha", "fiche", "fixa", "ficah",  # typos
+        "ficha tecnica", "ficha técnica",
+        "especificaciones", "specs", "caracteristicas", "características",
+        "hoja tecnica", "hoja técnica", "datos tecnicos", "datos técnicos"
+    ]
+    corrida_keywords = [
+        "corrida", "corrda", "corida",  # typos
+        "simulacion", "simulación", "simulacion de",
+        "financiamiento", "tabla de pagos",
+        "mensualidades pdf", "pagos mensuales",
+        "plan de pagos", "cuotas"
+    ]
+
+    # Keywords genéricos que continúan un PDF previo
+    generic_send_keywords = [
+        "pasame", "pásame", "pasala", "pásala", "pasamela", "pásamela",
+        "mandame", "mándame", "mandala", "mándala", "mandamela", "mándamela",
+        "enviame", "envíame", "enviala", "envíala", "enviamela", "envíamela",
+        "comparteme", "compárteme", "compartela", "compártela",
+        "dame", "dámela", "la quiero", "si la quiero", "sí la quiero"
+    ]
 
     pdf_type = None
     if any(k in msg for k in ficha_keywords):
         pdf_type = "ficha"
+        logger.debug(f"📄 Keyword de ficha detectado en: '{msg}'")
     elif any(k in msg for k in corrida_keywords):
         pdf_type = "corrida"
+        logger.debug(f"📄 Keyword de corrida detectado en: '{msg}'")
+
+    # Si no hay keyword explícito, verificar si hay petición genérica + contexto previo
+    if not pdf_type:
+        last_pdf_type = context.get("last_pdf_request_type")
+        if last_pdf_type and any(k in msg for k in generic_send_keywords):
+            pdf_type = last_pdf_type
+            logger.info(f"📄 Petición genérica '{msg}' continuando PDF previo: {pdf_type}")
 
     if not pdf_type:
         return None
 
     # Necesitamos un modelo detectado
     if not last_interest:
+        logger.info(f"📄 PDF {pdf_type} solicitado pero no hay last_interest")
         return {"tipo": pdf_type, "sin_modelo": True}
 
     # Buscar el modelo en los datos de financiamiento
     data = _load_financing_data()
     if not data:
+        logger.warning(f"📄 PDF {pdf_type} solicitado pero no hay datos de financiamiento")
         return {"tipo": pdf_type, "sin_datos": True}
 
     # Normalizar el interés para buscar
     interest_norm = last_interest.lower().replace("foton", "").replace("diesel", "").replace("4x4", "").strip()
+    logger.info(f"📄 Buscando modelo para PDF: last_interest='{last_interest}' -> normalizado='{interest_norm}'")
 
     # Buscar coincidencia
     matched_key = None
     matched_info = None
+    best_score = 0
+    best_year = 0
 
     for key, info in data.items():
         nombre = info.get("nombre", "").lower()
-        anio = str(info.get("anio", ""))
+        anio = int(info.get("anio", 0))
 
-        # Tokens del modelo
-        key_tokens = key.lower().replace("_", " ").split()
-        nombre_tokens = nombre.split()
+        # Tokens del modelo (únicos, sin duplicados)
+        key_tokens = set(key.lower().replace("_", " ").split())
+        nombre_tokens = set(nombre.split())
+        all_tokens = key_tokens.union(nombre_tokens)
 
-        # Verificar si hay coincidencia
+        # Verificar si hay coincidencia (solo tokens de 2+ caracteres, excluyendo "foton")
         score = 0
-        for token in key_tokens + nombre_tokens:
-            if token in interest_norm and len(token) >= 2:
+        matched_tokens = []
+        for token in all_tokens:
+            if len(token) >= 2 and token != "foton" and token in interest_norm:
                 score += 1
+                matched_tokens.append(token)
 
-        # También verificar año
-        if anio in interest_norm or anio in last_interest:
-            score += 2
+        # También verificar año - bonus alto si hay coincidencia exacta
+        year_str = str(anio)
+        if year_str in interest_norm or year_str in last_interest:
+            score += 3  # Bonus alto por año exacto
+            matched_tokens.append(f"año:{anio}")
 
+        if score > 0:
+            logger.debug(f"📄 Candidato '{key}': score={score}, año={anio}, tokens={matched_tokens}")
+
+        # Aceptar si score >= 2
+        # Preferir: mayor score, o mismo score pero año más reciente
         if score >= 2:
-            if matched_key is None or score > matched_info.get("_score", 0):
+            is_better = (
+                matched_key is None or
+                score > best_score or
+                (score == best_score and anio > best_year)
+            )
+            if is_better:
                 matched_key = key
                 matched_info = info.copy()
                 matched_info["_score"] = score
+                best_score = score
+                best_year = anio
 
     if not matched_info:
+        logger.info(f"📄 No se encontró modelo para '{interest_norm}' en financiamiento")
         return {"tipo": pdf_type, "sin_modelo": True}
+
+    logger.info(f"📄 Modelo matched: '{matched_key}' (score={best_score}, año={best_year}) para '{last_interest}'")
 
     # Obtener URL del PDF
     if pdf_type == "ficha":
@@ -1060,6 +1119,8 @@ async def handle_message(
         # Mantener valores previos de fotos si existen
         "photo_model": context.get("photo_model"),
         "photo_index": context.get("photo_index", 0),
+        # Mantener tipo de PDF solicitado para peticiones genéricas
+        "last_pdf_request_type": context.get("last_pdf_request_type"),
     }
 
     # Pasamos new_context (la función lo modificará)
@@ -1128,8 +1189,12 @@ async def handle_message(
     # ============================================================
     # PDF DETECTION (FICHA TÉCNICA / CORRIDA)
     # ============================================================
-    pdf_info = _detect_pdf_request(user_message, last_interest)
+    pdf_info = _detect_pdf_request(user_message, last_interest, new_context)
     if pdf_info:
+        # Guardar tipo de PDF solicitado para peticiones genéricas posteriores
+        if pdf_info.get("tipo"):
+            new_context["last_pdf_request_type"] = pdf_info.get("tipo")
+
         if pdf_info.get("sin_modelo"):
             # No hay modelo detectado, el bot debe preguntar
             logger.info(f"📄 PDF solicitado ({pdf_info.get('tipo')}) pero sin modelo detectado")
