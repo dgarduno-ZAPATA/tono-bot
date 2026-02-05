@@ -189,14 +189,16 @@ def _build_financing_text() -> str:
     for key, info in data.items():
         nombre = info.get("nombre", "")
         anio = info.get("anio", "")
+        transmision = info.get("transmision", "")
         valor = info.get("valor_factura", 0)
         enganche = info.get("enganche_min", 0)
         mensualidad = info.get("pago_mensual_total_mes_1", 0)
         tasa = info.get("tasa_anual_pct", 0)
         cat = info.get("cat_sin_iva_pct", 0)
 
+        trans_text = f" ({transmision})" if transmision else ""
         lines.append(
-            f"- {nombre} {anio}: "
+            f"- {nombre} {anio}{trans_text}: "
             f"Factura ${valor:,.0f} | "
             f"Enganche 20% = ${enganche:,.0f} | "
             f"Mensualidad ~${mensualidad:,.2f} | "
