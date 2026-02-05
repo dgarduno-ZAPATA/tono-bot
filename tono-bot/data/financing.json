@@ -2,6 +2,7 @@
   "foton_toano_panel_2024": {
     "nombre": "Foton Toano Panel",
     "anio": 2024,
+    "transmision": "Manual/Estándar",
     "valor_factura": 700000.00,
     "enganche_min_pct": 0.20,
     "enganche_min": 140000.00,
@@ -17,6 +18,7 @@
   "foton_toano_panel_2025": {
     "nombre": "Foton Toano Panel",
     "anio": 2025,
+    "transmision": "Manual/Estándar",
     "valor_factura": 720000.00,
     "enganche_min_pct": 0.20,
     "enganche_min": 144000.00,
@@ -32,6 +34,7 @@
   "foton_tunland_g9_2025": {
     "nombre": "Foton Tunland G9",
     "anio": 2025,
+    "transmision": "Automática",
     "valor_factura": 450000.00,
     "enganche_min_pct": 0.20,
     "enganche_min": 90000.00,
@@ -47,6 +50,7 @@
   "foton_tunland_e5_2024": {
     "nombre": "Foton Tunland E5",
     "anio": 2024,
+    "transmision": "Manual/Estándar",
     "valor_factura": 300000.00,
     "enganche_min_pct": 0.20,
     "enganche_min": 60000.00,
@@ -62,6 +66,7 @@
   "foton_esta_6x4_x13_2024_n": {
     "nombre": "Foton Auman EST-A 6x4 x13 (Version N)",
     "anio": 2024,
+    "transmision": "Manual/Estándar",
     "valor_factura": 1845000.00,
     "enganche_min_pct": 0.20,
     "enganche_min": 369000.00,
@@ -77,6 +82,7 @@
   "foton_miler_45t_rs_2024": {
     "nombre": "Foton Miler 45T RS",
     "anio": 2024,
+    "transmision": "Manual/Estándar",
     "valor_factura": 500000.00,
     "enganche_min_pct": 0.20,
     "enganche_min": 100000.00,
