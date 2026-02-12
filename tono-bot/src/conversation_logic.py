@@ -870,8 +870,10 @@ def _pick_media_urls(
     #    Esto evita que "fotos de la G9" muestre otro modelo
     if last_interest:
         interest_norm = _normalize_spanish(last_interest)
-        # Extraer tokens relevantes del interés guardado (incluir g9, e5, g7, etc.)
-        interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in ["foton", "camion", "camión"]]
+        # Extraer tokens relevantes, excluyendo palabras comunes que causan falsos positivos
+        _noise = {"foton", "camion", "camión", "esta", "estan", "están",
+                  "gris", "azul", "rojo", "negro", "blanco", "plata", "at", "mt", "diesel"}
+        interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in _noise]
 
         # Verificar si el mensaje menciona el modelo de interés
         if any(tok in msg for tok in interest_tokens):
@@ -888,14 +890,26 @@ def _pick_media_urls(
         best_model = ""
         best_score = 0
 
+        # Palabras comunes en español que NO deben usarse como tokens de matching
+        # "esta" es el peor: aparece en casi cualquier mensaje y matchea con EST-A
+        noise_words = {
+            "foton", "camion", "camión",
+            # "esta/estan" = palabras comunes español, NO confundir con modelo EST-A
+            "esta", "estan", "están",
+            # Colores (aparecen en nombre de modelo pero no sirven para identificarlo)
+            "gris", "azul", "rojo", "negro", "blanco", "plata",
+            # Transmisión / tracción
+            "at", "mt", "diesel",
+        }
+
         for item in items:
             modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
             if not modelo:
                 continue
 
             modelo_norm = _normalize_spanish(modelo)
-            # CAMBIO: Permitir tokens de 2 caracteres (g9, e5, g7, etc.)
-            parts = [p for p in modelo_norm.split() if len(p) >= 2 and p not in ["foton", "camion", "camión"]]
+            # Permitir tokens de 2 caracteres (g9, e5, g7, 4x4, 6x4, etc.)
+            parts = [p for p in modelo_norm.split() if len(p) >= 2 and p not in noise_words]
 
             score = 0
             for part in parts:
@@ -909,7 +923,7 @@ def _pick_media_urls(
                 best_item = item
                 best_model = modelo
 
-        if best_score >= 2:  # Mínimo 2 puntos para considerar
+        if best_score >= 3:  # Mínimo 3 puntos (al menos 1 match en mensaje del usuario)
             target_item = best_item
             target_model_name = best_model
 
