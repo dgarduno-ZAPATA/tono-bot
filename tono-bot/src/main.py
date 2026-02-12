@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     EVOLUTION_API_KEY: str
 
     # Opcionales / defaults
-    EVO_INSTANCE: str = "Tractosymax2"
+    EVO_INSTANCE: str = "Maximo Cervantes 2"
     OWNER_PHONE: Optional[str] = None
     SHEET_CSV_URL: Optional[str] = None
     INVENTORY_REFRESH_SECONDS: int = 300
@@ -981,3 +981,4 @@ async def evolution_webhook(request: Request):
     except Exception as e:
         logger.error(f"❌ webhook ERROR GENERAL: {e}")
         return {"status": "error_but_acked"}
+
