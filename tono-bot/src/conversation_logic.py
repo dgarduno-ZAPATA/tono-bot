@@ -135,6 +135,8 @@ REGLAS OBLIGATORIAS:
 
 10) FOTOS:
 - Si piden fotos: "Claro, aquí tienes." (el sistema las adjunta).
+- Si piden fotos del INTERIOR o "por dentro": "Solo tengo fotos exteriores por ahora. Si gustas, un asesor te comparte fotos del interior."
+- NO digas "aquí tienes" para fotos de interior porque NO las tenemos.
 
 11) PDFs (FICHA TÉCNICA Y CORRIDA FINANCIERA):
 - Si piden "ficha técnica", "especificaciones", "specs": responde "Claro, te comparto la ficha técnica en PDF." (el sistema adjunta el PDF).
@@ -152,6 +154,9 @@ REGLAS OBLIGATORIAS:
   * Si tiene día pero no hora: "¿A qué hora te queda bien?"
   * Si tiene hora pero no día: "¿Qué día te funcionaría?"
   * NUNCA confirmes una cita sin tener nombre y horario.
+- AL CONFIRMAR CITA: SIEMPRE incluye la ubicación. Ejemplo: "Listo, te espero el lunes a las 10 AM en Tlalnepantla, Edo Mex."
+- Si el cliente pregunta "¿dónde es?" o "¿de dónde son?": Da la ubicación ANTES de seguir con la cita.
+- Si dice "háblame", "llámame", "márcame": Responde "Con gusto, ¿a qué número y en qué horario te marco?" NO agendes cita, él quiere llamada.
 
 13) LEAD (JSON):
 - SOLO genera JSON si hay: NOMBRE + MODELO + CITA CONFIRMADA.
@@ -281,11 +286,15 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
         logger.debug(f"📄 Keyword de corrida detectado en: '{msg}'")
 
     # Si no hay keyword explícito, verificar si hay petición genérica + contexto previo
+    # PERO solo si NO están pidiendo fotos (evita que "mandame fotos" envíe PDF)
     if not pdf_type:
-        last_pdf_type = context.get("last_pdf_request_type")
-        if last_pdf_type and any(k in msg for k in generic_send_keywords):
-            pdf_type = last_pdf_type
-            logger.info(f"📄 Petición genérica '{msg}' continuando PDF previo: {pdf_type}")
+        photo_words = ["foto", "fotos", "imagen", "imagenes", "imágenes", "video", "videos"]
+        is_photo_request = any(pw in msg for pw in photo_words)
+        if not is_photo_request:
+            last_pdf_type = context.get("last_pdf_request_type")
+            if last_pdf_type and any(k in msg for k in generic_send_keywords):
+                pdf_type = last_pdf_type
+                logger.info(f"📄 Petición genérica '{msg}' continuando PDF previo: {pdf_type}")
 
     if not pdf_type:
         return None
