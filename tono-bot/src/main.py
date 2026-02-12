@@ -668,11 +668,12 @@ async def send_evolution_message(bot_state: GlobalState, number_or_jid: str, tex
     try:
         if media_urls:
             total_fotos = len(media_urls)
+            fotos_enviadas = 0
             for i, media_url in enumerate(media_urls):
                 url = f"/message/sendMedia/{quote(settings.EVO_INSTANCE, safe='')}"
-                
+
                 caption_part = text if (i == total_fotos - 1) else ""
-                
+
                 payload = {
                     "number": clean_number,
                     "mediatype": "image",
@@ -680,24 +681,39 @@ async def send_evolution_message(bot_state: GlobalState, number_or_jid: str, tex
                     "caption": caption_part,
                     "media": media_url,
                 }
-                
+
                 if i > 0:
                     await asyncio.sleep(0.5)
 
-                response = await _evo_post(client, url, json=payload)
+                # Retry individual photo sends (up to 2 retries)
+                sent = False
+                for _photo_attempt in range(3):
+                    response = await _evo_post(client, url, json=payload)
+                    if response.status_code < 400:
+                        sent = True
+                        fotos_enviadas += 1
+                        logger.info(f"✅ Enviada foto {i+1}/{total_fotos} a {clean_number}")
+                        try:
+                            resp_data = response.json()
+                            msg_id = resp_data.get("key", {}).get("id")
+                            if msg_id:
+                                bot_state.bot_sent_message_ids.add(msg_id)
+                        except Exception:
+                            pass
+                        break
+                    else:
+                        if _photo_attempt < 2:
+                            logger.warning(f"⚠️ Retry foto {i+1} intento {_photo_attempt+1}: {response.status_code}")
+                            await asyncio.sleep(1.5)
+                        else:
+                            logger.error(f"❌ Error foto {i+1} después de 3 intentos: {response.text[:200]}")
 
-                if response.status_code >= 400:
-                    logger.error(f"⚠️ Error foto {i+1}: {response.text}")
-                else:
-                    logger.info(f"✅ Enviada foto {i+1}/{total_fotos} a {clean_number}")
-                    
-                    try:
-                        resp_data = response.json()
-                        msg_id = resp_data.get("key", {}).get("id")
-                        if msg_id:
-                            bot_state.bot_sent_message_ids.add(msg_id)
-                    except Exception:
-                        pass
+            # If no photos were sent but we had text with photo promise, send text anyway
+            if fotos_enviadas == 0 and text:
+                logger.warning(f"⚠️ Ninguna foto enviada, enviando solo texto")
+                url_text = f"/message/sendText/{quote(settings.EVO_INSTANCE, safe='')}"
+                payload_text = {"number": clean_number, "text": text}
+                await _evo_post(client, url_text, json=payload_text)
 
         else:
             url = f"/message/sendText/{quote(settings.EVO_INSTANCE, safe='')}"
@@ -769,7 +785,7 @@ async def send_evolution_document(bot_state: GlobalState, number_or_jid: str, te
             # Pequeña espera para que WhatsApp ordene los mensajes
             await asyncio.sleep(1.2)
 
-        # 2. Enviar PDF como documento
+        # 2. Enviar PDF como documento (con retry)
         url_media = f"/message/sendMedia/{quote(settings.EVO_INSTANCE, safe='')}"
         payload_pdf = {
             "number": clean_number,
@@ -780,19 +796,32 @@ async def send_evolution_document(bot_state: GlobalState, number_or_jid: str, te
             "caption": ""
         }
 
-        response = await _evo_post(client, url_media, json=payload_pdf)
+        pdf_sent = False
+        for _pdf_attempt in range(3):
+            response = await _evo_post(client, url_media, json=payload_pdf)
+            if response.status_code < 400:
+                pdf_sent = True
+                logger.info(f"✅ PDF enviado a {clean_number}: {filename}")
+                try:
+                    resp_data = response.json()
+                    msg_id = resp_data.get("key", {}).get("id")
+                    if msg_id:
+                        bot_state.bot_sent_message_ids.add(msg_id)
+                except Exception:
+                    pass
+                break
+            else:
+                if _pdf_attempt < 2:
+                    logger.warning(f"⚠️ Retry PDF intento {_pdf_attempt+1}: {response.status_code}")
+                    await asyncio.sleep(2.0)
+                else:
+                    logger.error(f"❌ Error enviando PDF después de 3 intentos: {response.text[:200]}")
 
-        if response.status_code >= 400:
-            logger.error(f"⚠️ Error enviando PDF: {response.text}")
-        else:
-            logger.info(f"✅ PDF enviado a {clean_number}: {filename}")
-            try:
-                resp_data = response.json()
-                msg_id = resp_data.get("key", {}).get("id")
-                if msg_id:
-                    bot_state.bot_sent_message_ids.add(msg_id)
-            except Exception:
-                pass
+        if not pdf_sent:
+            # Fallback: inform the user the PDF couldn't be sent
+            fallback_text = "No pude enviar el PDF en este momento. Un asesor te lo comparte."
+            url_fallback = f"/message/sendText/{quote(settings.EVO_INSTANCE, safe='')}"
+            await _evo_post(client, url_fallback, json={"number": clean_number, "text": fallback_text})
 
     except httpx.RequestError as e:
         logger.error(f"❌ Error de conexión enviando PDF: {e}")
