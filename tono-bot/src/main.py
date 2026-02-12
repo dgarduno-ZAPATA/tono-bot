@@ -8,6 +8,7 @@ import time
 import re
 import base64
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 from collections import deque, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,7 +30,7 @@ class Settings(BaseSettings):
     EVOLUTION_API_KEY: str
 
     # Opcionales / defaults
-    EVO_INSTANCE: str = "Tractosymax2"
+    EVO_INSTANCE: str = "Maximo Cervantes 2"
     OWNER_PHONE: Optional[str] = None
     SHEET_CSV_URL: Optional[str] = None
     INVENTORY_REFRESH_SECONDS: int = 300
@@ -564,7 +565,7 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
             logger.error("❌ Cliente HTTP no inicializado")
             return ""
 
-        media_url = f"/chat/getBase64FromMediaMessage/{settings.EVO_INSTANCE}"
+        media_url = f"/chat/getBase64FromMediaMessage/{quote(settings.EVO_INSTANCE, safe='')}"
         
         payload = {
             "message": {
@@ -663,7 +664,7 @@ async def send_evolution_message(bot_state: GlobalState, number_or_jid: str, tex
         if media_urls:
             total_fotos = len(media_urls)
             for i, media_url in enumerate(media_urls):
-                url = f"/message/sendMedia/{settings.EVO_INSTANCE}"
+                url = f"/message/sendMedia/{quote(settings.EVO_INSTANCE, safe='')}"
                 
                 caption_part = text if (i == total_fotos - 1) else ""
                 
@@ -694,7 +695,7 @@ async def send_evolution_message(bot_state: GlobalState, number_or_jid: str, tex
                         pass
 
         else:
-            url = f"/message/sendText/{settings.EVO_INSTANCE}"
+            url = f"/message/sendText/{quote(settings.EVO_INSTANCE, safe='')}"
             payload = {"number": clean_number, "text": text}
             response = await _evo_post(client, url, json=payload)
 
@@ -744,7 +745,7 @@ async def send_evolution_document(bot_state: GlobalState, number_or_jid: str, te
     try:
         # 1. Enviar texto primero
         if text:
-            url_text = f"/message/sendText/{settings.EVO_INSTANCE}"
+            url_text = f"/message/sendText/{quote(settings.EVO_INSTANCE, safe='')}"
             payload_text = {"number": clean_number, "text": text}
             response = await _evo_post(client, url_text, json=payload_text)
 
@@ -764,7 +765,7 @@ async def send_evolution_document(bot_state: GlobalState, number_or_jid: str, te
             await asyncio.sleep(1.2)
 
         # 2. Enviar PDF como documento
-        url_media = f"/message/sendMedia/{settings.EVO_INSTANCE}"
+        url_media = f"/message/sendMedia/{quote(settings.EVO_INSTANCE, safe='')}"
         payload_pdf = {
             "number": clean_number,
             "mediatype": "document",
