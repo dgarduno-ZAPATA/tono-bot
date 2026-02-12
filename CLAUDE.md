@@ -60,7 +60,7 @@ OPENAI_API_KEY           # OpenAI API key
 
 ### Optional (with defaults)
 ```bash
-EVO_INSTANCE="Tractosymax2"           # WhatsApp instance name
+EVO_INSTANCE="Maximo Cervantes 2"     # WhatsApp instance name
 OPENAI_MODEL="gpt-4o-mini"            # GPT model to use
 OWNER_PHONE=""                         # Owner's phone for alerts
 SHEET_CSV_URL=""                       # Google Sheets CSV URL for inventory
