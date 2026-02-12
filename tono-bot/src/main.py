@@ -202,9 +202,25 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
         img = msg_obj.get("imageMessage") or {}
         return img.get("caption") or "(Envió una foto)", False
 
-    # 4. AUDIO/NOTA DE VOZ
+    # 4. AUDIO/NOTA DE VOZ (múltiples formatos de Evolution API)
     if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
         return "", True
+
+    # 5. Fallback: revisar messageType (algunas versiones de Evolution API)
+    #    También verifica si hay mimetype de audio en cualquier sub-mensaje
+    for k, v in msg_obj.items():
+        if isinstance(v, dict):
+            mimetype = v.get("mimetype", "")
+            if "audio" in mimetype or "ogg" in mimetype:
+                logger.info(f"🎤 Audio detectado vía mimetype en key '{k}': {mimetype}")
+                return "", True
+
+    # Log de keys no reconocidas para diagnóstico
+    known_keys = {"conversation", "extendedTextMessage", "imageMessage", "audioMessage",
+                  "pttMessage", "messageContextInfo", "senderKeyDistributionMessage"}
+    unknown = set(msg_obj.keys()) - known_keys
+    if unknown:
+        logger.info(f"📋 Keys de mensaje no procesadas: {unknown}")
 
     return "", False
 
@@ -553,9 +569,10 @@ async def _schedule_accumulated_processing(bot_state: GlobalState, remote_jid: s
 async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remote_jid: str) -> str:
     """
     Descarga el audio DESENCRIPTADO desde Evolution API y lo transcribe con Whisper.
+    Con retry y mejor diagnóstico de errores.
     """
     if not msg_id or not remote_jid:
-        logger.warning("⚠️ msg_id o remote_jid vacío")
+        logger.warning("⚠️ msg_id o remote_jid vacío para audio")
         return ""
 
     temp_path = None
@@ -563,15 +580,14 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_audio:
             temp_path = temp_audio.name
 
-        logger.info(f"⬇️ Descargando audio desde Evolution API...")
-
         client = bot_state.http_client
         if not client:
-            logger.error("❌ Cliente HTTP no inicializado")
+            logger.error("❌ Cliente HTTP no inicializado para audio")
             return ""
 
+        # === PASO 1: Descargar audio de Evolution API (con retry) ===
         media_url = f"/chat/getBase64FromMediaMessage/{quote(settings.EVO_INSTANCE, safe='')}"
-        
+
         payload = {
             "message": {
                 "key": {
@@ -583,30 +599,71 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
             "convertToMp4": False
         }
 
-        response = await _evo_post(client, media_url, json=payload)
+        base64_audio = None
+        for _audio_attempt in range(3):
+            logger.info(f"⬇️ Descargando audio (intento {_audio_attempt + 1}/3)...")
+            try:
+                response = await _evo_post(client, media_url, json=payload)
+            except Exception as e:
+                logger.error(f"❌ Error de conexión descargando audio: {e}")
+                if _audio_attempt < 2:
+                    await asyncio.sleep(2.0)
+                continue
 
-        if response.status_code not in [200, 201]:
-            logger.error(f"❌ Error descargando desde Evolution: {response.status_code}")
-            return ""
+            if response.status_code not in [200, 201]:
+                logger.error(f"❌ Evolution audio status {response.status_code}: {response.text[:200]}")
+                if _audio_attempt < 2:
+                    await asyncio.sleep(2.0)
+                continue
 
-        data = response.json()
+            try:
+                data = response.json()
+            except Exception as e:
+                logger.error(f"❌ Evolution audio respuesta no JSON: {e}")
+                if _audio_attempt < 2:
+                    await asyncio.sleep(2.0)
+                continue
 
-        if isinstance(data, dict):
-            base64_audio = data.get("base64") or data.get("media")
-        else:
-            base64_audio = data
-            
+            # Extraer base64 de diferentes formatos de respuesta
+            if isinstance(data, dict):
+                base64_audio = data.get("base64") or data.get("media") or data.get("data")
+                if not base64_audio:
+                    logger.error(f"❌ Respuesta sin base64. Keys: {list(data.keys())}")
+            elif isinstance(data, str):
+                base64_audio = data
+            else:
+                logger.error(f"❌ Tipo de respuesta inesperado: {type(data)}")
+
+            if base64_audio:
+                # Limpiar data URI prefix si existe
+                if "base64," in base64_audio:
+                    base64_audio = base64_audio.split("base64,", 1)[1]
+                break
+            elif _audio_attempt < 2:
+                await asyncio.sleep(2.0)
+
         if not base64_audio:
-            logger.error("❌ No se recibió base64 de Evolution")
+            logger.error("❌ No se pudo obtener base64 de audio después de 3 intentos")
             return ""
 
-        audio_bytes = base64.b64decode(base64_audio)
-        
+        # Decodificar y guardar
+        try:
+            audio_bytes = base64.b64decode(base64_audio)
+        except Exception as e:
+            logger.error(f"❌ Error decodificando base64 audio: {e}")
+            return ""
+
         with open(temp_path, "wb") as f:
             f.write(audio_bytes)
 
         logger.info(f"✅ Audio descargado: {len(audio_bytes)} bytes")
 
+        # Verificar que el archivo no esté vacío o corrupto
+        if len(audio_bytes) < 100:
+            logger.error(f"❌ Audio demasiado pequeño ({len(audio_bytes)} bytes), posiblemente corrupto")
+            return ""
+
+        # === PASO 2: Transcribir con Whisper ===
         try:
             from src.conversation_logic import client as openai_client
 
@@ -617,17 +674,17 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
                     language="es",
                     response_format="text"
                 )
-            
+
             if isinstance(transcript, str):
                 texto = transcript.strip()
             else:
                 texto = (getattr(transcript, "text", "") or "").strip()
-            
+
             if texto:
                 logger.info(f"🎤 Audio transcrito: '{texto[:150]}...'")
             else:
                 logger.warning("⚠️ Transcripción vacía")
-            
+
             return texto
 
         except Exception as e:
@@ -642,9 +699,8 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
-                logger.info(f"🗑️ Archivo temporal eliminado")
-            except Exception as e:
-                logger.warning(f"⚠️ No se pudo eliminar temp file: {e}")
+            except Exception:
+                pass
 
 
 # === 8. ENVÍO DE MENSAJES (CON RASTREO) ===
