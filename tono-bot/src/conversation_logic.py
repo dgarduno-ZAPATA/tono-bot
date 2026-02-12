@@ -253,46 +253,66 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
     msg = (user_message or "").lower()
     context = context or {}
 
-    # Detectar tipo de PDF solicitado (con typos comunes)
-    ficha_keywords = [
-        "ficha", "fiche", "fixa", "ficah",  # typos
-        "ficha tecnica", "ficha técnica",
-        "especificaciones", "specs", "caracteristicas", "características",
-        "hoja tecnica", "hoja técnica", "datos tecnicos", "datos técnicos"
-    ]
-    corrida_keywords = [
-        "corrida", "corrda", "corida",  # typos
-        "simulacion", "simulación", "simulacion de",
-        "financiamiento", "tabla de pagos",
-        "mensualidades pdf", "pagos mensuales",
-        "plan de pagos", "cuotas"
-    ]
-
-    # Keywords genéricos que continúan un PDF previo
-    generic_send_keywords = [
-        "pasame", "pásame", "pasala", "pásala", "pasamela", "pásamela",
+    # === VERBOS DE ACCIÓN (indican que quieren RECIBIR algo, no solo preguntar) ===
+    action_verbs = [
         "mandame", "mándame", "mandala", "mándala", "mandamela", "mándamela",
+        "pasame", "pásame", "pasala", "pásala", "pasamela", "pásamela",
         "enviame", "envíame", "enviala", "envíala", "enviamela", "envíamela",
         "comparteme", "compárteme", "compartela", "compártela",
-        "dame", "dámela", "la quiero", "si la quiero", "sí la quiero"
+        "dame", "dámela", "la quiero", "si la quiero", "sí la quiero",
+        "quiero ver", "quiero la",
+    ]
+    has_action_verb = any(v in msg for v in action_verbs)
+
+    # === KEYWORDS QUE SIEMPRE ACTIVAN PDF (son específicos, no ambiguos) ===
+    ficha_keywords_direct = [
+        "ficha", "fiche", "fixa", "ficah",  # typos
+        "ficha tecnica", "ficha técnica",
+        "hoja tecnica", "hoja técnica", "datos tecnicos", "datos técnicos",
+        "specs",
+    ]
+
+    corrida_keywords_direct = [
+        "corrida", "corrda", "corida",  # typos
+        "simulacion", "simulación",
+        "tabla de pagos",
+        "mensualidades pdf",
+    ]
+
+    # === KEYWORDS AMBIGUOS: solo activan PDF si hay verbo de acción ===
+    # "¿tienen financiamiento?" = pregunta informativa, NO mandar PDF
+    # "mandame el financiamiento" = SÍ mandar PDF
+    corrida_keywords_ambiguous = [
+        "financiamiento", "especificaciones", "caracteristicas", "características",
+        "pagos mensuales", "plan de pagos", "cuotas",
     ]
 
     pdf_type = None
-    if any(k in msg for k in ficha_keywords):
-        pdf_type = "ficha"
-        logger.debug(f"📄 Keyword de ficha detectado en: '{msg}'")
-    elif any(k in msg for k in corrida_keywords):
-        pdf_type = "corrida"
-        logger.debug(f"📄 Keyword de corrida detectado en: '{msg}'")
 
-    # Si no hay keyword explícito, verificar si hay petición genérica + contexto previo
-    # PERO solo si NO están pidiendo fotos (evita que "mandame fotos" envíe PDF)
+    # 1) Keywords directos (siempre activan)
+    if any(k in msg for k in ficha_keywords_direct):
+        pdf_type = "ficha"
+        logger.debug(f"📄 Keyword directo de ficha: '{msg}'")
+    elif any(k in msg for k in corrida_keywords_direct):
+        pdf_type = "corrida"
+        logger.debug(f"📄 Keyword directo de corrida: '{msg}'")
+
+    # 2) Keywords ambiguos (solo con verbo de acción)
+    if not pdf_type and has_action_verb:
+        if any(k in msg for k in ["especificaciones", "caracteristicas", "características"]):
+            pdf_type = "ficha"
+            logger.debug(f"📄 Keyword ambiguo de ficha + verbo: '{msg}'")
+        elif any(k in msg for k in corrida_keywords_ambiguous):
+            pdf_type = "corrida"
+            logger.debug(f"📄 Keyword ambiguo de corrida + verbo: '{msg}'")
+
+    # 3) Continuación genérica (solo si ya pidió un PDF antes y NO pide fotos)
     if not pdf_type:
         photo_words = ["foto", "fotos", "imagen", "imagenes", "imágenes", "video", "videos"]
         is_photo_request = any(pw in msg for pw in photo_words)
         if not is_photo_request:
             last_pdf_type = context.get("last_pdf_request_type")
-            if last_pdf_type and any(k in msg for k in generic_send_keywords):
+            if last_pdf_type and has_action_verb:
                 pdf_type = last_pdf_type
                 logger.info(f"📄 Petición genérica '{msg}' continuando PDF previo: {pdf_type}")
 
@@ -557,12 +577,26 @@ def _extract_name_from_text(text: str, history: str = "") -> Optional[str]:
         return None
 
     bad = {
+        # Pronombres / genéricos
         "aqui", "aquí", "nadie", "yo", "el", "ella", "amigo", "desconocido",
-        "cliente", "usuario", "quien", "quién", "si", "sí", "no", "bueno",
-        "ok", "okey", "hola", "bien", "gracias", "vale", "perfecto", "listo",
-        "claro", "sale", "dale", "que", "qué", "como", "cómo", "cuando",
-        "cuándo", "donde", "dónde", "precio", "fotos", "foto",
+        "cliente", "usuario", "quien", "quién",
+        # Respuestas cortas
+        "si", "sí", "no", "bueno", "ok", "okey", "hola", "bien", "gracias",
+        "vale", "perfecto", "listo", "claro", "sale", "dale",
+        # Preguntas
+        "que", "qué", "como", "cómo", "cuando", "cuándo", "donde", "dónde",
+        # Palabras del negocio (NO son nombres)
+        "precio", "fotos", "foto", "info", "información", "informacion",
+        "ubicación", "ubicacion", "costo", "interesado", "interesada",
+        "cotización", "cotizacion", "modelo", "camioneta", "camion", "camión",
+        "credito", "crédito", "contado", "financiamiento",
+        # Verbos comunes en respuestas
+        "quiero", "necesito", "busco", "tengo", "puedo", "estoy",
     }
+
+    # Rechazar si contiene números o signos de pregunta
+    if re.search(r'[0-9?¿!¡]', t):
+        return None
 
     # 1) Explicit patterns (prefixed)
     patterns = [
@@ -612,6 +646,29 @@ def _extract_name_from_text(text: str, history: str = "") -> Optional[str]:
 
 def _extract_payment_from_text(text: str) -> Optional[str]:
     msg = (text or "").lower()
+
+    # Negación: detectar si hay rechazo antes del keyword
+    negation_patterns = [
+        r"\bno\b.{0,15}\b(crédito|credito|financiamiento|financiación|mensualidades)\b",
+        r"\bsin\b.{0,15}\b(crédito|credito|financiamiento|financiación)\b",
+        r"\bnada de\b.{0,10}\b(crédito|credito|financiamiento)\b",
+    ]
+    negation_patterns_contado = [
+        r"\bno\b.{0,15}\b(contado|cash)\b",
+        r"\bsin\b.{0,15}\b(contado|cash)\b",
+    ]
+
+    # "no quiero crédito" → detectar como Contado (quiere pagar cash)
+    if any(re.search(p, msg) for p in negation_patterns):
+        logger.info(f"📛 Negación de crédito detectada → Contado: '{msg[:60]}'")
+        return "Contado"
+
+    # "no de contado" → detectar como Crédito
+    if any(re.search(p, msg) for p in negation_patterns_contado):
+        logger.info(f"📛 Negación de contado detectada → Crédito: '{msg[:60]}'")
+        return "Crédito"
+
+    # Detección positiva normal
     if any(k in msg for k in ["contado", "cash", "de contado"]):
         return "Contado"
     if any(k in msg for k in ["crédito", "credito", "financiamiento", "financiación", "mensualidades"]):
@@ -653,13 +710,51 @@ def _detect_disinterest(text: str) -> bool:
 
 
 def _normalize_spanish(text: str) -> str:
-    return (
-        (text or "")
-        .lower()
-        .replace("miller", "miler")
-        .replace("vanesa", "toano")
-        .replace("la e5", "tunland e5")
-    )
+    t = (text or "").lower()
+
+    # Typos de marca
+    t = t.replace("miller", "miler")
+    t = t.replace("vanesa", "toano")
+
+    # Aliases naturales → nombre de modelo para matching
+    # Pickups / Tunland
+    alias_map = [
+        # E5
+        (r"\bla e5\b", "tunland e5"),
+        (r"\bel e5\b", "tunland e5"),
+        # G7
+        (r"\bla g7\b", "tunland g7"),
+        (r"\bel g7\b", "tunland g7"),
+        # G9
+        (r"\bla g9\b", "tunland g9"),
+        (r"\bel g9\b", "tunland g9"),
+        # Genéricos pickup → no mapear a modelo específico, solo normalizar
+        (r"\bla pickup\b", "tunland"),
+        (r"\bla troca\b", "tunland"),
+        (r"\bla camioneta\b", "tunland"),
+        (r"\bla doble cabina\b", "tunland"),
+        # Toano
+        (r"\bla van\b", "toano panel"),
+        (r"\bla panel\b", "toano panel"),
+        (r"\bla combi\b", "toano panel"),
+        # Miler
+        (r"\bel camioncito\b", "miler"),
+        (r"\bel miler\b", "miler"),
+        (r"\bel de 3 toneladas\b", "miler"),
+        (r"\bel de carga\b", "miler"),
+        # EST-A / tractocamión
+        (r"\bel tracto\b", "6x4"),
+        (r"\bel tractocamion\b", "6x4"),
+        (r"\bel tractocamión\b", "6x4"),
+        (r"\bla esta\b", "6x4"),
+        (r"\bel camion grande\b", "6x4"),
+        (r"\bel camión grande\b", "6x4"),
+    ]
+
+    for pattern, replacement in alias_map:
+        t = re.sub(pattern, replacement, t)
+
+    return t
 
 
 def _extract_interest_from_messages(user_message: str, reply: str, inventory_service) -> Optional[str]:
@@ -829,33 +924,24 @@ def _pick_media_urls(
     if not items:
         return []
 
-    # 2) Verificar si piden fotos EXPLÍCITAMENTE
-    # Keywords que SIEMPRE indican petición de fotos
-    explicit_photo_keywords = [
-        "foto",
-        "fotos",
-        "imagen",
-        "imagenes",
-        "imágenes",
-        "ver fotos",
-        "ver imágenes",
-        "ver la foto",
-        "ver las fotos",
-        "enseñame foto",
-        "enséñame foto",
-        "muestrame foto",
-        "muéstrame foto",
-        "mandame foto",
-        "mándame foto",
+    # 2) Verificar si piden fotos EXPLÍCITAMENTE (con word boundaries)
+    # Usa regex \b para evitar falsos positivos como "¿esta foto es real?"
+    # que no es una petición sino una pregunta sobre una foto ya enviada
+    explicit_photo_patterns = [
+        r"\b(mandame|mándame|pasame|pásame|enviame|envíame|comparteme|compárteme)\b.{0,10}\b(foto|fotos|imagen|imagenes|imágenes)\b",
+        r"\b(ver|quiero)\b.{0,10}\b(foto|fotos|imagen|imagenes|imágenes)\b",
+        r"\b(enseñame|enséñame|muestrame|muéstrame)\b.{0,10}\b(foto|fotos)\b",
+        r"\bfotos\b",  # "fotos" plural casi siempre es petición
     ]
+    # Foto singular solo cuenta si NO es pregunta sobre foto ya enviada
+    singular_photo_question = bool(re.search(r"\b(esta|esa|la|cual|cuál)\s+foto\b", msg))
 
     # Keywords que SOLO funcionan si ya hay contexto de fotos (photo_model existe)
-    # Evita mandar fotos cuando dicen "otra cosa", "más información", etc.
     context_photo_keywords = ["otra foto", "mas fotos", "más fotos", "siguiente foto", "otra imagen"]
 
     current_photo_model = (context.get("photo_model") or "").strip()
 
-    explicit_request = any(k in msg for k in explicit_photo_keywords)
+    explicit_request = any(re.search(p, msg) for p in explicit_photo_patterns) and not singular_photo_question
     context_request = current_photo_model and any(k in msg for k in context_photo_keywords)
 
     if not explicit_request and not context_request:
