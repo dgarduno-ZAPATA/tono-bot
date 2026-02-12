@@ -135,6 +135,8 @@ REGLAS OBLIGATORIAS:
 
 10) FOTOS:
 - Si piden fotos: "Claro, aquí tienes." (el sistema las adjunta).
+- Si piden fotos del INTERIOR o "por dentro": "Solo tengo fotos exteriores por ahora. Si gustas, un asesor te comparte fotos del interior."
+- NO digas "aquí tienes" para fotos de interior porque NO las tenemos.
 
 11) PDFs (FICHA TÉCNICA Y CORRIDA FINANCIERA):
 - Si piden "ficha técnica", "especificaciones", "specs": responde "Claro, te comparto la ficha técnica en PDF." (el sistema adjunta el PDF).
@@ -152,6 +154,9 @@ REGLAS OBLIGATORIAS:
   * Si tiene día pero no hora: "¿A qué hora te queda bien?"
   * Si tiene hora pero no día: "¿Qué día te funcionaría?"
   * NUNCA confirmes una cita sin tener nombre y horario.
+- AL CONFIRMAR CITA: SIEMPRE incluye la ubicación. Ejemplo: "Listo, te espero el lunes a las 10 AM en Tlalnepantla, Edo Mex."
+- Si el cliente pregunta "¿dónde es?" o "¿de dónde son?": Da la ubicación ANTES de seguir con la cita.
+- Si dice "háblame", "llámame", "márcame": Responde "Con gusto, ¿a qué número y en qué horario te marco?" NO agendes cita, él quiere llamada.
 
 13) LEAD (JSON):
 - SOLO genera JSON si hay: NOMBRE + MODELO + CITA CONFIRMADA.
@@ -281,11 +286,15 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
         logger.debug(f"📄 Keyword de corrida detectado en: '{msg}'")
 
     # Si no hay keyword explícito, verificar si hay petición genérica + contexto previo
+    # PERO solo si NO están pidiendo fotos (evita que "mandame fotos" envíe PDF)
     if not pdf_type:
-        last_pdf_type = context.get("last_pdf_request_type")
-        if last_pdf_type and any(k in msg for k in generic_send_keywords):
-            pdf_type = last_pdf_type
-            logger.info(f"📄 Petición genérica '{msg}' continuando PDF previo: {pdf_type}")
+        photo_words = ["foto", "fotos", "imagen", "imagenes", "imágenes", "video", "videos"]
+        is_photo_request = any(pw in msg for pw in photo_words)
+        if not is_photo_request:
+            last_pdf_type = context.get("last_pdf_request_type")
+            if last_pdf_type and any(k in msg for k in generic_send_keywords):
+                pdf_type = last_pdf_type
+                logger.info(f"📄 Petición genérica '{msg}' continuando PDF previo: {pdf_type}")
 
     if not pdf_type:
         return None
@@ -870,8 +879,10 @@ def _pick_media_urls(
     #    Esto evita que "fotos de la G9" muestre otro modelo
     if last_interest:
         interest_norm = _normalize_spanish(last_interest)
-        # Extraer tokens relevantes del interés guardado (incluir g9, e5, g7, etc.)
-        interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in ["foton", "camion", "camión"]]
+        # Extraer tokens relevantes, excluyendo palabras comunes que causan falsos positivos
+        _noise = {"foton", "camion", "camión", "esta", "estan", "están",
+                  "gris", "azul", "rojo", "negro", "blanco", "plata", "at", "mt", "diesel"}
+        interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in _noise]
 
         # Verificar si el mensaje menciona el modelo de interés
         if any(tok in msg for tok in interest_tokens):
@@ -888,14 +899,26 @@ def _pick_media_urls(
         best_model = ""
         best_score = 0
 
+        # Palabras comunes en español que NO deben usarse como tokens de matching
+        # "esta" es el peor: aparece en casi cualquier mensaje y matchea con EST-A
+        noise_words = {
+            "foton", "camion", "camión",
+            # "esta/estan" = palabras comunes español, NO confundir con modelo EST-A
+            "esta", "estan", "están",
+            # Colores (aparecen en nombre de modelo pero no sirven para identificarlo)
+            "gris", "azul", "rojo", "negro", "blanco", "plata",
+            # Transmisión / tracción
+            "at", "mt", "diesel",
+        }
+
         for item in items:
             modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
             if not modelo:
                 continue
 
             modelo_norm = _normalize_spanish(modelo)
-            # CAMBIO: Permitir tokens de 2 caracteres (g9, e5, g7, etc.)
-            parts = [p for p in modelo_norm.split() if len(p) >= 2 and p not in ["foton", "camion", "camión"]]
+            # Permitir tokens de 2 caracteres (g9, e5, g7, 4x4, 6x4, etc.)
+            parts = [p for p in modelo_norm.split() if len(p) >= 2 and p not in noise_words]
 
             score = 0
             for part in parts:
@@ -909,7 +932,7 @@ def _pick_media_urls(
                 best_item = item
                 best_model = modelo
 
-        if best_score >= 2:  # Mínimo 2 puntos para considerar
+        if best_score >= 3:  # Mínimo 3 puntos (al menos 1 match en mensaje del usuario)
             target_item = best_item
             target_model_name = best_model
 
