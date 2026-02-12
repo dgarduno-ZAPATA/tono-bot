@@ -478,13 +478,16 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
         # Enviar respuesta normal (texto + fotos si las hay)
         await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
 
-    # === FUNNEL TRACKING ===
-    funnel_stage = result.get("funnel_stage", "MENSAJE")
+    # === FUNNEL TRACKING (V2) ===
+    funnel_stage = result.get("funnel_stage", "1er Contacto")
     funnel_data = result.get("funnel_data", {})
+    is_disinterest = result.get("is_disinterest", False)
     previous_stage = context.get("funnel_stage", "")
 
+    # V2: Update Monday on any stage change, including 1er Contacto and new stages
+    v2_stages = ("1er Contacto", "Intención", "Cotización", "Cita Programada", "Sin Interes")
     should_update_monday = (
-        funnel_stage in ("Enganche", "Intención", "Cita agendada") and
+        funnel_stage in v2_stages and
         funnel_stage != previous_stage
     )
 
@@ -497,20 +500,22 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                 lead_data = {
                     "telefono": remote_jid.split("@")[0],
                     "external_id": f"accumulated_{int(time.time())}",
-                    "nombre": funnel_data.get("nombre") or "Lead WhatsApp",
-                    "interes": funnel_data.get("interes") or "Por definir",
+                    "nombre": funnel_data.get("nombre") or "Lead sin nombre",
+                    "interes": funnel_data.get("interes") or "",
                     "cita": funnel_data.get("cita"),
                     "pago": funnel_data.get("pago"),
                 }
 
                 stage_notes = {
-                    "Enganche": f"💬 Cliente interactuando (turno {funnel_data.get('turn_count', '?')})",
+                    "1er Contacto": f"📩 Primer contacto (turno {funnel_data.get('turn_count', '?')})",
                     "Intención": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
-                    "Cita agendada": f"✅ Cita confirmada: {funnel_data.get('cita', 'N/A')}",
+                    "Cotización": f"📄 Cotización enviada: {funnel_data.get('interes', 'N/A')}",
+                    "Cita Programada": f"✅ Cita programada: {funnel_data.get('cita', 'N/A')}",
+                    "Sin Interes": f"🚫 Lead expresó desinterés",
                 }
                 note = stage_notes.get(funnel_stage)
 
-                logger.info(f"📊 FUNNEL [{funnel_stage}]: {lead_data.get('telefono')} - {lead_data.get('interes')}")
+                logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - {lead_data.get('interes')}")
                 await monday_service.create_or_update_lead(lead_data, stage=funnel_stage, add_note=note)
 
         except Exception as e:

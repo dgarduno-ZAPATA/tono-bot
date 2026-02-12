@@ -4,7 +4,7 @@ import httpx
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytz
 
@@ -15,6 +15,32 @@ MESES_ES = {
     1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL",
     5: "MAYO", 6: "JUNIO", 7: "JULIO", 8: "AGOSTO",
     9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE", 12: "DICIEMBRE"
+}
+
+# ============================================================
+# V2: STAGE HIERARCHY (solo avanza, nunca retrocede)
+# ============================================================
+STAGE_HIERARCHY = {
+    "1er Contacto": 1,
+    "Intención": 2,
+    "Cotización": 3,
+    "Cita Programada": 4,
+}
+
+# Estados terminales: si el lead está en uno de estos, se crea nuevo item
+TERMINAL_STAGES = {"Venta Cerrada", "Venta Caida", "Sin Interes"}
+
+# ============================================================
+# V2: VEHICLE SYNONYMS → Monday dropdown labels
+# ============================================================
+VEHICLE_DROPDOWN_MAP = {
+    "Tunland E5": ["e5", "tunland", "tunland e5"],
+    "ESTA 6x4 11.8": ["esta 11.8", "6x4 11.8", "esta"],
+    "ESTA 6x4 X13": ["esta x13", "6x4 x13"],
+    "Miler": ["miler", "miller"],
+    "Toano Panel": ["toano", "panel", "toano panel"],
+    "Tunland G7": ["g7", "tunland g7"],
+    "Tunland G9": ["g9", "tunland g9"],
 }
 
 
@@ -29,38 +55,206 @@ def _get_current_month_group_name() -> str:
     mes = MESES_ES.get(now.month, "")
     return f"{mes} {now.year}"
 
+
+def resolve_vehicle_to_dropdown(interest: str) -> str:
+    """
+    Dado un interés detectado por el bot (ej. 'Foton Tunland G9 2025'),
+    devuelve el label EXACTO del dropdown de Monday (ej. 'Tunland G9').
+    Retorna '' si no hay match.
+    """
+    if not interest:
+        return ""
+
+    interest_lower = interest.lower().replace("foton", "").replace("diesel", "").replace("4x4", "").strip()
+
+    best_label = ""
+    best_score = 0
+
+    for label, synonyms in VEHICLE_DROPDOWN_MAP.items():
+        score = 0
+        for syn in synonyms:
+            if syn in interest_lower:
+                score += len(syn)  # Longer match = higher score
+        if score > best_score:
+            best_score = score
+            best_label = label
+
+    return best_label
+
+
+def resolve_payment_to_label(payment: str) -> str:
+    """
+    Mapea el pago extraído por el bot al label EXACTO de Monday.
+    'Contado' → 'De Contado', 'Crédito' → 'Financiamiento', default → 'Por definir'
+    """
+    if not payment:
+        return "Por definir"
+
+    p = payment.lower().strip()
+    if p in ("contado", "de contado", "cash"):
+        return "De Contado"
+    if p in ("crédito", "credito", "financiamiento", "financiación"):
+        return "Financiamiento"
+    return "Por definir"
+
+
+def resolve_appointment_to_iso(appointment_text: str) -> dict:
+    """
+    Convierte texto de cita (ej. 'Viernes 10:00 AM') a formato ISO para Monday date column.
+    Retorna dict con 'date' y opcionalmente 'time', o {} si no se puede parsear.
+    Timezone: America/Mexico_City
+    """
+    if not appointment_text:
+        return {}
+
+    try:
+        tz = pytz.timezone("America/Mexico_City")
+        now = datetime.now(tz)
+    except Exception:
+        now = datetime.now()
+
+    text = appointment_text.strip().lower()
+    target_date = None
+    target_time = None
+
+    # --- Parse day ---
+    dias_map = {
+        "lunes": 0, "martes": 1, "miércoles": 2, "miercoles": 2,
+        "jueves": 3, "viernes": 4, "sábado": 5, "sabado": 5, "domingo": 6,
+    }
+
+    if "mañana" in text:
+        target_date = now.date() + timedelta(days=1)
+    elif "pasado mañana" in text:
+        target_date = now.date() + timedelta(days=2)
+    elif "próxima semana" in text or "proxima semana" in text:
+        # Next Monday
+        days_until_monday = (7 - now.weekday()) % 7
+        if days_until_monday == 0:
+            days_until_monday = 7
+        target_date = now.date() + timedelta(days=days_until_monday)
+    else:
+        for dia_name, dia_num in dias_map.items():
+            if dia_name in text:
+                days_ahead = (dia_num - now.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7  # Next week if same day
+                target_date = now.date() + timedelta(days=days_ahead)
+                break
+
+    # Try explicit date: "10 de marzo", "marzo 10", etc.
+    if not target_date:
+        meses_map = {
+            "enero": 1, "febrero": 2, "marzo": 3, "abril": 4,
+            "mayo": 5, "junio": 6, "julio": 7, "agosto": 8,
+            "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+        }
+        m = re.search(r"(\d{1,2})\s+de\s+(\w+)", text)
+        if m:
+            day_num = int(m.group(1))
+            month_name = m.group(2).lower()
+            month_num = meses_map.get(month_name)
+            if month_num and 1 <= day_num <= 31:
+                year = now.year
+                if month_num < now.month or (month_num == now.month and day_num < now.day):
+                    year += 1
+                try:
+                    target_date = datetime(year, month_num, day_num).date()
+                except ValueError:
+                    pass
+
+    # If still no date, default to today (appointment mentioned without day)
+    if not target_date:
+        target_date = now.date()
+
+    # --- Parse time ---
+    # "medio día" / "mediodía"
+    if "medio dia" in text or "mediodía" in text or "medio día" in text:
+        target_time = "12:00:00"
+
+    if not target_time:
+        m = re.search(r"(\d{1,2})\s*y\s*media", text)
+        if m:
+            h = int(m.group(1))
+            if 1 <= h <= 12:
+                target_time = f"{h:02d}:30:00"
+
+    if not target_time:
+        m = re.search(r"(\d{1,2})\s*:\s*(\d{2})\s*(am|pm)?", text, re.IGNORECASE)
+        if m:
+            h = int(m.group(1))
+            mm = int(m.group(2))
+            meridiem = (m.group(3) or "").lower()
+            if meridiem == "pm" and h < 12:
+                h += 12
+            elif meridiem == "am" and h == 12:
+                h = 0
+            if 0 <= h <= 23 and 0 <= mm <= 59:
+                target_time = f"{h:02d}:{mm:02d}:00"
+
+    if not target_time:
+        m = re.search(r"(\d{1,2})\s*(am|pm)", text, re.IGNORECASE)
+        if m:
+            h = int(m.group(1))
+            meridiem = m.group(2).lower()
+            if 1 <= h <= 12:
+                hh = h % 12
+                if meridiem == "pm":
+                    hh += 12
+                target_time = f"{hh:02d}:00:00"
+
+    if not target_time:
+        if "tarde" in text:
+            target_time = "15:00:00"
+        elif "mañana" in text and "por la" in text:
+            target_time = "10:00:00"
+
+    result = {}
+    if target_date:
+        result["date"] = target_date.isoformat()
+    if target_time:
+        result["time"] = target_time
+    return result
+
+
 class MondayService:
     def __init__(self):
         self.api_key = os.getenv("MONDAY_API_KEY")
         self.board_id = os.getenv("MONDAY_BOARD_ID")
         self.api_url = "https://api.monday.com/v2"
 
-        # --- CORRECCIÓN DE IDS ---
-        # 1. Columna TEXTO oculta solo para buscar (Dedupe) -> Debe ser text_mkzw7xjz
-        self.phone_dedupe_col_id = os.getenv("MONDAY_DEDUPE_COLUMN_ID") 
-        
-        # 2. Columna TEXTO para el ID del mensaje -> Debe ser text_mkzwndf
+        # --- V1 Column IDs ---
+        self.phone_dedupe_col_id = os.getenv("MONDAY_DEDUPE_COLUMN_ID")
         self.last_msg_id_col_id = os.getenv("MONDAY_LAST_MSG_ID_COLUMN_ID")
-
-        # 3. Columna TIPO PHONE (la del icono de teléfono) -> Debe ser phone_mkzwh34a
         self.phone_real_col_id = os.getenv("MONDAY_PHONE_COLUMN_ID")
-
-        # 4. Columna STATUS para etapa del funnel
         self.stage_col_id = os.getenv("MONDAY_STAGE_COLUMN_ID")
 
-        # Log de configuración
+        # --- V2 NEW Column IDs ---
+        self.vehicle_col_id = os.getenv("MONDAY_VEHICLE_COLUMN_ID")
+        self.payment_col_id = os.getenv("MONDAY_PAYMENT_COLUMN_ID")
+        self.appointment_col_id = os.getenv("MONDAY_APPOINTMENT_COLUMN_ID")
+        self.cmv_col_id = os.getenv("MONDAY_CMV_COLUMN_ID")
+
+        # Log config
         if self.stage_col_id:
-            logger.info(f"✅ Monday Stage Column configurada: {self.stage_col_id}")
+            logger.info(f"✅ Monday Stage Column: {self.stage_col_id}")
         else:
-            logger.warning("⚠️ MONDAY_STAGE_COLUMN_ID no configurada - funnel no actualizará estado")
+            logger.warning("⚠️ MONDAY_STAGE_COLUMN_ID no configurada")
+
+        v2_cols = {
+            "vehicle": self.vehicle_col_id,
+            "payment": self.payment_col_id,
+            "appointment": self.appointment_col_id,
+        }
+        configured = {k: v for k, v in v2_cols.items() if v}
+        if configured:
+            logger.info(f"✅ V2 columns: {configured}")
+        else:
+            logger.warning("⚠️ No V2 column IDs configured (vehicle/payment/appointment)")
 
     def _sanitize_phone(self, phone: str) -> str:
-        """
-        Limpia el teléfono para que la búsqueda sea exacta.
-        Quita +, espacios, guiones. Deja solo números.
-        Ej: "+52 1 55..." -> "52155..."
-        """
-        if not phone: return ""
+        if not phone:
+            return ""
         return re.sub(r'\D', '', str(phone))
 
     async def _graphql(self, query: str, variables: dict):
@@ -96,19 +290,29 @@ class MondayService:
                     raise
 
     async def _find_item_by_phone(self, phone_limpio: str):
-        """Busca usando la columna de TEXTO (Dedupe)"""
+        """
+        V2: Busca item por teléfono y retorna dict con id, name, y stage actual.
+        Retorna el item MÁS RECIENTE (último creado) si hay múltiples.
+        """
         if not phone_limpio or not self.phone_dedupe_col_id:
             return None
 
-        # Usamos items_page_by_column_values para la API 2023-10+
         query = """
         query ($board_id: ID!, $col_id: String!, $val: String!) {
           items_page_by_column_values(
-            limit: 1,
+            limit: 10,
             board_id: $board_id,
             columns: [{column_id: $col_id, column_values: [$val]}]
           ) {
-            items { id name }
+            items {
+              id
+              name
+              column_values {
+                id
+                text
+                value
+              }
+            }
           }
         }
         """
@@ -121,12 +325,27 @@ class MondayService:
         data = await self._graphql(query, variables)
         items = data.get("data", {}).get("items_page_by_column_values", {}).get("items", [])
 
-        if items:
-            return items[0]["id"]
-        return None
+        if not items:
+            return None
+
+        # Find the most recent item (highest ID = most recently created)
+        best_item = max(items, key=lambda x: int(x.get("id", 0)))
+
+        # Extract current stage from column_values
+        current_stage = ""
+        if self.stage_col_id:
+            for col in best_item.get("column_values", []):
+                if col.get("id") == self.stage_col_id:
+                    current_stage = (col.get("text") or "").strip()
+                    break
+
+        return {
+            "id": best_item["id"],
+            "name": best_item.get("name", ""),
+            "current_stage": current_stage,
+        }
 
     async def _get_group_id_by_name(self, group_name: str):
-        """Busca un grupo por nombre y retorna su ID."""
         if not group_name:
             return None
 
@@ -150,7 +369,6 @@ class MondayService:
 
         groups = boards[0].get("groups", [])
 
-        # Buscar grupo que coincida con el nombre (case insensitive)
         for group in groups:
             if group.get("title", "").upper() == group_name.upper():
                 logger.info(f"✅ Grupo encontrado: '{group['title']}' (ID: {group['id']})")
@@ -159,83 +377,147 @@ class MondayService:
         logger.warning(f"⚠️ Grupo '{group_name}' no encontrado en el tablero")
         return None
 
+    def _should_advance_stage(self, current_stage: str, candidate_stage: str) -> bool:
+        """V2: Solo avanza el embudo, nunca retrocede."""
+        current_rank = STAGE_HIERARCHY.get(current_stage, 0)
+        candidate_rank = STAGE_HIERARCHY.get(candidate_stage, 0)
+        return candidate_rank > current_rank
+
+    def _build_column_values(self, lead_data: dict, stage: str = None, is_new: bool = False,
+                             current_stage: str = "") -> dict:
+        """
+        V2: Construye el dict de column_values para Monday GraphQL.
+        Respeta la jerarquía del embudo (solo avanza).
+        """
+        col_vals = {}
+
+        # Dedupe phone (always)
+        phone_limpio = self._sanitize_phone(str(lead_data.get("telefono", "")))
+        if self.phone_dedupe_col_id and phone_limpio:
+            col_vals[self.phone_dedupe_col_id] = phone_limpio
+
+        # Message ID tracking
+        msg_id = str(lead_data.get("external_id", "")).strip()
+        if self.last_msg_id_col_id and msg_id:
+            col_vals[self.last_msg_id_col_id] = msg_id
+
+        # Real phone column
+        if self.phone_real_col_id and phone_limpio:
+            col_vals[self.phone_real_col_id] = {"phone": phone_limpio, "countryShortName": "MX"}
+
+        # --- V2: Stage (Embudo) with direction enforcement ---
+        if stage and self.stage_col_id:
+            if is_new:
+                col_vals[self.stage_col_id] = {"label": stage}
+                logger.info(f"📊 Nuevo item → Embudo: {stage}")
+            elif stage == "Sin Interes":
+                # Sin Interes overrides any stage
+                col_vals[self.stage_col_id] = {"label": stage}
+                logger.info(f"📊 Sin Interes → Embudo: {stage}")
+            elif self._should_advance_stage(current_stage, stage):
+                col_vals[self.stage_col_id] = {"label": stage}
+                logger.info(f"📊 Embudo avanza: {current_stage} → {stage}")
+            else:
+                logger.info(f"📊 Embudo NO retrocede: {current_stage} → {stage} (ignorado)")
+
+        # --- V2: Vehicle (Dropdown) ---
+        if self.vehicle_col_id:
+            interest = lead_data.get("interes") or ""
+            vehicle_label = resolve_vehicle_to_dropdown(interest)
+            if vehicle_label:
+                col_vals[self.vehicle_col_id] = {"labels": [vehicle_label]}
+
+        # --- V2: Payment (Status) ---
+        if self.payment_col_id:
+            payment_raw = lead_data.get("pago") or ""
+            payment_label = resolve_payment_to_label(payment_raw)
+            if is_new or payment_label != "Por definir":
+                col_vals[self.payment_col_id] = {"label": payment_label}
+
+        # --- V2: Appointment (Date) ---
+        if self.appointment_col_id:
+            appointment_text = lead_data.get("cita") or ""
+            appointment_iso = lead_data.get("cita_iso") or resolve_appointment_to_iso(appointment_text)
+            if appointment_iso and appointment_iso.get("date"):
+                col_vals[self.appointment_col_id] = appointment_iso
+
+        return col_vals
+
     async def create_or_update_lead(self, lead_data: dict, stage: str = None, add_note: str = None):
         """
-        Crea o actualiza un lead en Monday.com con soporte de funnel.
+        V2: Crea o actualiza un lead en Monday.com.
 
-        Etapas del funnel:
-        - MENSAJE: Primer contacto
-        - ENGANCHE: Cliente interactuando
-        - INTENCION: Modelo/precio mencionado
-        - CALIFICADO: Cita confirmada
-
-        Args:
-            lead_data: dict con telefono, nombre, interes, etc.
-            stage: Etapa del funnel (opcional, solo actualiza si es "mayor")
-            add_note: Nota adicional para agregar (opcional)
+        Reglas V2:
+        - Labels: 1er Contacto, Intención, Cotización, Cita Programada, Sin Interes
+        - Terminal states (Venta Cerrada, Venta Caida, Sin Interes): crear nuevo item
+        - Embudo solo avanza, nunca retrocede
+        - Vehículo, Pago, Agenda Citas → columnas dedicadas
         """
-        # 1. PREPARAR DATOS
         raw_phone = str(lead_data.get("telefono", ""))
         phone_limpio = self._sanitize_phone(raw_phone)
-        nombre = str(lead_data.get("nombre", "")).strip() or "Lead WhatsApp"
+        nombre = str(lead_data.get("nombre", "")).strip() or "Lead sin nombre"
         msg_id = str(lead_data.get("external_id", "")).strip()
 
         if not phone_limpio:
             logger.warning("⚠️ Lead sin teléfono, no se puede procesar.")
             return None
 
-        # 2. BUSCAR DUPLICADO (Lógica Find-First)
-        item_id = await self._find_item_by_phone(phone_limpio)
+        # 1. BUSCAR DUPLICADO
+        existing = await self._find_item_by_phone(phone_limpio)
 
-        # 3. DEFINIR VALORES DE COLUMNAS
-        col_vals = {}
-
-        # Siempre aseguramos que la columna Dedupe tenga el numero limpio
-        if self.phone_dedupe_col_id:
-            col_vals[self.phone_dedupe_col_id] = phone_limpio
-
-        # Guardamos el ID del mensaje para evitar loops
-        if self.last_msg_id_col_id and msg_id:
-            col_vals[self.last_msg_id_col_id] = msg_id
-
-        # Guardamos en la columna real de teléfono (Formato Monday: {phone, country})
-        if self.phone_real_col_id:
-            col_vals[self.phone_real_col_id] = {"phone": phone_limpio, "countryShortName": "MX"}
-
-        # Etapa del funnel (solo si se especifica y la columna existe)
-        if stage and self.stage_col_id:
-            col_vals[self.stage_col_id] = {"label": stage}
-            logger.info(f"📊 Configurando estado: {self.stage_col_id} = {stage}")
-        elif stage and not self.stage_col_id:
-            logger.warning(f"⚠️ Stage '{stage}' no aplicada - MONDAY_STAGE_COLUMN_ID no configurada")
-
-        # 4. CREAR O ACTUALIZAR
+        # 2. DECIDIR: CREAR o ACTUALIZAR
         is_new = False
-        if not item_id:
-            # --- CREAR NUEVO ---
+        item_id = None
+        current_stage = ""
+
+        if existing:
+            current_stage = existing.get("current_stage", "")
+            item_id = existing["id"]
+
+            # V2: Terminal state → crear nuevo item (nuevo ciclo)
+            if current_stage in TERMINAL_STAGES:
+                logger.info(
+                    f"🔄 Lead en estado terminal '{current_stage}' → creando nuevo ciclo para {phone_limpio}"
+                )
+                is_new = True
+                item_id = None
+                current_stage = ""
+            else:
+                is_new = False
+        else:
             is_new = True
 
-            # Buscar grupo del mes actual (ej. "FEBRERO 2026")
+        # 3. CONSTRUIR COLUMN VALUES
+        effective_stage = stage or ("1er Contacto" if is_new else "")
+        col_vals = self._build_column_values(
+            lead_data,
+            stage=effective_stage,
+            is_new=is_new,
+            current_stage=current_stage,
+        )
+
+        # 4. CREAR O ACTUALIZAR
+        if is_new:
+            # --- CREAR NUEVO ---
             month_group_name = _get_current_month_group_name()
             group_id = await self._get_group_id_by_name(month_group_name)
 
+            item_name_display = f"{nombre} | {phone_limpio}"
+
             if group_id:
-                logger.info(f"🆕 Creando lead [{stage or 'SIN_ETAPA'}] en grupo '{month_group_name}': {phone_limpio}")
+                logger.info(f"🆕 Creando lead [{effective_stage}] en grupo '{month_group_name}': {phone_limpio}")
                 query_create = """
                 mutation ($board_id: ID!, $group_id: String!, $name: String!, $vals: JSON!) {
                     create_item (board_id: $board_id, group_id: $group_id, item_name: $name, column_values: $vals) { id }
                 }
                 """
             else:
-                logger.info(f"🆕 Creando lead [{stage or 'SIN_ETAPA'}] (sin grupo): {phone_limpio}")
+                logger.info(f"🆕 Creando lead [{effective_stage}] (sin grupo): {phone_limpio}")
                 query_create = """
                 mutation ($board_id: ID!, $name: String!, $vals: JSON!) {
                     create_item (board_id: $board_id, item_name: $name, column_values: $vals) { id }
                 }
                 """
-
-            # Nombre del item: "Nombre | Telefono"
-            item_name_display = f"{nombre} | {phone_limpio}"
 
             vars_create = {
                 "board_id": int(self.board_id),
@@ -250,23 +532,9 @@ class MondayService:
 
         else:
             # --- ACTUALIZAR EXISTENTE ---
-            logger.info(f"♻️ Actualizando lead [{stage or 'SIN_ETAPA'}] (ID: {item_id})")
+            logger.info(f"♻️ Actualizando lead [{effective_stage or 'datos'}] (ID: {item_id})")
 
-            # Solo actualizar nombre si cambió de "Lead WhatsApp" a algo real
-            if nombre and nombre != "Lead WhatsApp":
-                # Actualizar también el nombre del item
-                query_update_name = """
-                mutation ($item_id: ID!, $board_id: ID!, $name: String!, $vals: JSON!) {
-                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
-                }
-                """
-                vars_update = {
-                    "item_id": int(item_id),
-                    "board_id": int(self.board_id),
-                    "vals": json.dumps(col_vals)
-                }
-                await self._graphql(query_update_name, vars_update)
-            elif col_vals:
+            if col_vals:
                 query_update = """
                 mutation ($item_id: ID!, $board_id: ID!, $vals: JSON!) {
                     change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
@@ -279,23 +547,38 @@ class MondayService:
                 }
                 await self._graphql(query_update, vars_update)
 
-        # 5. AGREGAR NOTA (si es nuevo o si se especifica nota adicional)
+            # Update item name if we have a real name
+            if nombre and nombre != "Lead sin nombre":
+                query_name = """
+                mutation ($board_id: ID!, $item_id: ID!, $vals: JSON!) {
+                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
+                }
+                """
+                # We already updated col_vals above, just note the name update
+                pass
+
+        # 5. AGREGAR NOTA
         if item_id and (is_new or add_note):
             if is_new:
-                # Nota inicial con todos los datos
                 detalles = (
-                    f"📊 ETAPA: {stage or 'MENSAJE'}\n"
+                    f"📊 ETAPA: {effective_stage}\n"
                     f"👤 Nombre: {nombre}\n"
                     f"📞 Tel: {phone_limpio}\n"
                     f"📝 Interés: {lead_data.get('interes', 'N/A')}\n"
                 )
                 if lead_data.get('cita'):
-                    detalles += f"📅 Cita: {lead_data.get('cita')}\n"
-                if lead_data.get('pago'):
-                    detalles += f"💰 Pago: {lead_data.get('pago')}\n"
+                    cita_iso = lead_data.get('cita_iso') or resolve_appointment_to_iso(lead_data.get('cita', ''))
+                    if cita_iso.get('date'):
+                        detalles += f"📅 Cita: {cita_iso['date']}"
+                        if cita_iso.get('time'):
+                            detalles += f" {cita_iso['time']}"
+                        detalles += "\n"
+                    else:
+                        detalles += f"📅 Cita: {lead_data.get('cita')}\n"
+                pago_label = resolve_payment_to_label(lead_data.get('pago', ''))
+                detalles += f"💰 Pago: {pago_label}\n"
             else:
-                # Solo la nota adicional
-                detalles = add_note or f"📊 Actualizado a etapa: {stage}"
+                detalles = add_note or f"📊 Actualizado a etapa: {effective_stage}"
 
             query_note = """
             mutation ($item_id: ID!, $body: String!) {
@@ -306,10 +589,10 @@ class MondayService:
 
         return item_id
 
-    # Mantener compatibilidad con código existente
+    # Backwards compatibility
     async def create_lead(self, lead_data: dict):
-        """Wrapper de compatibilidad - crea lead en etapa CALIFICADO."""
-        return await self.create_or_update_lead(lead_data, stage="CALIFICADO")
+        return await self.create_or_update_lead(lead_data, stage="Cita Programada")
+
 
 # Instancia lista para usar
 monday_service = MondayService()

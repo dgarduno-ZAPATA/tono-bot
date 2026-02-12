@@ -70,37 +70,61 @@ TEAM_NUMBERS=""                        # Comma-separated handoff numbers
 AUTO_REACTIVATE_MINUTES=60             # Bot silence duration after human detection
 HUMAN_DETECTION_WINDOW_SECONDS=3       # Time window for human detection
 MONDAY_API_KEY=""                      # Monday.com API key
-MONDAY_BOARD_ID=""                     # Monday.com board ID
-MONDAY_DEDUPE_COLUMN_ID=""             # Monday.com dedup column
-MONDAY_LAST_MSG_ID_COLUMN_ID=""        # Monday.com message tracking column
-MONDAY_PHONE_COLUMN_ID=""              # Monday.com phone column
-MONDAY_STAGE_COLUMN_ID=""              # Monday.com funnel stage column (STATUS type)
+MONDAY_BOARD_ID=""                     # Monday.com board ID (Leads Bot Adrian: 18396811838)
+MONDAY_DEDUPE_COLUMN_ID=""             # Monday.com dedup column (text_mkzw7xjz)
+MONDAY_LAST_MSG_ID_COLUMN_ID=""        # Monday.com message tracking column (text_mkzwndf)
+MONDAY_PHONE_COLUMN_ID=""              # Monday.com phone column (phone_mkzwh34a)
+MONDAY_STAGE_COLUMN_ID=""              # Monday.com funnel stage column - STATUS type (status)
+MONDAY_VEHICLE_COLUMN_ID=""            # Monday.com vehicle dropdown column (dropdown_mm0gq48r)
+MONDAY_PAYMENT_COLUMN_ID=""            # Monday.com payment status column (color_mm0gbjea)
+MONDAY_APPOINTMENT_COLUMN_ID=""        # Monday.com appointment date column (date_mm0grgky)
+MONDAY_CMV_COLUMN_ID=""                # Monday.com CMV checkbox column (boolean_mm0g2zf3)
 ```
 
-## Sales Funnel System
+## Sales Funnel System (V2)
 
-The bot automatically tracks leads through a 6-stage sales funnel in Monday.com:
+The bot automatically tracks leads through a 10-stage sales funnel in Monday.com:
 
 | Stage | Trigger | Who moves it |
 |-------|---------|--------------|
-| `Mensaje` | First contact | Bot (auto) |
-| `Enganche` | Turn > 1 | Bot (auto) |
-| `Intencion` | Model mentioned | Bot (auto) |
-| `Cita agendada` | Appointment confirmed | Bot (auto) |
-| `No vino` | Client didn't show | Human (manual) |
+| `1er Contacto` | First message from client | Bot (auto) |
+| `Intención` | Specific vehicle model mentioned | Bot (auto) |
+| `Cotización` | PDF (ficha técnica/corrida) sent | Bot (auto) |
+| `Cita Programada` | Appointment date confirmed | Bot (auto) |
+| `Sin Interes` | Client expresses disinterest | Bot (auto) |
+| `Cita Atendida` | Client showed up | Human (manual) |
+| `Cita No Atendida` | Client didn't show | Human (manual) |
 | `Venta Cerrada` | Sale completed | Human (manual) |
+| `Financiamiento en Gestión` | Financing in process | Human (manual) |
+| `Venta Caida` | Sale fell through | Human (manual) |
 
-### How it works
-1. Lead is created in Monday.com when client reaches `Enganche` (responds to bot)
-2. Stage updates automatically as conversation progresses
-3. Notes are added at each stage transition with relevant details
-4. Leads are captured even WITHOUT confirmed appointments
-5. Human stages (`No vino`, `Venta Cerrada`) are updated manually after visit
+### V2 Funnel Rules
+1. **Only advances, never regresses** - Stage hierarchy enforced in code (`STAGE_HIERARCHY`)
+2. Lead is created on **1er Contacto** (first interaction)
+3. Stage updates automatically as conversation progresses
+4. Notes are added at each stage transition with relevant details
+5. **Terminal states** (`Venta Cerrada`, `Venta Caida`, `Sin Interes`) → new item created for next cycle
+6. **Sin Interes** can override any stage (explicit disinterest from client)
 
-### Monday.com Setup
-1. Use existing STATUS column "Estado" (column ID: `status`)
-2. Labels: `Mensaje`, `Enganche`, `Intencion`, `Cita agendada`, `No vino`, `Venta Cerrada`
-3. Set `MONDAY_STAGE_COLUMN_ID=status`
+### V2 Dedicated Columns
+| Column | Type | Monday ID | Populated by |
+|--------|------|-----------|-------------|
+| Vehículo de Interés | Dropdown | `dropdown_mm0gq48r` | Bot (auto-detected from conversation) |
+| Esquema de Pago | Status | `color_mm0gbjea` | Bot (Contado/Financiamiento/Por definir) |
+| Agenda Citas | Date | `date_mm0grgky` | Bot (parsed from appointment text) |
+| Confirmación CMV | Checkbox | `boolean_mm0g2zf3` | Human (manual) |
+
+### Vehicle Dropdown Labels
+`Tunland E5`, `ESTA 6x4 11.8`, `ESTA 6x4 X13`, `Miler`, `Toano Panel`, `Tunland G7`, `Tunland G9`
+
+### Payment Status Labels
+`De Contado`, `Financiamiento`, `Por definir`
+
+### Monday.com Board Setup
+- **Board**: "Leads Bot Adrian" (ID: `18396811838`)
+- **Estado column** (STATUS, ID: `status`): Labels listed in funnel table above
+- **Groups**: Auto-created by month (e.g., "FEBRERO 2026")
+- Set all `MONDAY_*` env vars in Render (see Environment Variables section)
 
 ## Key Architecture Patterns
 
@@ -210,9 +234,15 @@ curl http://localhost:8080/health
 - Phone-keyed session storage
 - Upsert logic for state + context JSON
 
-### monday_service.py (CRM)
-- GraphQL mutations for lead creation
+### monday_service.py (CRM - V2)
+- GraphQL mutations for lead creation/update
 - Phone-based deduplication
+- V2 stage hierarchy (only-forward progression)
+- Terminal state detection (creates new item for new sales cycle)
+- Vehicle dropdown resolution (`VEHICLE_DROPDOWN_MAP`)
+- Payment label resolution (`resolve_payment_to_label`)
+- Appointment date parsing to ISO (`resolve_appointment_to_iso`)
+- Monthly group auto-assignment
 - Retry logic with backoff
 
 ## Important Implementation Notes

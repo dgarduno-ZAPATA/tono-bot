@@ -556,9 +556,42 @@ def _extract_payment_from_text(text: str) -> Optional[str]:
     msg = (text or "").lower()
     if any(k in msg for k in ["contado", "cash", "de contado"]):
         return "Contado"
-    if any(k in msg for k in ["crédito", "credito", "financiamiento", "financiación"]):
+    if any(k in msg for k in ["crédito", "credito", "financiamiento", "financiación", "mensualidades"]):
         return "Crédito"
     return None
+
+
+def _detect_disinterest(text: str) -> bool:
+    """
+    V2: Detecta si el lead expresa desinterés explícito.
+    Retorna True si el mensaje indica que el lead quiere parar.
+    """
+    if not text:
+        return False
+
+    t = text.strip()
+
+    # Exact matches (case-sensitive for STOP/BAJA)
+    if t in ("STOP", "BAJA"):
+        return True
+
+    t_lower = t.lower()
+    disinterest_phrases = [
+        "no me interesa",
+        "ya no quiero",
+        "no gracias",
+        "no, gracias",
+        "cancela",
+        "cancelar",
+        "ya no me interesa",
+        "no estoy interesado",
+        "no quiero nada",
+        "dejen de escribirme",
+        "no me escriban",
+        "basta",
+    ]
+
+    return any(phrase in t_lower for phrase in disinterest_phrases)
 
 
 def _normalize_spanish(text: str) -> str:
@@ -1186,20 +1219,25 @@ async def handle_message(
             )
 
     # ============================================================
-    # FUNNEL STAGE CALCULATION
+    # FUNNEL STAGE CALCULATION (V2)
     # ============================================================
-    # Determinar etapa del funnel basado en datos de la conversación
-    # Mensaje → Enganche → Intención → Cita agendada
-    funnel_stage = "Mensaje"  # Default: primer contacto
-
-    if turn_count > 1:
-        funnel_stage = "Enganche"  # Cliente respondió, hay interacción
+    # V2 Labels: 1er Contacto → Intención → Cotización → Cita Programada
+    # "Sin Interes" can override any stage
+    funnel_stage = "1er Contacto"  # Default: primer contacto (V2: merges Mensaje+Enganche)
 
     if last_interest:
         funnel_stage = "Intención"  # Modelo específico mencionado
 
+    # Cotización: se marca cuando se envía PDF (ver pdf_info más abajo)
+    # Se maneja después de la detección de PDF
+
     if last_appointment:
-        funnel_stage = "Cita agendada"  # Cita confirmada
+        funnel_stage = "Cita Programada"  # V2: renamed from "Cita agendada"
+
+    # V2: Sin Interes overrides everything
+    is_disinterest = _detect_disinterest(user_message)
+    if is_disinterest:
+        funnel_stage = "Sin Interes"
 
     # Agregar etapa al contexto para tracking
     new_context["funnel_stage"] = funnel_stage
@@ -1225,6 +1263,11 @@ async def handle_message(
             # Reemplazar la respuesta del bot con el mensaje apropiado
             reply_clean = pdf_info.get("mensaje", reply_clean)
 
+            # V2: Sending PDF/ficha = Cotización stage (only advance, not regress)
+            if funnel_stage != "Sin Interes" and funnel_stage in ("1er Contacto", "Intención"):
+                funnel_stage = "Cotización"
+                new_context["funnel_stage"] = funnel_stage
+
     return {
         "reply": reply_clean,
         "new_state": "chatting",
@@ -1232,6 +1275,7 @@ async def handle_message(
         "media_urls": media_urls,
         "lead_info": lead_info,
         "funnel_stage": funnel_stage,
+        "is_disinterest": is_disinterest,
         "funnel_data": {
             "nombre": saved_name or None,
             "interes": last_interest or None,
