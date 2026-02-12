@@ -55,6 +55,12 @@ INFORMACIÓN FOTON:
 - GARANTÍA: De fábrica FOTON, válida en todo México.
 - SERVICIO: El cliente puede hacer mantenimiento en cualquier distribuidor FOTON autorizado del país sin perder garantía.
 
+TIPO DE CABINA:
+- Tunland E5, Tunland G7, Tunland G9: DOBLE CABINA (dos filas de asientos, 5 pasajeros). Son pickups.
+- EST-A 6x4 (11.8 y X13): CABINA SENCILLA (una fila de asientos, 2 pasajeros). Son tractocamiones.
+- Miler 45T RS: CABINA SENCILLA (una fila de asientos, 2 pasajeros). Es camión de trabajo.
+- Toano Panel: CABINA SENCILLA (una fila de asientos, 2-3 pasajeros). Es van de carga.
+
 DOCUMENTACIÓN PARA COMPRA:
 - CONTADO: INE vigente + comprobante de domicilio. Si quiere factura a su RFC, también Constancia de Situación Fiscal.
 - CRÉDITO: NO des lista de documentos. Di: "Un asesor te envía los requisitos."
@@ -141,6 +147,11 @@ REGLAS OBLIGATORIAS:
 - ANTI-INSISTENCIA: NO termines cada mensaje con "¿Te gustaría agendar una cita?"
 - Solo menciona la cita cuando sea NATURAL: después de dar precio, después de 3-4 intercambios, o si el cliente pregunta cuándo puede ir.
 - Si ya sugeriste cita y el cliente NO respondió sobre eso, NO insistas. Espera a que él pregunte.
+- ANTES DE AGENDAR CITA: Necesitas NOMBRE del cliente y HORA/DÍA preferido.
+  * Si no tienes el nombre, pregúntalo: "Perfecto, ¿a nombre de quién agendo la cita?"
+  * Si tiene día pero no hora: "¿A qué hora te queda bien?"
+  * Si tiene hora pero no día: "¿Qué día te funcionaría?"
+  * NUNCA confirmes una cita sin tener nombre y horario.
 
 13) LEAD (JSON):
 - SOLO genera JSON si hay: NOMBRE + MODELO + CITA CONFIRMADA.
@@ -527,12 +538,24 @@ def _extract_photos_from_item(item: Dict[str, Any]) -> List[str]:
 # ============================================================
 # NAME / PAYMENT / APPOINTMENT EXTRACTION
 # ============================================================
-def _extract_name_from_text(text: str) -> Optional[str]:
-    """Extract probable customer name (conservative)."""
+def _extract_name_from_text(text: str, history: str = "") -> Optional[str]:
+    """Extract probable customer name (conservative).
+    Now with context awareness: if the bot just asked for the name,
+    accept a plain name reply like "Pedro García".
+    """
     t = (text or "").strip()
     if not t:
         return None
 
+    bad = {
+        "aqui", "aquí", "nadie", "yo", "el", "ella", "amigo", "desconocido",
+        "cliente", "usuario", "quien", "quién", "si", "sí", "no", "bueno",
+        "ok", "okey", "hola", "bien", "gracias", "vale", "perfecto", "listo",
+        "claro", "sale", "dale", "que", "qué", "como", "cómo", "cuando",
+        "cuándo", "donde", "dónde", "precio", "fotos", "foto",
+    }
+
+    # 1) Explicit patterns (prefixed)
     patterns = [
         r"\bme llamo\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
         r"\bsoy\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
@@ -544,10 +567,36 @@ def _extract_name_from_text(text: str) -> Optional[str]:
         m = re.search(p, t, flags=re.IGNORECASE)
         if m:
             name = m.group(1).strip()
-            bad = {"aqui", "aquí", "nadie", "yo", "el", "ella", "amigo", "desconocido", "cliente", "usuario", "quien", "quién"}
             if name.lower() in bad:
                 return None
             return " ".join(w.capitalize() for w in name.split())
+
+    # 2) Context-aware: if the bot's last message asked for the name,
+    #    accept a plain reply of 1-4 words as a name
+    if history:
+        last_bot_line = ""
+        for line in reversed(history.split("\n")):
+            if line.strip().startswith("A:"):
+                last_bot_line = line.lower()
+                break
+        name_asking = [
+            "tu nombre", "cómo te llamas", "como te llamas",
+            "me compartes tu nombre", "me das tu nombre",
+            "a nombre de quién", "a nombre de quien",
+            "quién me busca", "quien me busca",
+            "nombre del interesado", "nombre completo",
+            "con quién tengo el gusto", "con quien tengo el gusto",
+        ]
+        if any(k in last_bot_line for k in name_asking):
+            words = t.split()
+            if 1 <= len(words) <= 4:
+                all_alpha = all(
+                    re.match(r'^[A-Za-zÁÉÍÓÚÑÜáéíóúñü.]+$', w) for w in words
+                )
+                if all_alpha and words[0].lower() not in bad:
+                    name = " ".join(w.capitalize() for w in words)
+                    logger.info(f"📛 Nombre detectado por contexto: '{name}'")
+                    return name
 
     return None
 
@@ -1026,7 +1075,7 @@ async def handle_message(
         turn_count = 1
 
     # Extract from user input
-    extracted_name = _extract_name_from_text(user_message)
+    extracted_name = _extract_name_from_text(user_message, history)
     if extracted_name:
         saved_name = extracted_name
 
@@ -1177,6 +1226,21 @@ async def handle_message(
     # Pasamos new_context (la función lo modificará)
     media_urls = _pick_media_urls(user_message, reply_clean, inventory_service, new_context)
     reply_clean = _sanitize_reply_if_photos_attached(reply_clean, media_urls)
+
+    # Si el bot prometió fotos pero no se encontraron, corregir la respuesta
+    if not media_urls:
+        photo_promise_patterns = [
+            r"aqu[ií]\s+tienes",
+            r"te\s+(mando|envío|comparto)\s+(las\s+)?fotos",
+        ]
+        msg_lower = (user_message or "").lower()
+        photo_requested = any(k in msg_lower for k in ["foto", "fotos", "imagen", "imágenes", "imagenes"])
+        if photo_requested:
+            for p in photo_promise_patterns:
+                if re.search(p, reply_clean, re.IGNORECASE):
+                    reply_clean = "Por el momento no tengo fotos de ese modelo en sistema. Un asesor te las puede compartir."
+                    logger.warning(f"⚠️ Bot prometió fotos pero no se encontraron, respuesta corregida")
+                    break
 
     # Quitar markdown links que WhatsApp no soporta
     reply_clean = _strip_markdown_links(reply_clean)
