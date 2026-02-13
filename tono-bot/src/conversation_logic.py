@@ -615,6 +615,19 @@ def _extract_name_from_text(text: str, history: str = "") -> Optional[str]:
     if re.search(r'[0-9?¿!¡]', t):
         return None
 
+    # Palabras comunes en español que se capturan DESPUÉS del nombre real
+    # Ej: "con Eduardo Vera disculpa en dónde..." → "disculpa" no es nombre
+    trailing_stop = {
+        "disculpa", "disculpe", "disculpen", "perdón", "perdon", "perdona",
+        "oye", "oiga", "mira", "mire",
+        "quisiera", "quería", "queria", "necesito", "quiero",
+        "me", "te", "se", "le", "nos",
+        "en", "de", "del", "por", "para", "con",
+        "una", "un", "la", "el", "lo", "las", "los",
+        "favor", "pregunta", "consulta", "duda",
+        "buenos", "buenas", "buen",
+    }
+
     # 1) Explicit patterns (prefixed)
     patterns = [
         r"\bme llamo\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
@@ -627,6 +640,13 @@ def _extract_name_from_text(text: str, history: str = "") -> Optional[str]:
         m = re.search(p, t, flags=re.IGNORECASE)
         if m:
             name = m.group(1).strip()
+            # Trim trailing non-name words: "Eduardo Vera Disculpa" → "Eduardo Vera"
+            words = name.split()
+            while words and words[-1].lower() in trailing_stop:
+                words.pop()
+            if not words:
+                return None
+            name = " ".join(words)
             if name.lower() in bad:
                 return None
             return " ".join(w.capitalize() for w in name.split())
@@ -783,6 +803,15 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
     msg_norm = _normalize_spanish(user_message)
     rep_norm = _normalize_spanish(reply)
 
+    # Palabras comunes en español que NO deben usarse como tokens de matching
+    # "esta/este/estan" causan falsos positivos con el modelo EST-A
+    _noise = {
+        "foton", "camion", "camión",
+        "esta", "este", "estos", "estas", "estan", "están",
+        "gris", "azul", "rojo", "negro", "blanco", "plata",
+        "at", "mt", "diesel",
+    }
+
     best: Optional[str] = None
     best_score = 0
 
@@ -792,16 +821,18 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
             continue
 
         modelo_norm = _normalize_spanish(modelo)
-        # CAMBIO: Permitir tokens de 2 caracteres para detectar G9, E5, G7, etc.
-        tokens = [t for t in modelo_norm.split() if len(t) >= 2 and t not in {"foton", "camion", "camión"}]
+        # Permitir tokens de 2 caracteres para detectar G9, E5, G7, etc.
+        tokens = [t for t in modelo_norm.split() if len(t) >= 2 and t not in _noise]
         if not tokens:
             continue
 
         score = 0
         for tok in tokens:
-            if tok in msg_norm:
+            # Usar word boundary para evitar "esta" matcheando "estaría"
+            pat = re.compile(r'\b' + re.escape(tok) + r'\b')
+            if pat.search(msg_norm):
                 score += 2
-            if tok in rep_norm:
+            if pat.search(rep_norm):
                 score += 1
 
         if score > best_score:
@@ -983,12 +1014,12 @@ def _pick_media_urls(
     if last_interest:
         interest_norm = _normalize_spanish(last_interest)
         # Extraer tokens relevantes, excluyendo palabras comunes que causan falsos positivos
-        _noise = {"foton", "camion", "camión", "esta", "estan", "están",
+        _noise = {"foton", "camion", "camión", "esta", "este", "estos", "estas", "estan", "están",
                   "gris", "azul", "rojo", "negro", "blanco", "plata", "at", "mt", "diesel"}
         interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in _noise]
 
-        # Verificar si el mensaje menciona el modelo de interés
-        if any(tok in msg for tok in interest_tokens):
+        # Verificar si el mensaje menciona el modelo de interés (word boundary)
+        if any(re.search(r'\b' + re.escape(tok) + r'\b', msg) for tok in interest_tokens):
             for item in items:
                 modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
                 if _normalize_spanish(modelo) == interest_norm or any(tok in _normalize_spanish(modelo) for tok in interest_tokens):
@@ -1025,9 +1056,11 @@ def _pick_media_urls(
 
             score = 0
             for part in parts:
-                if part in msg:
+                # Usar word boundary para evitar falsos positivos de substrings
+                pat = re.compile(r'\b' + re.escape(part) + r'\b')
+                if pat.search(msg):
                     score += 3  # Match en mensaje del usuario = alta prioridad
-                if part in rep_norm:
+                if pat.search(rep_norm):
                     score += 1  # Match en respuesta del bot = menor prioridad
 
             if score > best_score:
@@ -1053,6 +1086,7 @@ def _pick_media_urls(
 
     # 5) Extraer fotos
     urls = _extract_photos_from_item(target_item)
+    logger.info(f"📸 Fotos seleccionadas: modelo='{target_model_name}', {len(urls)} URLs, last_interest='{last_interest}'")
     if not urls:
         return []
 
