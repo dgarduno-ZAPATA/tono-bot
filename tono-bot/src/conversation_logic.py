@@ -1084,6 +1084,19 @@ def _pick_media_urls(
     if not target_item:
         return []
 
+    # 4.5) FILTRO DE SEGURIDAD: EST-A (tractocamión) requiere confirmación de contexto
+    #      Evita mandar foto del tracto a alguien que pregunta por pickups/vans
+    target_norm = _normalize_spanish(target_model_name)
+    if "6x4" in target_norm or "esta" in target_norm.split():
+        tracto_keywords = {"tracto", "tractocamion", "tractocamión", "6x4", "x13", "11.8", "est-a", "esta"}
+        interest_norm = _normalize_spanish(last_interest)
+        msg_words = set(msg.split())
+        interest_words = set(interest_norm.split())
+        # El usuario o su interés deben mencionar explícitamente el tracto
+        if not (tracto_keywords & msg_words) and not (tracto_keywords & interest_words):
+            logger.info(f"📸 BLOQUEADO: foto de tracto '{target_model_name}' pero contexto no es tracto (last_interest='{last_interest}')")
+            return []
+
     # 5) Extraer fotos
     urls = _extract_photos_from_item(target_item)
     logger.info(f"📸 Fotos seleccionadas: modelo='{target_model_name}', {len(urls)} URLs, last_interest='{last_interest}'")
