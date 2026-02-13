@@ -510,30 +510,29 @@ def _build_inventory_text(inventory_service) -> str:
         marca = _safe_get(item, ["Marca", "marca"], default="Foton")
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"], default="(sin modelo)")
         anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
-        color = _safe_get(item, ["Color", "color"], default="")
-        segmento = _safe_get(item, ["segmento", "descripcion_corta"], default="")
         precio = _safe_get(item, ["Precio", "precio"], default="N/D")
         moneda = _safe_get(item, ["moneda"], default="MXN")
         iva = _safe_get(item, ["iva_incluido"], default="")
-        combustible = _normalize_fuel(_safe_get(item, ["COMBUSTIBLE", "combustible"]))
-        motor_raw = _safe_get(item, ["MOTOR", "motor"])
-        motor = _summarize_motor(motor_raw)
-        capacidad = _summarize_capacity(_safe_get(item, ["CAPACIDAD DE CARGA"]))
-        llantas = _safe_get(item, ["LLANTAS"], default="")
-        garantia = _safe_get(item, ["garantia_texto"], default="")
-        ubicacion = _safe_get(item, ["ubicacion"], default="")
-        financiamiento = _safe_get(item, ["Financiamiento"], default="")
+        cantidad = _safe_get(item, ["Cantidad", "cantidad"], default="1")
+        colores = _safe_get(item, ["Colores", "colores"], default="")
 
-        # Línea principal: Modelo + Precio
         price_str = _format_price(precio, moneda, iva)
-        info = f"- {marca} {modelo} {anio}"
-        if color:
-            info += f" ({color})"
-        info += f": {price_str}"
-        if segmento:
-            info += f" [{segmento}]"
+        info = f"- {marca} {modelo} {anio}: {price_str}"
 
-        # Specs resumidas (solo lo útil para vender)
+        try:
+            cant = int(cantidad)
+            if cant > 1:
+                info += f" ({cant} unidades)"
+        except (ValueError, TypeError):
+            pass
+
+        if colores:
+            info += f" | Colores: {colores}"
+
+        # Specs opcionales (solo si el CSV/Sheet tiene datos)
+        combustible = _normalize_fuel(_safe_get(item, ["COMBUSTIBLE", "combustible"]))
+        motor = _summarize_motor(_safe_get(item, ["MOTOR", "motor"]))
+        capacidad = _summarize_capacity(_safe_get(item, ["CAPACIDAD DE CARGA"]))
         specs = []
         if combustible:
             specs.append(combustible)
@@ -541,29 +540,38 @@ def _build_inventory_text(inventory_service) -> str:
             specs.append(f"Motor: {motor}")
         if capacidad:
             specs.append(f"Carga: {capacidad}")
-        if llantas:
-            # Extraer solo la medida, sin repetir combustible
-            llanta_clean = llantas.split("/")[0].strip() + "/" + llantas.split("/")[1].strip() if "/" in llantas else llantas
-            m_llanta = re.search(r"\d{3}/\d{2,3}", llantas)
-            if m_llanta:
-                specs.append(f"Llantas: {m_llanta.group()}")
         if specs:
             info += " | " + ", ".join(specs)
-
-        # Datos comerciales (una línea, sin ruido)
-        extras = []
-        if garantia:
-            extras.append(f"Garantía: {garantia}")
-        if financiamiento and financiamiento.upper() not in ("FALSE", "NO", "0", ""):
-            extras.append("Crédito disponible")
-        if ubicacion:
-            extras.append(f"Ubic: {ubicacion}")
-        if extras:
-            info += " | " + ", ".join(extras)
 
         lines.append(info)
 
     return "\n".join(lines)
+
+
+def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
+    """Build inventory text for only the model of interest (saves tokens)."""
+    items = getattr(inventory_service, "items", None) or []
+    if not items or not last_interest:
+        return ""
+
+    interest_norm = _normalize_spanish(last_interest)
+    interest_tokens = [t for t in interest_norm.split() if len(t) >= 2 and t not in {"foton", "camion", "camión"}]
+
+    for item in items:
+        modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
+        if not modelo:
+            continue
+        modelo_norm = _normalize_spanish(modelo)
+        if any(tok in modelo_norm for tok in interest_tokens):
+            precio = _safe_get(item, ["Precio", "precio"], default="N/D")
+            moneda = _safe_get(item, ["moneda"], default="MXN")
+            iva = _safe_get(item, ["iva_incluido"], default="")
+            marca = _safe_get(item, ["Marca", "marca"], default="Foton")
+            anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
+            price_str = _format_price(precio, moneda, iva)
+            return f"Modelo de interés: {marca} {modelo} {anio}: {price_str}"
+
+    return ""
 
 
 def _extract_photos_from_item(item: Dict[str, Any]) -> List[str]:
@@ -607,6 +615,19 @@ def _extract_name_from_text(text: str, history: str = "") -> Optional[str]:
     if re.search(r'[0-9?¿!¡]', t):
         return None
 
+    # Palabras comunes en español que se capturan DESPUÉS del nombre real
+    # Ej: "con Eduardo Vera disculpa en dónde..." → "disculpa" no es nombre
+    trailing_stop = {
+        "disculpa", "disculpe", "disculpen", "perdón", "perdon", "perdona",
+        "oye", "oiga", "mira", "mire",
+        "quisiera", "quería", "queria", "necesito", "quiero",
+        "me", "te", "se", "le", "nos",
+        "en", "de", "del", "por", "para", "con",
+        "una", "un", "la", "el", "lo", "las", "los",
+        "favor", "pregunta", "consulta", "duda",
+        "buenos", "buenas", "buen",
+    }
+
     # 1) Explicit patterns (prefixed)
     patterns = [
         r"\bme llamo\s+([A-Za-zÁÉÍÓÚÑÜáéíóúñü]+(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]+){0,3})\b",
@@ -619,6 +640,13 @@ def _extract_name_from_text(text: str, history: str = "") -> Optional[str]:
         m = re.search(p, t, flags=re.IGNORECASE)
         if m:
             name = m.group(1).strip()
+            # Trim trailing non-name words: "Eduardo Vera Disculpa" → "Eduardo Vera"
+            words = name.split()
+            while words and words[-1].lower() in trailing_stop:
+                words.pop()
+            if not words:
+                return None
+            name = " ".join(words)
             if name.lower() in bad:
                 return None
             return " ".join(w.capitalize() for w in name.split())
@@ -775,6 +803,15 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
     msg_norm = _normalize_spanish(user_message)
     rep_norm = _normalize_spanish(reply)
 
+    # Palabras comunes en español que NO deben usarse como tokens de matching
+    # "esta/este/estan" causan falsos positivos con el modelo EST-A
+    _noise = {
+        "foton", "camion", "camión",
+        "esta", "este", "estos", "estas", "estan", "están",
+        "gris", "azul", "rojo", "negro", "blanco", "plata",
+        "at", "mt", "diesel",
+    }
+
     best: Optional[str] = None
     best_score = 0
 
@@ -784,16 +821,18 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
             continue
 
         modelo_norm = _normalize_spanish(modelo)
-        # CAMBIO: Permitir tokens de 2 caracteres para detectar G9, E5, G7, etc.
-        tokens = [t for t in modelo_norm.split() if len(t) >= 2 and t not in {"foton", "camion", "camión"}]
+        # Permitir tokens de 2 caracteres para detectar G9, E5, G7, etc.
+        tokens = [t for t in modelo_norm.split() if len(t) >= 2 and t not in _noise]
         if not tokens:
             continue
 
         score = 0
         for tok in tokens:
-            if tok in msg_norm:
+            # Usar word boundary para evitar "esta" matcheando "estaría"
+            pat = re.compile(r'\b' + re.escape(tok) + r'\b')
+            if pat.search(msg_norm):
                 score += 2
-            if tok in rep_norm:
+            if pat.search(rep_norm):
                 score += 1
 
         if score > best_score:
@@ -975,12 +1014,12 @@ def _pick_media_urls(
     if last_interest:
         interest_norm = _normalize_spanish(last_interest)
         # Extraer tokens relevantes, excluyendo palabras comunes que causan falsos positivos
-        _noise = {"foton", "camion", "camión", "esta", "estan", "están",
+        _noise = {"foton", "camion", "camión", "esta", "este", "estos", "estas", "estan", "están",
                   "gris", "azul", "rojo", "negro", "blanco", "plata", "at", "mt", "diesel"}
         interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in _noise]
 
-        # Verificar si el mensaje menciona el modelo de interés
-        if any(tok in msg for tok in interest_tokens):
+        # Verificar si el mensaje menciona el modelo de interés (word boundary)
+        if any(re.search(r'\b' + re.escape(tok) + r'\b', msg) for tok in interest_tokens):
             for item in items:
                 modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
                 if _normalize_spanish(modelo) == interest_norm or any(tok in _normalize_spanish(modelo) for tok in interest_tokens):
@@ -1017,9 +1056,11 @@ def _pick_media_urls(
 
             score = 0
             for part in parts:
-                if part in msg:
+                # Usar word boundary para evitar falsos positivos de substrings
+                pat = re.compile(r'\b' + re.escape(part) + r'\b')
+                if pat.search(msg):
                     score += 3  # Match en mensaje del usuario = alta prioridad
-                if part in rep_norm:
+                if pat.search(rep_norm):
                     score += 1  # Match en respuesta del bot = menor prioridad
 
             if score > best_score:
@@ -1045,6 +1086,7 @@ def _pick_media_urls(
 
     # 5) Extraer fotos
     urls = _extract_photos_from_item(target_item)
+    logger.info(f"📸 Fotos seleccionadas: modelo='{target_model_name}', {len(urls)} URLs, last_interest='{last_interest}'")
     if not urls:
         return []
 
@@ -1150,6 +1192,50 @@ def _lead_is_valid(lead: Dict[str, Any]) -> bool:
 
 
 # ============================================================
+# SMART CONTEXT INJECTION
+# ============================================================
+def _needs_inventory_context(user_message: str, turn_count: int, last_interest: str) -> bool:
+    """Decide if the full inventory list should be included in GPT context."""
+    msg = (user_message or "").lower()
+
+    # First 2 turns: user is likely browsing, show full inventory
+    if turn_count <= 2:
+        return True
+
+    # No interest yet: show inventory if asking about vehicles/prices
+    if not last_interest:
+        inventory_keywords = [
+            "modelo", "modelos", "precio", "precios", "cuanto", "cuánto",
+            "costo", "disponible", "inventario", "catalogo", "catálogo",
+            "que tienen", "qué tienen", "que venden", "qué venden",
+            "opciones", "unidades", "vehiculo", "vehículo", "camion", "camión",
+            "pickup", "camioneta", "tracto", "van", "panel",
+            "tunland", "toano", "miler", "miller", "esta", "e5", "g7", "g9",
+            "6x4", "11.8", "x13",
+        ]
+        return any(k in msg for k in inventory_keywords)
+
+    # Interest already detected: only show full list if asking about other models
+    change_keywords = [
+        "otro modelo", "otros modelos", "que más tienen", "qué más tienen",
+        "otra opción", "otras opciones", "todos los modelos",
+        "catalogo", "catálogo", "que más hay", "qué más hay",
+    ]
+    return any(k in msg for k in change_keywords)
+
+
+def _needs_financing_context(user_message: str) -> bool:
+    """Decide if financing data should be included in GPT context."""
+    msg = (user_message or "").lower()
+    financing_keywords = [
+        "financ", "credito", "crédito", "mensual", "enganche",
+        "plazo", "pago", "cuota", "corrida", "contado",
+        "precio", "cuanto", "cuánto", "costo", "vale",
+    ]
+    return any(k in msg for k in financing_keywords)
+
+
+# ============================================================
 # MAIN ENTRY
 # ============================================================
 async def handle_message(
@@ -1226,8 +1312,21 @@ async def handle_message(
         turn_number=turn_count,
     )
 
-    inventory_text = _build_inventory_text(inventory_service)
-    financing_text = _build_financing_text()
+    # Smart context injection: only include inventory/financing when relevant
+    if _needs_inventory_context(user_message, turn_count, last_interest):
+        inventory_text = _build_inventory_text(inventory_service)
+        inventory_section = f"INVENTARIO DISPONIBLE:\n{inventory_text}\n"
+    elif last_interest:
+        focused = _build_focused_inventory_text(inventory_service, last_interest)
+        inventory_section = f"{focused}\n" if focused else ""
+    else:
+        inventory_section = ""
+
+    if _needs_financing_context(user_message):
+        financing_text = _build_financing_text()
+        financing_section = f"{financing_text}\n" if financing_text else ""
+    else:
+        financing_section = ""
 
     # Name gate: inject strong reminder when name is missing and user asks for price/quote/appointment
     name_gate_reminder = ""
@@ -1249,8 +1348,8 @@ async def handle_message(
         f"INTERÉS DETECTADO: {last_interest or '(Sin modelo)'}\n"
         f"CITA DETECTADA: {last_appointment or '(Sin cita)'}\n"
         f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
-        f"INVENTARIO DISPONIBLE:\n{inventory_text}\n\n"
-        f"{financing_text}\n\n"
+        f"{inventory_section}"
+        f"{financing_section}"
         f"HISTORIAL DE CHAT:\n{history[-3000:]}"
         f"{name_gate_reminder}"
     )

@@ -65,11 +65,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BotTractos")
 
-# Handoff: lista derivada de settings
-TEAM_NUMBERS_LIST = [n.strip() for n in settings.TEAM_NUMBERS.split(",") if n.strip()]
-if TEAM_NUMBERS_LIST:
-    logger.info(f"✅ Números del equipo configurados: {len(TEAM_NUMBERS_LIST)}")
-
 
 # === 2. ESTADO GLOBAL EN RAM ===
 class BoundedOrderedSet:
@@ -278,39 +273,7 @@ async def _evo_post(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Resp
     return response
 
 
-# === 5. 🆕 DETECCIÓN DE MENSAJES HUMANOS ===
-def _message_looks_human(text: str) -> bool:
-    """Detecta si un mensaje tiene características que el bot NO usaría."""
-    if not text:
-        return False
-
-    text_lower = text.lower()
-
-    # 1. El bot NUNCA usa emojis
-    emoji_patterns = ["😊", "👍", "🙏", "💪", "🚚", "✅", "❤️", "🔥", "👌", "😉", "😅", "🤝", "📞", "📱", "🎉", "💯"]
-    if any(emoji in text for emoji in emoji_patterns):
-        logger.debug(f"🔍 Detectado emoji humano en: '{text[:50]}'")
-        return True
-
-    # 2. Frases típicas de asesor humano
-    human_phrases = [
-        "un momento", "déjame verificar", "déjame revisar", "te marco", "te llamo",
-        "te hablo", "estoy revisando", "dame un segundo", "aquí adrian", "soy adrian",
-        "con adrian", "te contacto", "te escribo", "ahora te", "espérame", "un sec"
-    ]
-    if any(phrase in text_lower for phrase in human_phrases):
-        logger.debug(f"🔍 Detectada frase humana en: '{text[:50]}'")
-        return True
-
-    # 3. Errores de ortografía típicamente humanos
-    typos = ["aver", "haber si", "ps si", "nel", "simon", "sisas", "ok ok", "oks"]
-    if any(typo in text_lower for typo in typos):
-        logger.debug(f"🔍 Detectado typo humano en: '{text[:50]}'")
-        return True
-
-    return False
-
-
+# === 5. DETECCIÓN DE MENSAJES HUMANOS ===
 def _is_automated_greeting(text: str) -> bool:
     """
     Detecta mensajes automáticos de WhatsApp Business o sistemas externos (n8n, etc).
@@ -1039,7 +1002,7 @@ async def health(request: Request):
         "processed_leads_cache": len(bot_state.processed_lead_ids),
         "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
         "pending_message_queues": len(bot_state.pending_messages),
-        "handoff_enabled": len(TEAM_NUMBERS_LIST) > 0,
+        "handoff_enabled": bool(settings.TEAM_NUMBERS.strip()),
         "auto_reactivate_minutes": settings.AUTO_REACTIVATE_MINUTES,
         "message_accumulation_seconds": settings.MESSAGE_ACCUMULATION_SECONDS,
     }

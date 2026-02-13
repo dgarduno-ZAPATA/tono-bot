@@ -43,7 +43,7 @@ class InventoryService:
             if not os.path.exists(self.local_path):
                 self.items = []
                 return
-            with open(self.local_path, newline="", encoding="latin-1") as f:
+            with open(self.local_path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
 
@@ -55,6 +55,15 @@ class InventoryService:
             status = (row.get("status", "") or "").strip().lower()
             if status and status not in ["disponible", "available", "1", "si", "sí", "yes"]:
                 continue
+
+            # Filtrar unidades agotadas (Cantidad = 0)
+            cantidad_raw = (row.get("Cantidad", "") or "").strip()
+            if cantidad_raw:
+                try:
+                    if int(cantidad_raw) <= 0:
+                        continue
+                except (ValueError, TypeError):
+                    pass
 
             item = {
                 "Marca": row.get("Marca", "Foton"),
@@ -76,6 +85,8 @@ class InventoryService:
                 "LLANTAS": row.get("LLANTAS", ""),
                 "COMBUSTIBLE": row.get("COMBUSTIBLE", ""),
                 "MOTOR": row.get("MOTOR", ""),
+                "Cantidad": row.get("Cantidad", "1"),
+                "Colores": row.get("Colores", ""),
             }
             normalized.append(item)
 

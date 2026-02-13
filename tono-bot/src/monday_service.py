@@ -612,10 +612,6 @@ class MondayService:
 
         return item_id
 
-    # Backwards compatibility
-    async def create_lead(self, lead_data: dict):
-        return await self.create_or_update_lead(lead_data, stage="Cita Programada")
-
 
 # Instancia lista para usar
 monday_service = MondayService()
