@@ -549,13 +549,23 @@ class MondayService:
 
             # Update item name if we have a real name
             if nombre and nombre != "Lead sin nombre":
-                query_name = """
-                mutation ($board_id: ID!, $item_id: ID!, $vals: JSON!) {
-                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
+                new_item_name = f"{nombre} | {phone_limpio}"
+                query_rename = """
+                mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $value: String!) {
+                    change_simple_column_value(board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $value) { id }
                 }
                 """
-                # We already updated col_vals above, just note the name update
-                pass
+                vars_rename = {
+                    "board_id": int(self.board_id),
+                    "item_id": int(item_id),
+                    "col_id": "name",
+                    "value": new_item_name,
+                }
+                try:
+                    await self._graphql(query_rename, vars_rename)
+                    logger.info(f"✅ Nombre actualizado en Monday: '{new_item_name}'")
+                except Exception as e:
+                    logger.error(f"⚠️ Error actualizando nombre en Monday: {e}")
 
         # 5. AGREGAR NOTA
         if item_id and (is_new or add_note):

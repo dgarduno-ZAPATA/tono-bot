@@ -179,6 +179,15 @@ REGLAS OBLIGATORIAS:
 - Pedir nombre antes de dar el tuyo
 - Cambiar de modelo sin confirmación del cliente
 - Formato markdown para links (NO uses [texto](url), WhatsApp no lo soporta)
+
+15) NOMBRE OBLIGATORIO ANTES DE COTIZACIÓN O CITA:
+- ANTES de dar precio, cotización, corrida financiera o agendar cita, NECESITAS el nombre del cliente.
+- Si CLIENTE = "(Aún no dice su nombre)" y el cliente pide precio/cotización/cita, PRIMERO pregunta su nombre.
+  * Ejemplo: "Con gusto te paso el precio. ¿Con quién tengo el gusto?"
+  * Ejemplo: "Claro que sí. ¿Me compartes tu nombre para darte la cotización?"
+- NO des precio, cotización ni agendes cita hasta tener el nombre.
+- Si ya tienes el nombre (aparece en CLIENTE), NO lo vuelvas a pedir.
+- Esto aplica SIEMPRE, sin excepción.
 """.strip()
 
 
@@ -1220,6 +1229,19 @@ async def handle_message(
     inventory_text = _build_inventory_text(inventory_service)
     financing_text = _build_financing_text()
 
+    # Name gate: inject strong reminder when name is missing and user asks for price/quote/appointment
+    name_gate_reminder = ""
+    if not saved_name:
+        msg_lower = (user_message or "").lower()
+        price_keywords = ["precio", "cuanto", "cuánto", "costo", "cotización", "cotizacion", "vale", "cuánto cuesta", "cuanto cuesta"]
+        appt_keywords = ["cita", "agendar", "ir a verlo", "cuando puedo ir", "visita", "visitarlos", "cuando abren"]
+        if any(k in msg_lower for k in price_keywords + appt_keywords):
+            name_gate_reminder = (
+                "\n\n*** ALERTA: NOMBRE NO DETECTADO. El cliente pide precio/cotización/cita pero NO ha dado su nombre. "
+                "DEBES preguntar su nombre ANTES de dar precio o agendar cita. "
+                "Ejemplo: 'Con gusto, ¿con quién tengo el gusto?' ***"
+            )
+
     context_block = (
         f"TURNO: {turn_count} {'(PRIMER MENSAJE - puedes saludar)' if turn_count == 1 else '(NO saludes, ve directo al punto)'}\n"
         f"MOMENTO ACTUAL: {current_time_str}\n"
@@ -1230,6 +1252,7 @@ async def handle_message(
         f"INVENTARIO DISPONIBLE:\n{inventory_text}\n\n"
         f"{financing_text}\n\n"
         f"HISTORIAL DE CHAT:\n{history[-3000:]}"
+        f"{name_gate_reminder}"
     )
 
     messages = [
