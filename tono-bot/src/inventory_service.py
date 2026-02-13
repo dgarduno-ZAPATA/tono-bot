@@ -43,7 +43,7 @@ class InventoryService:
             if not os.path.exists(self.local_path):
                 self.items = []
                 return
-            with open(self.local_path, newline="", encoding="latin-1") as f:
+            with open(self.local_path, newline="", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
 
@@ -76,6 +76,8 @@ class InventoryService:
                 "LLANTAS": row.get("LLANTAS", ""),
                 "COMBUSTIBLE": row.get("COMBUSTIBLE", ""),
                 "MOTOR": row.get("MOTOR", ""),
+                "Cantidad": row.get("Cantidad", "1"),
+                "Colores": row.get("Colores", ""),
             }
             normalized.append(item)
 
