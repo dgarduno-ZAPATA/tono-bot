@@ -233,6 +233,7 @@ class MondayService:
         self.vehicle_col_id = os.getenv("MONDAY_VEHICLE_COLUMN_ID")
         self.payment_col_id = os.getenv("MONDAY_PAYMENT_COLUMN_ID")
         self.appointment_col_id = os.getenv("MONDAY_APPOINTMENT_COLUMN_ID")
+        self.appointment_time_col_id = os.getenv("MONDAY_APPOINTMENT_TIME_COLUMN_ID")
         self.cmv_col_id = os.getenv("MONDAY_CMV_COLUMN_ID")
 
         # Log config
@@ -245,6 +246,7 @@ class MondayService:
             "vehicle": self.vehicle_col_id,
             "payment": self.payment_col_id,
             "appointment": self.appointment_col_id,
+            "appointment_time": self.appointment_time_col_id,
         }
         configured = {k: v for k, v in v2_cols.items() if v}
         if configured:
@@ -434,12 +436,23 @@ class MondayService:
             if is_new or payment_label != "Por definir":
                 col_vals[self.payment_col_id] = {"label": payment_label}
 
-        # --- V2: Appointment (Date) ---
+        # --- V2: Appointment (Date + Time in separate columns) ---
         if self.appointment_col_id:
             appointment_text = lead_data.get("cita") or ""
             appointment_iso = lead_data.get("cita_iso") or resolve_appointment_to_iso(appointment_text)
             if appointment_iso and appointment_iso.get("date"):
-                col_vals[self.appointment_col_id] = appointment_iso
+                # Date column: only the date, no time
+                col_vals[self.appointment_col_id] = {"date": appointment_iso["date"]}
+
+                # Time column (Hour type): separate hour and minute
+                if self.appointment_time_col_id and appointment_iso.get("time"):
+                    try:
+                        time_parts = appointment_iso["time"].split(":")
+                        hour = int(time_parts[0])
+                        minute = int(time_parts[1]) if len(time_parts) > 1 else 0
+                        col_vals[self.appointment_time_col_id] = {"hour": hour, "minute": minute}
+                    except (ValueError, IndexError) as e:
+                        logger.warning(f"⚠️ No se pudo parsear hora de cita: {appointment_iso.get('time')} - {e}")
 
         return col_vals
 
@@ -549,13 +562,23 @@ class MondayService:
 
             # Update item name if we have a real name
             if nombre and nombre != "Lead sin nombre":
-                query_name = """
-                mutation ($board_id: ID!, $item_id: ID!, $vals: JSON!) {
-                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
+                new_item_name = f"{nombre} | {phone_limpio}"
+                query_rename = """
+                mutation ($board_id: ID!, $item_id: ID!, $col_id: String!, $value: String!) {
+                    change_simple_column_value(board_id: $board_id, item_id: $item_id, column_id: $col_id, value: $value) { id }
                 }
                 """
-                # We already updated col_vals above, just note the name update
-                pass
+                vars_rename = {
+                    "board_id": int(self.board_id),
+                    "item_id": int(item_id),
+                    "col_id": "name",
+                    "value": new_item_name,
+                }
+                try:
+                    await self._graphql(query_rename, vars_rename)
+                    logger.info(f"✅ Nombre actualizado en Monday: '{new_item_name}'")
+                except Exception as e:
+                    logger.error(f"⚠️ Error actualizando nombre en Monday: {e}")
 
         # 5. AGREGAR NOTA
         if item_id and (is_new or add_note):

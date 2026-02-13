@@ -502,14 +502,22 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
 
     # V2: Update Monday on any stage change, including 1er Contacto and new stages
     v2_stages = ("1er Contacto", "Intención", "Cotización", "Cita Programada", "Sin Interes")
+
+    # Also update Monday when customer name is newly detected (even without stage change)
+    previous_name = (context.get("user_name") or "").strip()
+    current_name = (funnel_data.get("nombre") or "").strip()
+    name_just_detected = bool(current_name and not previous_name)
+
     should_update_monday = (
-        funnel_stage in v2_stages and
-        funnel_stage != previous_stage
+        (funnel_stage in v2_stages and funnel_stage != previous_stage) or
+        (name_just_detected and funnel_stage in v2_stages)
     )
 
     if should_update_monday:
         try:
-            funnel_key = f"{remote_jid}|{funnel_stage}"
+            # Use different dedupe key when it's a name-only update vs stage change
+            is_stage_change = (funnel_stage != previous_stage)
+            funnel_key = f"{remote_jid}|{funnel_stage}" if is_stage_change else f"{remote_jid}|name|{current_name}"
             if funnel_key not in bot_state.processed_lead_ids:
                 bot_state.processed_lead_ids.add(funnel_key)
 
@@ -529,10 +537,15 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                     "Cita Programada": f"✅ Cita programada: {funnel_data.get('cita', 'N/A')}",
                     "Sin Interes": f"🚫 Lead expresó desinterés",
                 }
-                note = stage_notes.get(funnel_stage)
 
-                logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - {lead_data.get('interes')}")
-                await monday_service.create_or_update_lead(lead_data, stage=funnel_stage, add_note=note)
+                if is_stage_change:
+                    note = stage_notes.get(funnel_stage)
+                else:
+                    note = f"👤 Nombre detectado: {current_name}"
+
+                effective_stage = funnel_stage if is_stage_change else None
+                logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - nombre={current_name} - {lead_data.get('interes')}")
+                await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
 
         except Exception as e:
             logger.error(f"❌ Error actualizando funnel en Monday: {e}")
