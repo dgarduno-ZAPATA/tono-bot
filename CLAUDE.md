@@ -78,7 +78,7 @@ MONDAY_STAGE_COLUMN_ID=""              # Monday.com funnel stage column - STATUS
 MONDAY_VEHICLE_COLUMN_ID=""            # Monday.com vehicle dropdown column (dropdown_mm0gq48r)
 MONDAY_PAYMENT_COLUMN_ID=""            # Monday.com payment status column (color_mm0gbjea)
 MONDAY_APPOINTMENT_COLUMN_ID=""        # Monday.com appointment date column (date_mm0grgky)
-MONDAY_APPOINTMENT_TIME_COLUMN_ID=""   # Monday.com appointment time/hour column
+MONDAY_APPOINTMENT_TIME_COLUMN_ID=""   # Monday.com appointment time/hour column (hour_mm0hfk47)
 MONDAY_CMV_COLUMN_ID=""                # Monday.com CMV checkbox column (boolean_mm0g2zf3)
 ```
 
@@ -113,7 +113,7 @@ The bot automatically tracks leads through a 10-stage sales funnel in Monday.com
 | Vehículo de Interés | Dropdown | `dropdown_mm0gq48r` | Bot (auto-detected from conversation) |
 | Esquema de Pago | Status | `color_mm0gbjea` | Bot (Contado/Financiamiento/Por definir) |
 | Agenda Citas (Día) | Date | `date_mm0grgky` | Bot (solo fecha, sin hora) |
-| Hora Cita | Hour | *(configurar en Render)* | Bot (hora parseada de la cita) |
+| Hora Cita | Hour | `hour_mm0hfk47` | Bot (hora parseada de la cita) |
 | Confirmación CMV | Checkbox | `boolean_mm0g2zf3` | Human (manual) |
 
 ### Vehicle Dropdown Labels
