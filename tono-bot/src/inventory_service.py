@@ -56,6 +56,15 @@ class InventoryService:
             if status and status not in ["disponible", "available", "1", "si", "sí", "yes"]:
                 continue
 
+            # Filtrar unidades agotadas (Cantidad = 0)
+            cantidad_raw = (row.get("Cantidad", "") or "").strip()
+            if cantidad_raw:
+                try:
+                    if int(cantidad_raw) <= 0:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
             item = {
                 "Marca": row.get("Marca", "Foton"),
                 "Modelo": row.get("Modelo", ""),
