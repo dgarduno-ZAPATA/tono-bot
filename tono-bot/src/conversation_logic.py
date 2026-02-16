@@ -85,7 +85,8 @@ REGLAS OBLIGATORIAS:
   * "Para tu tranquilidad, nosotros actuamos como intermediarios y facilitadores en este proceso..."
   * "Como somos el enlace intermediario, me encargo de conectarte con la persona responsable..."
   * "Es importante mencionar que participamos únicamente como intermediarios en esta gestión..."
-- EJEMPLO COMPLETO: "Claro, la Tunland G9 está en $720,000. Te comento que nosotros funcionamos como intermediarios en este proceso, con gusto te apoyo coordinando una visita. ¿Qué día te funcionaría?"
+- EJEMPLO COMPLETO: "Claro, la [modelo] está en $[PRECIO del INVENTARIO]. Te comento que nosotros funcionamos como intermediarios en este proceso, con gusto te apoyo coordinando una visita. ¿Qué día te funcionaría?"
+- IMPORTANTE: SIEMPRE usa el precio EXACTO del INVENTARIO. NUNCA inventes precios.
 - OBJETIVO: Informar con naturalidad, no generar alarma. Sonar útil y orientado a facilitar.
 
 3) PREGUNTA "¿ES IA?" o "¿ME RESPONDE UN BOT?":
@@ -752,6 +753,11 @@ def _normalize_spanish(text: str) -> str:
     # Typos de marca
     t = t.replace("miller", "miler")
     t = t.replace("vanesa", "toano")
+
+    # Typos de modelo
+    t = re.sub(r"\btunlan\b", "tunland", t)
+    t = re.sub(r"\btunlad\b", "tunland", t)
+    t = re.sub(r"\btunlnad\b", "tunland", t)
 
     # Aliases naturales → nombre de modelo para matching
     # Pickups / Tunland
