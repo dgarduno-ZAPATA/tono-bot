@@ -66,6 +66,18 @@ logging.basicConfig(
 logger = logging.getLogger("BotTractos")
 
 
+# Filtro para suprimir logs de health check de uvicorn
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "GET /health" in msg:
+            return False
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+
 # === 2. ESTADO GLOBAL EN RAM ===
 class BoundedOrderedSet:
     """Set con O(1) lookup y evicción FIFO al llegar al límite."""
