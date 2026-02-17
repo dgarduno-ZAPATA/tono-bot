@@ -55,11 +55,16 @@ INFORMACIÓN FOTON:
 - GARANTÍA: De fábrica FOTON, válida en todo México.
 - SERVICIO: El cliente puede hacer mantenimiento en cualquier distribuidor FOTON autorizado del país sin perder garantía.
 
+INFORMACIÓN FREIGHTLINER:
+- Tractos y Max también comercializa unidades Freightliner (tractocamiones pesados).
+- Para detalles de garantía y servicio Freightliner, di: "Un asesor te da los detalles completos."
+
 TIPO DE CABINA:
 - Tunland E5, Tunland G7, Tunland G9: DOBLE CABINA (dos filas de asientos, 5 pasajeros). Son pickups.
-- EST-A 6x4 (11.8 y X13): CABINA SENCILLA (una fila de asientos, 2 pasajeros). Son tractocamiones.
+- EST-A 6x4 (11.8 y X13): CABINA SENCILLA (una fila de asientos, 2 pasajeros). Son tractocamiones Foton.
 - Miler 45T RS: CABINA SENCILLA (una fila de asientos, 2 pasajeros). Es camión de trabajo.
 - Toano Panel: CABINA SENCILLA (una fila de asientos, 2-3 pasajeros). Es van de carga.
+- Freightliner: Tractocamión pesado. Para detalles de cabina, consulta el INVENTARIO DISPONIBLE.
 
 DOCUMENTACIÓN PARA COMPRA:
 - CONTADO: INE vigente + comprobante de domicilio. Si quiere factura a su RFC, también Constancia de Situación Fiscal.
@@ -142,7 +147,7 @@ REGLAS OBLIGATORIAS:
 11) PDFs (FICHA TÉCNICA Y CORRIDA FINANCIERA):
 - Si piden "ficha técnica", "especificaciones", "specs": responde "Claro, te comparto la ficha técnica en PDF." (el sistema adjunta el PDF).
 - Si piden "corrida", "simulación de financiamiento", "tabla de pagos": responde "Listo, te comparto la simulación de financiamiento en PDF. Es ilustrativa e incluye intereses." (el sistema adjunta el PDF).
-- Si NO hay modelo detectado en la conversación, pregunta primero: "¿De cuál unidad te interesa? Tenemos Toano Panel, Tunland G9, Tunland E5, EST-A y Miller."
+- Si NO hay modelo detectado en la conversación, pregunta primero: "¿De cuál unidad te interesa?" y menciona las opciones del INVENTARIO DISPONIBLE.
 - Si NO tenemos el PDF de ese modelo, responde: "Por el momento no tengo ese documento en PDF, pero un asesor te lo puede compartir."
 
 12) FOTOS DEL CLIENTE (IMÁGENES RECIBIDAS):
@@ -793,13 +798,8 @@ def _normalize_spanish(text: str) -> str:
         (r"\bel miler\b", "miler"),
         (r"\bel de 3 toneladas\b", "miler"),
         (r"\bel de carga\b", "miler"),
-        # EST-A / tractocamión
-        (r"\bel tracto\b", "6x4"),
-        (r"\bel tractocamion\b", "6x4"),
-        (r"\bel tractocamión\b", "6x4"),
-        (r"\bla esta\b", "6x4"),
-        (r"\bel camion grande\b", "6x4"),
-        (r"\bel camión grande\b", "6x4"),
+        # EST-A (alias específico del modelo Foton)
+        (r"\bla esta\b", "esta 6x4"),
     ]
 
     for pattern, replacement in alias_map:
@@ -1223,9 +1223,9 @@ def _needs_inventory_context(user_message: str, turn_count: int, last_interest: 
             "costo", "disponible", "inventario", "catalogo", "catálogo",
             "que tienen", "qué tienen", "que venden", "qué venden",
             "opciones", "unidades", "vehiculo", "vehículo", "camion", "camión",
-            "pickup", "camioneta", "tracto", "van", "panel",
+            "pickup", "camioneta", "tracto", "tractocamion", "tractocamión", "van", "panel",
             "tunland", "toano", "miler", "miller", "esta", "e5", "g7", "g9",
-            "6x4", "11.8", "x13",
+            "6x4", "11.8", "x13", "freightliner",
         ]
         return any(k in msg for k in inventory_keywords)
 
