@@ -187,31 +187,32 @@ def _clean_phone_or_jid(value: str) -> str:
     return "".join([c for c in str(value) if c.isdigit()])
 
 
-def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
+def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool, bool]:
     """
     Extrae el texto del mensaje de Evolution.
-    Retorna (texto, is_audio).
+    Retorna (texto, is_audio, is_image).
     """
     if not isinstance(msg_obj, dict):
-        return "", False
+        return "", False, False
 
     # 1. Mensaje de texto normal
     if "conversation" in msg_obj:
-        return msg_obj.get("conversation") or "", False
+        return msg_obj.get("conversation") or "", False, False
 
     # 2. Mensaje de texto extendido (reply, etc)
     if "extendedTextMessage" in msg_obj:
         ext = msg_obj.get("extendedTextMessage") or {}
-        return ext.get("text") or "", False
+        return ext.get("text") or "", False, False
 
-    # 3. Imagen con caption
+    # 3. Imagen (con o sin caption) → marcar como imagen para análisis con Vision
     if "imageMessage" in msg_obj:
         img = msg_obj.get("imageMessage") or {}
-        return img.get("caption") or "(Envió una foto)", False
+        caption = (img.get("caption") or "").strip()
+        return caption, False, True
 
     # 4. AUDIO/NOTA DE VOZ (múltiples formatos de Evolution API)
     if "audioMessage" in msg_obj or "pttMessage" in msg_obj:
-        return "", True
+        return "", True, False
 
     # 5. Fallback: revisar messageType (algunas versiones de Evolution API)
     #    También verifica si hay mimetype de audio en cualquier sub-mensaje
@@ -220,7 +221,7 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
             mimetype = v.get("mimetype", "")
             if "audio" in mimetype or "ogg" in mimetype:
                 logger.info(f"🎤 Audio detectado vía mimetype en key '{k}': {mimetype}")
-                return "", True
+                return "", True, False
 
     # Log de keys no reconocidas para diagnóstico
     known_keys = {"conversation", "extendedTextMessage", "imageMessage", "audioMessage",
@@ -229,7 +230,7 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool]:
     if unknown:
         logger.info(f"📋 Keys de mensaje no procesadas: {unknown}")
 
-    return "", False
+    return "", False, False
 
 
 async def _ensure_inventory_loaded(bot_state: GlobalState) -> None:
@@ -691,6 +692,133 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
                 pass
 
 
+# === 7.5 ANÁLISIS DE IMÁGENES CON VISION ===
+async def _handle_image_analysis(bot_state: GlobalState, msg_id: str, remote_jid: str) -> str:
+    """
+    Descarga la imagen desde Evolution API y la analiza con OpenAI Vision.
+    Retorna una descripción breve del contenido de la imagen.
+    """
+    if not msg_id or not remote_jid:
+        logger.warning("⚠️ msg_id o remote_jid vacío para imagen")
+        return ""
+
+    try:
+        client = bot_state.http_client
+        if not client:
+            logger.error("❌ Cliente HTTP no inicializado para imagen")
+            return ""
+
+        # === PASO 1: Descargar imagen de Evolution API (con retry) ===
+        media_url = f"/chat/getBase64FromMediaMessage/{quote(settings.EVO_INSTANCE, safe='')}"
+
+        payload = {
+            "message": {
+                "key": {
+                    "remoteJid": remote_jid,
+                    "id": msg_id,
+                    "fromMe": False
+                }
+            },
+            "convertToMp4": False
+        }
+
+        base64_image = None
+        for _img_attempt in range(3):
+            logger.info(f"⬇️ Descargando imagen (intento {_img_attempt + 1}/3)...")
+            try:
+                response = await _evo_post(client, media_url, json=payload)
+            except Exception as e:
+                logger.error(f"❌ Error de conexión descargando imagen: {e}")
+                if _img_attempt < 2:
+                    await asyncio.sleep(2.0)
+                continue
+
+            if response.status_code not in [200, 201]:
+                logger.error(f"❌ Evolution imagen status {response.status_code}: {response.text[:200]}")
+                if _img_attempt < 2:
+                    await asyncio.sleep(2.0)
+                continue
+
+            try:
+                data = response.json()
+            except Exception as e:
+                logger.error(f"❌ Evolution imagen respuesta no JSON: {e}")
+                if _img_attempt < 2:
+                    await asyncio.sleep(2.0)
+                continue
+
+            # Extraer base64 de diferentes formatos de respuesta
+            if isinstance(data, dict):
+                base64_image = data.get("base64") or data.get("media") or data.get("data")
+                if not base64_image:
+                    logger.error(f"❌ Respuesta sin base64. Keys: {list(data.keys())}")
+            elif isinstance(data, str):
+                base64_image = data
+            else:
+                logger.error(f"❌ Tipo de respuesta inesperado: {type(data)}")
+
+            if base64_image:
+                # Limpiar data URI prefix si existe
+                if "base64," in base64_image:
+                    base64_image = base64_image.split("base64,", 1)[1]
+                break
+            elif _img_attempt < 2:
+                await asyncio.sleep(2.0)
+
+        if not base64_image:
+            logger.error("❌ No se pudo obtener base64 de imagen después de 3 intentos")
+            return ""
+
+        logger.info(f"✅ Imagen descargada: ~{len(base64_image) // 1024} KB base64")
+
+        # === PASO 2: Analizar con OpenAI Vision ===
+        try:
+            from src.conversation_logic import client as openai_client
+
+            vision_prompt = (
+                "Describe brevemente esta imagen en español. "
+                "Si es un vehículo (camión, pickup, tractocamión, van), menciona marca, modelo y detalles visibles. "
+                "Si hay texto promocional o datos (precio, características, especificaciones), inclúyelos. "
+                "Si es una captura de pantalla o documento, resume el contenido. "
+                "Máximo 3 oraciones."
+            )
+
+            vision_response = await openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": vision_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=200,
+            )
+
+            description = (vision_response.choices[0].message.content or "").strip()
+            if description:
+                logger.info(f"🖼️ Imagen analizada: '{description[:150]}...'")
+            else:
+                logger.warning("⚠️ Descripción de imagen vacía")
+
+            return description
+
+        except Exception as e:
+            logger.error(f"❌ Error en OpenAI Vision API: {e}")
+            return ""
+
+    except Exception as e:
+        logger.error(f"❌ Error general analizando imagen: {e}")
+        return ""
+
+
 # === 8. ENVÍO DE MENSAJES (CON RASTREO) ===
 async def send_evolution_message(bot_state: GlobalState, number_or_jid: str, text: str, media_urls: Optional[List[str]] = None):
     media_urls = media_urls or []
@@ -936,7 +1064,7 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
     # y NO fue enviado por el bot → PODRÍA ser un HUMANO ASESOR
     if from_me:
         msg_obj = data.get("message", {}) or {}
-        msg_text, _ = _extract_user_message(msg_obj)
+        msg_text, _, _ = _extract_user_message(msg_obj)
         msg_text = msg_text.strip()
 
         # 1. Verificar si este mensaje fue enviado por el bot
@@ -955,10 +1083,28 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
         return
 
-    # === EXTRACCIÓN DE MENSAJE (TEXTO O AUDIO) ===
+    # === EXTRACCIÓN DE MENSAJE (TEXTO, AUDIO O IMAGEN) ===
     msg_obj = data.get("message", {}) or {}
-    user_message, is_audio = _extract_user_message(msg_obj)
+    user_message, is_audio, is_image = _extract_user_message(msg_obj)
     user_message = user_message.strip()
+
+    # Si es IMAGEN, analizar con Vision API
+    if is_image:
+        logger.info(f"🖼️ Imagen detectada, analizando con Vision...")
+        image_description = await _handle_image_analysis(bot_state, msg_id, remote_jid)
+
+        if image_description:
+            if user_message:
+                # Tiene caption + descripción de imagen
+                user_message = f"{user_message} [El cliente envió una foto que muestra: {image_description}]"
+            else:
+                user_message = f"[El cliente envió una foto que muestra: {image_description}]"
+            logger.info(f"✅ Imagen analizada, procesando con contexto visual...")
+        else:
+            # Vision falló, usar caption o fallback
+            if not user_message:
+                user_message = "(El cliente envió una foto pero no se pudo analizar)"
+            logger.warning(f"⚠️ No se pudo analizar imagen, usando fallback")
 
     # Si NO hay texto y es audio, transcribir
     if not user_message and is_audio:
