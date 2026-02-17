@@ -56,7 +56,7 @@ INFORMACIÓN FOTON:
 - SERVICIO: El cliente puede hacer mantenimiento en cualquier distribuidor FOTON autorizado del país sin perder garantía.
 
 INFORMACIÓN FREIGHTLINER:
-- Tractos y Max también comercializa unidades Freightliner (tractocamiones pesados).
+- Tractos y Max también comercializa la Freightliner Cascadia 2016 (tractocamión pesado).
 - Para detalles de garantía y servicio Freightliner, di: "Un asesor te da los detalles completos."
 
 TIPO DE CABINA:
@@ -64,7 +64,7 @@ TIPO DE CABINA:
 - EST-A 6x4 (11.8 y X13): CABINA SENCILLA (una fila de asientos, 2 pasajeros). Son tractocamiones Foton.
 - Miler 45T RS: CABINA SENCILLA (una fila de asientos, 2 pasajeros). Es camión de trabajo.
 - Toano Panel: CABINA SENCILLA (una fila de asientos, 2-3 pasajeros). Es van de carga.
-- Freightliner: Tractocamión pesado. Para detalles de cabina, consulta el INVENTARIO DISPONIBLE.
+- Freightliner Cascadia 2016: Tractocamión pesado. Para detalles de cabina, consulta el INVENTARIO DISPONIBLE.
 
 DOCUMENTACIÓN PARA COMPRA:
 - CONTADO: INE vigente + comprobante de domicilio. Si quiere factura a su RFC, también Constancia de Situación Fiscal.
