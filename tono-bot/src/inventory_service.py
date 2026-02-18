@@ -66,7 +66,7 @@ class InventoryService:
                     pass
 
             item = {
-                "Marca": row.get("Marca", "Foton"),
+                "Marca": row.get("Marca", ""),
                 "Modelo": row.get("Modelo", ""),
                 "Año": row.get("Año", row.get("Anio", "")),
                 "Color": row.get("Color", ""),
@@ -87,6 +87,8 @@ class InventoryService:
                 "MOTOR": row.get("MOTOR", ""),
                 "Cantidad": row.get("Cantidad", "1"),
                 "Colores": row.get("Colores", ""),
+                "TipoCabina": row.get("TipoCabina", ""),
+                "Asientos": row.get("Asientos", ""),
             }
             normalized.append(item)
 

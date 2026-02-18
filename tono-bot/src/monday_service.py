@@ -58,14 +58,14 @@ def _get_current_month_group_name() -> str:
 
 def resolve_vehicle_to_dropdown(interest: str) -> str:
     """
-    Dado un interés detectado por el bot (ej. 'Foton Tunland G9 2025'),
+    Dado un interés detectado por el bot (ej. 'Tunland G9 2025'),
     devuelve el label EXACTO del dropdown de Monday (ej. 'Tunland G9').
     Retorna '' si no hay match.
     """
     if not interest:
         return ""
 
-    interest_lower = interest.lower().replace("foton", "").replace("diesel", "").replace("4x4", "").strip()
+    interest_lower = interest.lower().replace("foton", "").replace("freightliner", "").replace("diesel", "").replace("4x4", "").strip()
 
     best_label = ""
     best_score = 0

@@ -50,15 +50,11 @@ DATOS CLAVE:
 - TURNO: {turn_number}
 
 INFORMACIÓN DEL DISTRIBUIDOR:
-- Tractos y Max es distribuidor de vehículos comerciales. FACTURA ORIGINAL (no reventa, no intermediario).
+- Tractos y Max es distribuidor de vehículos comerciales de VARIAS MARCAS. FACTURA ORIGINAL (no reventa, no intermediario).
+- Las marcas y modelos disponibles están en el INVENTARIO DISPONIBLE. Vende TODO lo que aparezca ahí.
 - GARANTÍA: De fábrica del fabricante correspondiente, válida en todo México.
 - SERVICIO: El cliente puede hacer mantenimiento en cualquier distribuidor autorizado de la marca correspondiente sin perder garantía.
-
-TIPO DE CABINA:
-- Tunland E5, Tunland G7, Tunland G9: DOBLE CABINA (dos filas de asientos, 5 pasajeros). Son pickups.
-- EST-A 6x4 (11.8 y X13): CABINA SENCILLA (una fila de asientos, 2 pasajeros). Son tractocamiones.
-- Miler 45T RS: CABINA SENCILLA (una fila de asientos, 2 pasajeros). Es camión de trabajo.
-- Toano Panel: CABINA SENCILLA (una fila de asientos, 2-3 pasajeros). Es van de carga.
+- TIPO DE CABINA Y ASIENTOS: Consulta el inventario, cada modelo indica su tipo de cabina y número de asientos.
 
 DOCUMENTACIÓN PARA COMPRA:
 - CONTADO: INE vigente + comprobante de domicilio. Si quiere factura a su RFC, también Constancia de Situación Fiscal.
@@ -69,7 +65,7 @@ REGLAS OBLIGATORIAS:
 0) INVENTARIO = CATÁLOGO COMPLETO (CRÍTICO - LEE ESTO PRIMERO):
 - El bloque "INVENTARIO DISPONIBLE" define EXACTAMENTE qué vehículos vende Tractos y Max en este momento.
 - Si una marca o modelo aparece en el inventario → Tractos y Max LO VENDE. Sin excepción.
-- Las marcas cambian con el tiempo: hoy puede ser Foton, mañana Freightliner, otra marca, etc.
+- Las marcas cambian con el tiempo; el inventario siempre tiene la lista actualizada.
 - NUNCA digas "no manejamos esa marca" o "no tenemos esa marca" si la marca aparece en el inventario.
 - Si el cliente pregunta por un vehículo: búscalo en INVENTARIO DISPONIBLE. Si está ahí → "Sí lo manejamos." Si no está → "Por el momento no tenemos esa unidad, pero tenemos otras opciones."
 - SIEMPRE ofrece lo que SÍ está en inventario cuando el cliente pregunta por algo que no tenemos.
@@ -179,7 +175,7 @@ REGLAS OBLIGATORIAS:
 {{
   "lead_event": {{
     "nombre": "Juan Perez",
-    "interes": "Foton Tunland G9 2025",
+    "interes": "Tunland G9 2025",
     "cita": "Lunes 10 AM",
     "pago": "Contado"
   }}
@@ -355,8 +351,12 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
         logger.warning(f"📄 PDF {pdf_type} solicitado pero no hay datos de financiamiento")
         return {"tipo": pdf_type, "sin_datos": True}
 
-    # Normalizar el interés para buscar
-    interest_norm = last_interest.lower().replace("foton", "").replace("diesel", "").replace("4x4", "").strip()
+    # Normalizar el interés para buscar (strip marcas conocidas)
+    _brand_strip = ["foton", "freightliner"]
+    interest_norm = last_interest.lower()
+    for _b in _brand_strip:
+        interest_norm = interest_norm.replace(_b, "")
+    interest_norm = interest_norm.replace("diesel", "").replace("4x4", "").strip()
     logger.info(f"📄 Buscando modelo para PDF: last_interest='{last_interest}' -> normalizado='{interest_norm}'")
 
     # Buscar coincidencia
@@ -374,11 +374,12 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
         nombre_tokens = set(nombre.split())
         all_tokens = key_tokens.union(nombre_tokens)
 
-        # Verificar si hay coincidencia (solo tokens de 2+ caracteres, excluyendo "foton")
+        # Verificar si hay coincidencia (solo tokens de 2+ caracteres, excluyendo marcas)
+        _brand_noise = {"foton", "freightliner"}
         score = 0
         matched_tokens = []
         for token in all_tokens:
-            if len(token) >= 2 and token != "foton" and token in interest_norm:
+            if len(token) >= 2 and token not in _brand_noise and token in interest_norm:
                 score += 1
                 matched_tokens.append(token)
 
@@ -417,13 +418,13 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
         pdf_url = matched_info.get("pdf_ficha_tecnica")
         if not pdf_url:
             return {"tipo": pdf_type, "sin_pdf": True, "modelo": matched_info.get("nombre", "")}
-        filename = f"Ficha_Tecnica_{matched_info.get('nombre', 'Foton').replace(' ', '_')}_{matched_info.get('anio', '')}.pdf"
+        filename = f"Ficha_Tecnica_{matched_info.get('nombre', 'Vehiculo').replace(' ', '_')}_{matched_info.get('anio', '')}.pdf"
         mensaje = "Claro, te comparto la ficha tecnica en PDF."
     else:
         pdf_url = matched_info.get("pdf_corrida")
         if not pdf_url:
             return {"tipo": pdf_type, "sin_pdf": True, "modelo": matched_info.get("nombre", "")}
-        filename = f"Corrida_Financiamiento_{matched_info.get('nombre', 'Foton').replace(' ', '_')}_{matched_info.get('anio', '')}.pdf"
+        filename = f"Corrida_Financiamiento_{matched_info.get('nombre', 'Vehiculo').replace(' ', '_')}_{matched_info.get('anio', '')}.pdf"
         mensaje = "Listo, te comparto la simulacion de financiamiento en PDF. Es ilustrativa e incluye intereses."
 
     return {
@@ -523,7 +524,7 @@ def _build_inventory_text(inventory_service) -> str:
 
     lines: List[str] = []
     for item in items:
-        marca = _safe_get(item, ["Marca", "marca"], default="Foton")
+        marca = _safe_get(item, ["Marca", "marca"])
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"], default="(sin modelo)")
         anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
         precio = _safe_get(item, ["Precio", "precio"], default="N/D")
@@ -533,7 +534,8 @@ def _build_inventory_text(inventory_service) -> str:
         colores = _safe_get(item, ["Colores", "colores"], default="")
 
         price_str = _format_price(precio, moneda, iva)
-        info = f"- {marca} {modelo} {anio}: {price_str}"
+        label = f"{marca} {modelo}".strip() if marca else modelo
+        info = f"- {label} {anio}: {price_str}"
 
         try:
             cant = int(cantidad)
@@ -544,6 +546,15 @@ def _build_inventory_text(inventory_service) -> str:
 
         if colores:
             info += f" | Colores: {colores}"
+
+        # Tipo de cabina y asientos (desde CSV)
+        tipo_cabina = _safe_get(item, ["TipoCabina", "tipocabina", "tipo_cabina"])
+        asientos = _safe_get(item, ["Asientos", "asientos"])
+        if tipo_cabina:
+            cab_info = tipo_cabina
+            if asientos:
+                cab_info += f", {asientos} asientos"
+            info += f" | {cab_info}"
 
         # Specs opcionales (solo si el CSV/Sheet tiene datos)
         combustible = _normalize_fuel(_safe_get(item, ["COMBUSTIBLE", "combustible"]))
@@ -571,7 +582,7 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
         return ""
 
     interest_norm = _normalize_spanish(last_interest)
-    interest_tokens = [t for t in interest_norm.split() if len(t) >= 2 and t not in {"foton", "camion", "camión"}]
+    interest_tokens = [t for t in interest_norm.split() if len(t) >= 2 and t not in {"foton", "freightliner", "camion", "camión"}]
 
     for item in items:
         modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
@@ -582,10 +593,11 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
             precio = _safe_get(item, ["Precio", "precio"], default="N/D")
             moneda = _safe_get(item, ["moneda"], default="MXN")
             iva = _safe_get(item, ["iva_incluido"], default="")
-            marca = _safe_get(item, ["Marca", "marca"], default="Foton")
+            marca = _safe_get(item, ["Marca", "marca"])
             anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
             price_str = _format_price(precio, moneda, iva)
-            return f"Modelo de interés: {marca} {modelo} {anio}: {price_str}"
+            label = f"{marca} {modelo}".strip() if marca else modelo
+            return f"Modelo de interés: {label} {anio}: {price_str}"
 
     return ""
 
@@ -768,6 +780,9 @@ def _normalize_spanish(text: str) -> str:
     # Typos de marca
     t = t.replace("miller", "miler")
     t = t.replace("vanesa", "toano")
+    t = t.replace("freight liner", "freightliner")
+    t = t.replace("freigthliner", "freightliner")
+    t = t.replace("freighliner", "freightliner")
 
     # Typos de modelo
     t = re.sub(r"\btunlan\b", "tunland", t)
@@ -827,7 +842,7 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
     # Palabras comunes en español que NO deben usarse como tokens de matching
     # "esta/este/estan" causan falsos positivos con el modelo EST-A
     _noise = {
-        "foton", "camion", "camión",
+        "foton", "freightliner", "camion", "camión",
         "esta", "este", "estos", "estas", "estan", "están",
         "gris", "azul", "rojo", "negro", "blanco", "plata",
         "at", "mt", "diesel",
@@ -1035,7 +1050,7 @@ def _pick_media_urls(
     if last_interest:
         interest_norm = _normalize_spanish(last_interest)
         # Extraer tokens relevantes, excluyendo palabras comunes que causan falsos positivos
-        _noise = {"foton", "camion", "camión", "esta", "este", "estos", "estas", "estan", "están",
+        _noise = {"foton", "freightliner", "camion", "camión", "esta", "este", "estos", "estas", "estan", "están",
                   "gris", "azul", "rojo", "negro", "blanco", "plata", "at", "mt", "diesel"}
         interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in _noise]
 
@@ -1057,7 +1072,7 @@ def _pick_media_urls(
         # Palabras comunes en español que NO deben usarse como tokens de matching
         # "esta" es el peor: aparece en casi cualquier mensaje y matchea con EST-A
         noise_words = {
-            "foton", "camion", "camión",
+            "foton", "freightliner", "camion", "camión",
             # "esta/estan" = palabras comunes español, NO confundir con modelo EST-A
             "esta", "estan", "están",
             # Colores (aparecen en nombre de modelo pero no sirven para identificarlo)
@@ -1232,7 +1247,7 @@ def _needs_inventory_context(user_message: str, turn_count: int, last_interest: 
             "opciones", "unidades", "vehiculo", "vehículo", "camion", "camión",
             "pickup", "camioneta", "tracto", "van", "panel",
             "tunland", "toano", "miler", "miller", "esta", "e5", "g7", "g9",
-            "6x4", "11.8", "x13",
+            "6x4", "11.8", "x13", "freightliner",
         ]
         return any(k in msg for k in inventory_keywords)
 
