@@ -55,6 +55,7 @@ INFORMACIÓN DEL DISTRIBUIDOR:
 - GARANTÍA: De fábrica del fabricante correspondiente, válida en todo México.
 - SERVICIO: El cliente puede hacer mantenimiento en cualquier distribuidor autorizado de la marca correspondiente sin perder garantía.
 - TIPO DE CABINA Y ASIENTOS: Consulta el inventario, cada modelo indica su tipo de cabina y número de asientos.
+- SPECS TÉCNICAS: Algunos modelos incluyen Transmisión, Paso, Rodada, Eje Delantera, Eje Trasera y Dormitorio. Si el cliente pregunta por alguna de estas características, consulta el inventario.
 
 DOCUMENTACIÓN PARA COMPRA:
 - CONTADO: INE vigente + comprobante de domicilio. Si quiere factura a su RFC, también Constancia de Situación Fiscal.
@@ -560,6 +561,13 @@ def _build_inventory_text(inventory_service) -> str:
         combustible = _normalize_fuel(_safe_get(item, ["COMBUSTIBLE", "combustible"]))
         motor = _summarize_motor(_safe_get(item, ["MOTOR", "motor"]))
         capacidad = _summarize_capacity(_safe_get(item, ["CAPACIDAD DE CARGA"]))
+        transmision = _safe_get(item, ["Transmision", "Transmisión", "transmision"])
+        paso = _safe_get(item, ["Paso", "paso"])
+        rodada = _safe_get(item, ["Rodada", "rodada"])
+        eje_del = _safe_get(item, ["EjeDelantera", "Eje Delantera", "ejedelantera"])
+        eje_tras = _safe_get(item, ["EjeTrasera", "Eje Trasera", "ejetrasera"])
+        dormitorio = _safe_get(item, ["Dormitorio", "dormitorio"])
+
         specs = []
         if combustible:
             specs.append(combustible)
@@ -567,6 +575,18 @@ def _build_inventory_text(inventory_service) -> str:
             specs.append(f"Motor: {motor}")
         if capacidad:
             specs.append(f"Carga: {capacidad}")
+        if transmision:
+            specs.append(f"Transmisión: {transmision}")
+        if paso:
+            specs.append(f"Paso: {paso}")
+        if rodada:
+            specs.append(f"Rodada: {rodada}")
+        if eje_del:
+            specs.append(f"Eje Del.: {eje_del}")
+        if eje_tras:
+            specs.append(f"Eje Tras.: {eje_tras}")
+        if dormitorio:
+            specs.append(f"Dormitorio: {dormitorio}")
         if specs:
             info += " | " + ", ".join(specs)
 
@@ -597,7 +617,41 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
             anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
             price_str = _format_price(precio, moneda, iva)
             label = f"{marca} {modelo}".strip() if marca else modelo
-            return f"Modelo de interés: {label} {anio}: {price_str}"
+            info = f"Modelo de interés: {label} {anio}: {price_str}"
+
+            # Specs adicionales para modelo enfocado
+            specs = []
+            combustible = _normalize_fuel(_safe_get(item, ["COMBUSTIBLE", "combustible"]))
+            motor = _summarize_motor(_safe_get(item, ["MOTOR", "motor"]))
+            capacidad = _summarize_capacity(_safe_get(item, ["CAPACIDAD DE CARGA"]))
+            transmision = _safe_get(item, ["Transmision", "Transmisión", "transmision"])
+            paso = _safe_get(item, ["Paso", "paso"])
+            rodada = _safe_get(item, ["Rodada", "rodada"])
+            eje_del = _safe_get(item, ["EjeDelantera", "Eje Delantera", "ejedelantera"])
+            eje_tras = _safe_get(item, ["EjeTrasera", "Eje Trasera", "ejetrasera"])
+            dormitorio = _safe_get(item, ["Dormitorio", "dormitorio"])
+            if combustible:
+                specs.append(combustible)
+            if motor:
+                specs.append(f"Motor: {motor}")
+            if capacidad:
+                specs.append(f"Carga: {capacidad}")
+            if transmision:
+                specs.append(f"Transmisión: {transmision}")
+            if paso:
+                specs.append(f"Paso: {paso}")
+            if rodada:
+                specs.append(f"Rodada: {rodada}")
+            if eje_del:
+                specs.append(f"Eje Del.: {eje_del}")
+            if eje_tras:
+                specs.append(f"Eje Tras.: {eje_tras}")
+            if dormitorio:
+                specs.append(f"Dormitorio: {dormitorio}")
+            if specs:
+                info += " | " + ", ".join(specs)
+
+            return info
 
     return ""
 

@@ -89,6 +89,12 @@ class InventoryService:
                 "Colores": row.get("Colores", ""),
                 "TipoCabina": row.get("TipoCabina", ""),
                 "Asientos": row.get("Asientos", ""),
+                "Transmision": row.get("Transmisión", row.get("Transmision", "")),
+                "Paso": row.get("Paso", ""),
+                "Rodada": row.get("Rodada", ""),
+                "EjeDelantera": row.get("Eje Delantera", row.get("EjeDelantera", "")),
+                "EjeTrasera": row.get("Eje Trasera", row.get("EjeTrasera", "")),
+                "Dormitorio": row.get("Dormitorio", ""),
             }
             normalized.append(item)
 
