@@ -1094,10 +1094,26 @@ def _pick_media_urls(
             target_model_name = best_model
 
     # C) PRIORIDAD 3: Usar last_interest sin mención (para "otra foto" sin decir modelo)
+    # EXCEPCIÓN CRÍTICA: Si el usuario menciona una marca diferente a la del last_interest,
+    # NO usar last_interest. Evita mandar fotos de Freightliner cuando piden "fotos del foton".
     if not target_item and last_interest:
+        _known_brands = [
+            "foton", "freightliner", "kenworth", "international", "peterbilt",
+            "volvo", "scania", "mercedes", "man", "isuzu", "hino",
+        ]
+        user_mentioned_brand = next((b for b in _known_brands if b in msg), None)
+
         for item in items:
             modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
             if _normalize_spanish(modelo) == _normalize_spanish(last_interest):
+                if user_mentioned_brand:
+                    # Verificar que la marca del item coincida con lo que pidió el usuario
+                    item_brand = _normalize_spanish(
+                        _safe_get(item, ["Marca", "marca", "brand"]) or modelo
+                    )
+                    if user_mentioned_brand not in item_brand and user_mentioned_brand not in _normalize_spanish(modelo):
+                        # Marca diferente: el usuario pide otra marca, no usar este last_interest
+                        break
                 target_item = item
                 target_model_name = modelo
                 break
