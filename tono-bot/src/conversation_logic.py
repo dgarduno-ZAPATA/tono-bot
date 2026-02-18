@@ -15,7 +15,20 @@ logger = logging.getLogger(__name__)
 # CONFIG
 # ============================================================
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+# Cliente LLM para conversación: Gemini 2.0 Flash si hay GOOGLE_API_KEY, sino OpenAI
+_google_api_key = os.getenv("GOOGLE_API_KEY", "")
+if _google_api_key:
+    llm_client = AsyncOpenAI(
+        api_key=_google_api_key,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    )
+    MODEL_NAME = os.getenv("OPENAI_MODEL", "gemini-2.0-flash")
+    _llm_provider = "Google Gemini"
+else:
+    llm_client = client
+    MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    _llm_provider = "OpenAI"
 
 # ============================================================
 # TIME (CDMX)
@@ -1408,7 +1421,7 @@ async def handle_message(
         _MAX_RETRIES = 3
         for _attempt in range(_MAX_RETRIES):
             try:
-                resp = await client.chat.completions.create(
+                resp = await llm_client.chat.completions.create(
                     model=MODEL_NAME,
                     messages=messages,
                     temperature=0.3,
@@ -1418,14 +1431,14 @@ async def handle_message(
             except (APITimeoutError, RateLimitError) as e:
                 if _attempt < _MAX_RETRIES - 1:
                     backoff = 2 ** (_attempt + 1)
-                    logger.warning(f"⚠️ OpenAI retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    logger.warning(f"⚠️ {_llm_provider} retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
                     await asyncio.sleep(backoff)
                 else:
                     raise
             except APIStatusError as e:
                 if e.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
                     backoff = 2 ** (_attempt + 1)
-                    logger.warning(f"⚠️ OpenAI 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    logger.warning(f"⚠️ {_llm_provider} 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
                     await asyncio.sleep(backoff)
                 else:
                     raise

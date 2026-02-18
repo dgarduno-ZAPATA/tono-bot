@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     EVOLUTION_API_KEY: str
 
     # Opcionales / defaults
+    GOOGLE_API_KEY: str = ""          # Si se configura, usa Gemini para conversación
     EVO_INSTANCE: str = "Maximo Cervantes 2"
     OWNER_PHONE: Optional[str] = None
     SHEET_CSV_URL: Optional[str] = None
