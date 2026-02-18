@@ -1,9 +1,9 @@
-Marca,Modelo,Anio,Precio,Cantidad,Colores
-Foton,MILER 45T RS,2024,500000,7,
-Foton,TOANO PANEL,2025,720000,5,
-Foton,TOANO PANEL,2024,700000,4,
-Foton,TUNLAND G7 AT 4X4,2025,430000,1,Gris
-Foton,TUNLAND G7 MT 4X4,2024,390000,1,Blanco
-Foton,TUNLAND G9,2025,450000,8,Azul; Negro; Rojo; Plata; Blanco
-Foton,ESTA 6X4 11.8,2023,1675000,1,
-Foton,ESTA 6X4 X13,2024,1845000,3,
+Marca,Modelo,Anio,Precio,Cantidad,Colores,TipoCabina,Asientos
+Foton,MILER 45T RS,2024,500000,7,,Cabina Sencilla,2
+Foton,TOANO PANEL,2025,720000,5,,Cabina Sencilla,3
+Foton,TOANO PANEL,2024,700000,4,,Cabina Sencilla,3
+Foton,TUNLAND G7 AT 4X4,2025,430000,1,Gris,Doble Cabina,5
+Foton,TUNLAND G7 MT 4X4,2024,390000,1,Blanco,Doble Cabina,5
+Foton,TUNLAND G9,2025,450000,8,Azul; Negro; Rojo; Plata; Blanco,Doble Cabina,5
+Foton,ESTA 6X4 11.8,2023,1675000,1,,Cabina Sencilla,2
+Foton,ESTA 6X4 X13,2024,1845000,3,,Cabina Sencilla,2
