@@ -41,7 +41,14 @@ openai_client = AsyncOpenAI(
 FALLBACK_MODEL = os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini")
 
 # Prioridad configurable: "gemini" (default) o "openai"
+# Mutable para que main.py pueda cambiar si Gemini falla en smoke test
 LLM_PRIMARY = os.getenv("LLM_PRIMARY", "gemini").lower().strip()
+
+
+def set_llm_primary(value: str):
+    """Permite a main.py cambiar el proveedor primario en runtime."""
+    global LLM_PRIMARY
+    LLM_PRIMARY = value.lower().strip()
 
 # ============================================================
 # TIME (CDMX)

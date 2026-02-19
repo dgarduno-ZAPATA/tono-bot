@@ -26,6 +26,7 @@ from src.conversation_logic import (
     MODEL_NAME as LLM_MODEL_NAME,
     FALLBACK_MODEL,
     LLM_PRIMARY,
+    set_llm_primary,
     _GEMINI_BASE_URL,
 )
 from src.memory_store import MemoryStore
@@ -190,7 +191,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ DNS resolution failed for {_gemini_host}: {e}")
 
-    # D.2) API smoke test (ya usa IPv4 forzado)
+    # D.2) Raw TCP connectivity test
+    _gemini_reachable = False
+    try:
+        _sock = socket.create_connection((_gemini_host, 443), timeout=5)
+        _sock.close()
+        logger.info(f"✅ TCP {_gemini_host}:443 alcanzable")
+        _gemini_reachable = True
+    except Exception as e:
+        logger.warning(f"❌ TCP {_gemini_host}:443 NO alcanzable: {type(e).__name__}: {e}")
+
+    # D.3) Raw HTTPS test (sin OpenAI SDK, httpx default)
+    if _gemini_reachable:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as _test_client:
+                _r = await _test_client.get(f"https://{_gemini_host}/")
+                logger.info(f"✅ HTTPS GET {_gemini_host} → {_r.status_code}")
+        except Exception as e:
+            logger.warning(f"⚠️ HTTPS GET {_gemini_host} falló: {type(e).__name__}: {e}")
+
+    # D.4) API smoke test con OpenAI SDK (usa IPv4 forzado)
+    _gemini_smoke_ok = False
     _smoke_messages = [{"role": "user", "content": "Hola"}]
     try:
         _t0 = asyncio.get_event_loop().time()
@@ -198,10 +219,24 @@ async def lifespan(app: FastAPI):
             model=LLM_MODEL_NAME, messages=_smoke_messages, max_tokens=5,
         )
         _elapsed = asyncio.get_event_loop().time() - _t0
-        logger.info(f"✅ Smoke test Gemini OK ({_elapsed:.1f}s) — IPv4 forzado")
+        logger.info(f"✅ Smoke test Gemini OK ({_elapsed:.1f}s)")
+        _gemini_smoke_ok = True
     except Exception as e:
-        logger.warning(f"⚠️ Smoke test Gemini FALLÓ: {type(e).__name__}: {e}")
-        logger.warning("   → Gemini sigue como primario, con fallback OpenAI si falla.")
+        _elapsed = asyncio.get_event_loop().time() - _t0
+        logger.warning(f"⚠️ Smoke test Gemini FALLÓ ({_elapsed:.1f}s): {type(e).__name__}: {e}")
+        # Log causa raíz completa
+        _cause = e.__cause__
+        while _cause:
+            logger.warning(f"   Caused by: {type(_cause).__name__}: {_cause}")
+            _cause = getattr(_cause, "__cause__", None)
+
+    # D.5) AUTO-SWITCH: Si Gemini falla, cambiar a OpenAI como primario
+    if not _gemini_smoke_ok and LLM_PRIMARY == "gemini":
+        set_llm_primary("openai")
+        logger.warning(f"🔄 AUTO-SWITCH: Gemini inalcanzable → OpenAI ({FALLBACK_MODEL}) es ahora primario")
+        logger.warning(f"   Gemini queda como fallback por si se recupera")
+    elif _gemini_smoke_ok:
+        logger.info(f"✅ Gemini confirmado como primario")
 
     # Inyectar estado en app para acceso desde endpoints
     app.state.bot = bot_state
@@ -1209,10 +1244,14 @@ async def root():
 @app.get("/health")
 async def health(request: Request):
     """Endpoint de salud con métricas del sistema."""
+    from src.conversation_logic import LLM_PRIMARY as _current_primary
     bot_state: GlobalState = request.app.state.bot
     return {
         "status": "ok",
         "instance": settings.EVO_INSTANCE,
+        "llm_primary": _current_primary,
+        "llm_model": LLM_MODEL_NAME,
+        "llm_fallback": FALLBACK_MODEL,
         "inventory_count": len(getattr(bot_state.inventory, "items", []) or []),
         "silenced_chats": len(bot_state.silenced_users),
         "processed_msgs_cache": len(bot_state.processed_message_ids),
