@@ -18,13 +18,17 @@ logger = logging.getLogger(__name__)
 # Timeouts generosos para evitar ConnectionError en Render
 _LLM_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
+# Forzar IPv4 — Render a veces intenta IPv6 primero y falla contra Google
+_ipv4_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+
 # Cliente principal (Gemini) para chat y visión
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+_gemini_http_client = httpx.AsyncClient(transport=_ipv4_transport, timeout=_LLM_TIMEOUT)
 client = AsyncOpenAI(
     api_key=os.getenv("GEMINI_API_KEY", ""),
     base_url=_GEMINI_BASE_URL,
     max_retries=0,  # Desactivar retries internos del SDK; usamos nuestro propio retry
-    timeout=_LLM_TIMEOUT,
+    http_client=_gemini_http_client,
 )
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gemini-2.5-flash-lite")
 

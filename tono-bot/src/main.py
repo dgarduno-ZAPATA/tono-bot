@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import asyncio
+import socket
 import tempfile
 import random
 import time
@@ -171,9 +172,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
 
-    # D) Smoke test LLM: verificar conectividad al arrancar
+    # D) Smoke test LLM: diagnóstico de red + conectividad
     logger.info(f"🔍 LLM config: primary={LLM_PRIMARY}, model={LLM_MODEL_NAME}, fallback={FALLBACK_MODEL}")
     logger.info(f"🔍 Gemini base_url={_GEMINI_BASE_URL}")
+
+    # D.1) DNS diagnostic
+    _gemini_host = "generativelanguage.googleapis.com"
+    try:
+        _addrs = socket.getaddrinfo(_gemini_host, 443)
+        _ipv4 = [a for a in _addrs if a[0] == socket.AF_INET]
+        _ipv6 = [a for a in _addrs if a[0] == socket.AF_INET6]
+        logger.info(f"🔍 DNS {_gemini_host}: {len(_ipv4)} IPv4, {len(_ipv6)} IPv6")
+        if _ipv4:
+            logger.info(f"   IPv4: {_ipv4[0][4][0]}")
+        if _ipv6:
+            logger.info(f"   IPv6: {_ipv6[0][4][0]}")
+    except Exception as e:
+        logger.error(f"❌ DNS resolution failed for {_gemini_host}: {e}")
+
+    # D.2) API smoke test (ya usa IPv4 forzado)
     _smoke_messages = [{"role": "user", "content": "Hola"}]
     try:
         _t0 = asyncio.get_event_loop().time()
@@ -181,10 +198,10 @@ async def lifespan(app: FastAPI):
             model=LLM_MODEL_NAME, messages=_smoke_messages, max_tokens=5,
         )
         _elapsed = asyncio.get_event_loop().time() - _t0
-        logger.info(f"✅ Smoke test Gemini OK ({_elapsed:.1f}s)")
+        logger.info(f"✅ Smoke test Gemini OK ({_elapsed:.1f}s) — IPv4 forzado")
     except Exception as e:
         logger.warning(f"⚠️ Smoke test Gemini FALLÓ: {type(e).__name__}: {e}")
-        logger.warning("   → El bot usará fallback OpenAI automáticamente.")
+        logger.warning("   → Gemini sigue como primario, con fallback OpenAI si falla.")
 
     # Inyectar estado en app para acceso desde endpoints
     app.state.bot = bot_state
