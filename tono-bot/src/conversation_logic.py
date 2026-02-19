@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 import pytz
-from openai import AsyncOpenAI, APITimeoutError, RateLimitError, APIStatusError
+from openai import AsyncOpenAI, APITimeoutError, RateLimitError, APIStatusError, APIConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -1476,10 +1476,10 @@ async def handle_message(
                     max_tokens=350,
                 )
                 break
-            except (APITimeoutError, RateLimitError) as e:
+            except (APITimeoutError, RateLimitError, APIConnectionError) as e:
                 if _attempt < _MAX_RETRIES - 1:
                     backoff = 2 ** (_attempt + 1)
-                    logger.warning(f"⚠️ LLM retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    logger.warning(f"⚠️ LLM retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {type(e).__name__}: {e}")
                     await asyncio.sleep(backoff)
                 else:
                     raise
