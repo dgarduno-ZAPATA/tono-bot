@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
+import httpx
 import pytz
 from openai import AsyncOpenAI, APITimeoutError, RateLimitError, APIStatusError, APIConnectionError
 
@@ -14,18 +15,29 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # CONFIG
 # ============================================================
+# Timeouts generosos para evitar ConnectionError en Render
+_LLM_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+
 # Cliente principal (Gemini) para chat y visión
 _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 client = AsyncOpenAI(
     api_key=os.getenv("GEMINI_API_KEY", ""),
     base_url=_GEMINI_BASE_URL,
     max_retries=0,  # Desactivar retries internos del SDK; usamos nuestro propio retry
+    timeout=_LLM_TIMEOUT,
 )
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gemini-2.5-flash-lite")
 
 # Cliente secundario (OpenAI) para Whisper Y como fallback de chat si Gemini falla
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""), max_retries=0)
+openai_client = AsyncOpenAI(
+    api_key=os.getenv("OPENAI_API_KEY", ""),
+    max_retries=0,
+    timeout=_LLM_TIMEOUT,
+)
 FALLBACK_MODEL = os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini")
+
+# Prioridad configurable: "gemini" (default) o "openai"
+LLM_PRIMARY = os.getenv("LLM_PRIMARY", "gemini").lower().strip()
 
 # ============================================================
 # TIME (CDMX)
@@ -1336,61 +1348,90 @@ def _needs_financing_context(user_message: str) -> bool:
 
 
 # ============================================================
-# LLM CALL WITH FALLBACK (Gemini -> OpenAI)
+# LLM CALL WITH FALLBACK
 # ============================================================
-async def _llm_call_with_fallback(messages: list, temperature: float = 0.3, max_tokens: int = 350):
-    """
-    Intenta Gemini primero (3 retries). Si falla, usa OpenAI GPT como fallback.
-    Esto evita que el bot se quede sin respuesta por problemas de red con Google.
-    """
-    _MAX_RETRIES = 3
-
-    # --- Intento con Gemini (cliente principal) ---
-    last_error = None
-    for _attempt in range(_MAX_RETRIES):
+async def _llm_try_provider(
+    llm_client: AsyncOpenAI,
+    model: str,
+    messages: list,
+    temperature: float,
+    max_tokens: int,
+    label: str,
+    max_retries: int = 2,
+) -> Optional[Any]:
+    """Intenta un proveedor LLM con retries cortos. Retorna respuesta o None."""
+    for _attempt in range(max_retries):
         try:
-            resp = await client.chat.completions.create(
-                model=MODEL_NAME,
+            resp = await llm_client.chat.completions.create(
+                model=model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
             return resp
         except (APITimeoutError, RateLimitError, APIConnectionError) as e:
-            last_error = e
-            if _attempt < _MAX_RETRIES - 1:
-                backoff = 2 ** (_attempt + 1)
-                logger.warning(f"⚠️ Gemini retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {type(e).__name__}: {e}")
-                await asyncio.sleep(backoff)
-        except APIStatusError as e:
-            last_error = e
-            if e.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
-                backoff = 2 ** (_attempt + 1)
-                logger.warning(f"⚠️ Gemini 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+            if _attempt < max_retries - 1:
+                backoff = _attempt + 1  # 1s, 2s (rápido)
+                logger.warning(f"⚠️ {label} retry {_attempt + 1}/{max_retries} tras {backoff}s: {type(e).__name__}: {e}")
                 await asyncio.sleep(backoff)
             else:
-                raise
-        except Exception as e:
-            last_error = e
-            if _attempt < _MAX_RETRIES - 1:
-                backoff = 2 ** (_attempt + 1)
-                logger.warning(f"⚠️ Gemini error retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {type(e).__name__}: {e}")
+                logger.warning(f"❌ {label} falló tras {max_retries} intentos: {type(e).__name__}: {e}")
+        except APIStatusError as e:
+            if e.status_code >= 500 and _attempt < max_retries - 1:
+                backoff = _attempt + 1
+                logger.warning(f"⚠️ {label} 5xx retry {_attempt + 1}/{max_retries} tras {backoff}s: {e}")
                 await asyncio.sleep(backoff)
+            else:
+                logger.warning(f"❌ {label} falló: {type(e).__name__}: {e}")
+                break
+        except Exception as e:
+            if _attempt < max_retries - 1:
+                backoff = _attempt + 1
+                logger.warning(f"⚠️ {label} error retry {_attempt + 1}/{max_retries} tras {backoff}s: {type(e).__name__}: {e}")
+                await asyncio.sleep(backoff)
+            else:
+                logger.warning(f"❌ {label} falló tras {max_retries} intentos: {type(e).__name__}: {e}")
+    return None
 
-    # --- Fallback a OpenAI GPT ---
-    logger.warning(f"🔄 Gemini falló tras {_MAX_RETRIES} intentos ({type(last_error).__name__}). Usando fallback OpenAI {FALLBACK_MODEL}...")
-    try:
-        resp = await openai_client.chat.completions.create(
-            model=FALLBACK_MODEL,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        logger.info(f"✅ Fallback OpenAI {FALLBACK_MODEL} exitoso.")
+
+async def _llm_call_with_fallback(messages: list, temperature: float = 0.3, max_tokens: int = 350):
+    """
+    Intenta el proveedor primario (configurable via LLM_PRIMARY) con retries cortos,
+    luego cae al secundario. Reduce latencia vs 3 retries largos.
+    """
+    if LLM_PRIMARY == "openai":
+        providers = [
+            (openai_client, FALLBACK_MODEL, "OpenAI"),
+            (client, MODEL_NAME, "Gemini"),
+        ]
+    else:
+        providers = [
+            (client, MODEL_NAME, "Gemini"),
+            (openai_client, FALLBACK_MODEL, "OpenAI"),
+        ]
+
+    primary_client, primary_model, primary_label = providers[0]
+    fallback_client, fallback_model, fallback_label = providers[1]
+
+    # --- Intento primario (2 retries, backoff corto: 1s, 2s) ---
+    resp = await _llm_try_provider(
+        primary_client, primary_model, messages, temperature, max_tokens,
+        label=primary_label, max_retries=2,
+    )
+    if resp is not None:
         return resp
-    except Exception as fallback_err:
-        logger.error(f"❌ Fallback OpenAI también falló: {type(fallback_err).__name__}: {fallback_err}")
-        raise last_error  # Raise original Gemini error
+
+    # --- Fallback ---
+    logger.warning(f"🔄 {primary_label} falló. Usando fallback {fallback_label} ({fallback_model})...")
+    resp = await _llm_try_provider(
+        fallback_client, fallback_model, messages, temperature, max_tokens,
+        label=f"Fallback-{fallback_label}", max_retries=2,
+    )
+    if resp is not None:
+        logger.info(f"✅ Fallback {fallback_label} ({fallback_model}) exitoso.")
+        return resp
+
+    raise RuntimeError(f"Ambos proveedores LLM fallaron ({primary_label} + {fallback_label})")
 
 
 # ============================================================
