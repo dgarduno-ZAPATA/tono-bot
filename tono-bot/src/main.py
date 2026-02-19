@@ -122,6 +122,7 @@ class GlobalState:
         self.pending_messages: Dict[str, List[str]] = {}  # jid -> [msg1, msg2, ...]
         self.pending_message_tasks: Dict[str, asyncio.Task] = {}  # jid -> task
         self.last_user_message_time: Dict[str, float] = {}  # jid -> timestamp
+        self.processing_lock: Dict[str, bool] = {}  # jid -> True si ya se está procesando
 
 
 # === 3. LIFESPAN (INICIO/CIERRE) ===
@@ -374,7 +375,14 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
     """
     Procesa todos los mensajes acumulados de un usuario como uno solo.
     Se ejecuta después de MESSAGE_ACCUMULATION_SECONDS sin nuevos mensajes.
+    Incluye "late merge": absorbe mensajes que lleguen durante el delay humano.
     """
+    # Si ya hay un procesamiento en curso para este usuario, no iniciar otro.
+    # Los mensajes pendientes serán absorbidos por el late merge del proceso activo.
+    if bot_state.processing_lock.get(remote_jid):
+        logger.debug(f"🔒 Procesamiento ya en curso para {remote_jid}, late merge se encargará")
+        return
+
     # Obtener y limpiar mensajes pendientes
     messages = bot_state.pending_messages.pop(remote_jid, [])
     bot_state.pending_message_tasks.pop(remote_jid, None)
@@ -382,14 +390,17 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
     if not messages:
         return
 
-    # Combinar mensajes en uno solo
-    if len(messages) == 1:
-        combined_message = messages[0]
-    else:
-        combined_message = " | ".join(messages)
-        logger.info(f"📦 Mensajes acumulados ({len(messages)}): '{combined_message[:100]}...'")
+    bot_state.processing_lock[remote_jid] = True
 
-    # === Verificar silenciamiento ===
+    try:
+        await _process_accumulated_messages_inner(bot_state, remote_jid, messages)
+    finally:
+        bot_state.processing_lock.pop(remote_jid, None)
+
+
+async def _process_accumulated_messages_inner(bot_state: GlobalState, remote_jid: str, messages: List[str]):
+    """Inner processing logic, called with the processing lock held."""
+    # === Verificar silenciamiento (antes de delay, con primer mensaje) ===
     if remote_jid in bot_state.silenced_users:
         silence_value = bot_state.silenced_users[remote_jid]
         if isinstance(silence_value, (int, float)):
@@ -404,8 +415,9 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
             logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
             return
 
-    # === Comandos especiales ===
-    if combined_message.lower() == "/silencio":
+    # === Comandos especiales (solo si es un único mensaje) ===
+    first_msg_lower = messages[0].lower() if len(messages) == 1 else ""
+    if first_msg_lower == "/silencio":
         bot_state.silenced_users[remote_jid] = True
         await send_evolution_message(bot_state, remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
         if settings.OWNER_PHONE:
@@ -414,7 +426,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
             await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
         return
 
-    if combined_message.lower() == "/activar":
+    if first_msg_lower == "/activar":
         bot_state.silenced_users.pop(remote_jid, None)
         await send_evolution_message(bot_state, remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
         return
@@ -433,6 +445,23 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
 
     # Delay humano
     await human_typing_delay()
+
+    # === LATE MERGE: absorber mensajes que llegaron durante el delay ===
+    late_messages = bot_state.pending_messages.pop(remote_jid, [])
+    if late_messages:
+        # Cancelar la tarea pendiente de estos mensajes tardíos
+        late_task = bot_state.pending_message_tasks.pop(remote_jid, None)
+        if late_task and not late_task.done():
+            late_task.cancel()
+        messages.extend(late_messages)
+        logger.info(f"📦 Late merge: {len(late_messages)} mensajes adicionales absorbidos (total: {len(messages)})")
+
+    # Combinar mensajes en uno solo (después del late merge)
+    if len(messages) == 1:
+        combined_message = messages[0]
+    else:
+        combined_message = " | ".join(messages)
+        logger.info(f"📦 Mensajes combinados ({len(messages)}): '{combined_message[:100]}...'")
 
     # === Procesar con IA ===
     try:

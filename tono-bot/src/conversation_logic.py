@@ -1090,7 +1090,15 @@ def _pick_media_urls(
     explicit_request = any(re.search(p, msg) for p in explicit_photo_patterns) and not singular_photo_question
     context_request = current_photo_model and any(k in msg for k in context_photo_keywords)
 
-    if not explicit_request and not context_request:
+    # PRIORIDAD 4: GPT prometió fotos en su respuesta (el usuario pidió fotos implícitamente
+    # desde el contexto, ej: "De la G7" después de pedir fotos de otro modelo)
+    rep_lower = (reply or "").lower()
+    reply_promises_photos = bool(
+        re.search(r"aqu[ií]\s+tienes\s+(las\s+)?fotos", rep_lower) or
+        re.search(r"te\s+(mando|envío|env[ií]o|comparto)\s+(las\s+)?fotos", rep_lower)
+    )
+
+    if not explicit_request and not context_request and not reply_promises_photos:
         return []
 
     # 3) Recuperar memoria del contexto
