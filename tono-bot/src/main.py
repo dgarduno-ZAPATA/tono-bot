@@ -199,10 +199,23 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool, bool]:
     if "conversation" in msg_obj:
         return msg_obj.get("conversation") or "", False, False
 
-    # 2. Mensaje de texto extendido (reply, etc)
+    # 2. Mensaje de texto extendido (reply, link preview, etc)
     if "extendedTextMessage" in msg_obj:
         ext = msg_obj.get("extendedTextMessage") or {}
-        return ext.get("text") or "", False, False
+        text = ext.get("text") or ""
+
+        # Extraer metadata de link preview si existe
+        preview_parts: list[str] = []
+        for field in ("title", "description", "canonicalUrl", "matchedText"):
+            val = (ext.get(field) or "").strip()
+            if val and val != text:
+                preview_parts.append(val)
+        if preview_parts:
+            preview_ctx = " | ".join(preview_parts)
+            text = f"{text}\n[Link preview: {preview_ctx}]" if text else f"[Link preview: {preview_ctx}]"
+            logger.info(f"🔗 Link preview extraído: {preview_ctx[:120]}")
+
+        return text, False, False
 
     # 3. Imagen (con o sin caption) → marcar como imagen para análisis con Vision
     if "imageMessage" in msg_obj:
