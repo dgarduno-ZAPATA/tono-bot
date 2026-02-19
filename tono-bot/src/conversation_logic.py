@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 
 import pytz
-from openai import AsyncOpenAI, APITimeoutError, RateLimitError, APIStatusError
+from openai import AsyncOpenAI, APITimeoutError, RateLimitError, APIStatusError, APIConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +19,13 @@ _GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 client = AsyncOpenAI(
     api_key=os.getenv("GEMINI_API_KEY", ""),
     base_url=_GEMINI_BASE_URL,
+    max_retries=0,  # Desactivar retries internos del SDK; usamos nuestro propio retry
 )
 MODEL_NAME = os.getenv("OPENAI_MODEL", "gemini-2.5-flash-lite")
 
-# Cliente secundario (OpenAI) solo para Whisper (transcripción de audio)
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+# Cliente secundario (OpenAI) para Whisper Y como fallback de chat si Gemini falla
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""), max_retries=0)
+FALLBACK_MODEL = os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini")
 
 # ============================================================
 # TIME (CDMX)
@@ -1334,6 +1336,64 @@ def _needs_financing_context(user_message: str) -> bool:
 
 
 # ============================================================
+# LLM CALL WITH FALLBACK (Gemini -> OpenAI)
+# ============================================================
+async def _llm_call_with_fallback(messages: list, temperature: float = 0.3, max_tokens: int = 350):
+    """
+    Intenta Gemini primero (3 retries). Si falla, usa OpenAI GPT como fallback.
+    Esto evita que el bot se quede sin respuesta por problemas de red con Google.
+    """
+    _MAX_RETRIES = 3
+
+    # --- Intento con Gemini (cliente principal) ---
+    last_error = None
+    for _attempt in range(_MAX_RETRIES):
+        try:
+            resp = await client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return resp
+        except (APITimeoutError, RateLimitError, APIConnectionError) as e:
+            last_error = e
+            if _attempt < _MAX_RETRIES - 1:
+                backoff = 2 ** (_attempt + 1)
+                logger.warning(f"⚠️ Gemini retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {type(e).__name__}: {e}")
+                await asyncio.sleep(backoff)
+        except APIStatusError as e:
+            last_error = e
+            if e.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
+                backoff = 2 ** (_attempt + 1)
+                logger.warning(f"⚠️ Gemini 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                await asyncio.sleep(backoff)
+            else:
+                raise
+        except Exception as e:
+            last_error = e
+            if _attempt < _MAX_RETRIES - 1:
+                backoff = 2 ** (_attempt + 1)
+                logger.warning(f"⚠️ Gemini error retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {type(e).__name__}: {e}")
+                await asyncio.sleep(backoff)
+
+    # --- Fallback a OpenAI GPT ---
+    logger.warning(f"🔄 Gemini falló tras {_MAX_RETRIES} intentos ({type(last_error).__name__}). Usando fallback OpenAI {FALLBACK_MODEL}...")
+    try:
+        resp = await openai_client.chat.completions.create(
+            model=FALLBACK_MODEL,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        logger.info(f"✅ Fallback OpenAI {FALLBACK_MODEL} exitoso.")
+        return resp
+    except Exception as fallback_err:
+        logger.error(f"❌ Fallback OpenAI también falló: {type(fallback_err).__name__}: {fallback_err}")
+        raise last_error  # Raise original Gemini error
+
+
+# ============================================================
 # MAIN ENTRY
 # ============================================================
 async def handle_message(
@@ -1466,30 +1526,7 @@ async def handle_message(
     reply_clean = "Hubo un error técnico."
 
     try:
-        _MAX_RETRIES = 3
-        for _attempt in range(_MAX_RETRIES):
-            try:
-                resp = await client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    temperature=0.3,
-                    max_tokens=350,
-                )
-                break
-            except (APITimeoutError, RateLimitError) as e:
-                if _attempt < _MAX_RETRIES - 1:
-                    backoff = 2 ** (_attempt + 1)
-                    logger.warning(f"⚠️ LLM retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
-                    await asyncio.sleep(backoff)
-                else:
-                    raise
-            except APIStatusError as e:
-                if e.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
-                    backoff = 2 ** (_attempt + 1)
-                    logger.warning(f"⚠️ LLM 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
-                    await asyncio.sleep(backoff)
-                else:
-                    raise
+        resp = await _llm_call_with_fallback(messages)
 
         raw_reply = resp.choices[0].message.content or ""
         reply_clean = raw_reply
