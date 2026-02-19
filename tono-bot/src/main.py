@@ -665,9 +665,9 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
             logger.error(f"❌ Audio demasiado pequeño ({len(audio_bytes)} bytes), posiblemente corrupto")
             return ""
 
-        # === PASO 2: Transcribir con Whisper ===
+        # === PASO 2: Transcribir con Whisper (OpenAI) ===
         try:
-            from src.conversation_logic import client as openai_client
+            from src.conversation_logic import openai_client
 
             with open(temp_path, "rb") as audio_file:
                 transcript = await openai_client.audio.transcriptions.create(
@@ -784,9 +784,9 @@ async def _handle_image_analysis(bot_state: GlobalState, msg_id: str, remote_jid
 
         logger.info(f"✅ Imagen descargada: ~{len(base64_image) // 1024} KB base64")
 
-        # === PASO 2: Analizar con OpenAI Vision ===
+        # === PASO 2: Analizar con Gemini Vision ===
         try:
-            from src.conversation_logic import client as openai_client
+            from src.conversation_logic import client as gemini_client, MODEL_NAME
 
             vision_prompt = (
                 "Describe brevemente esta imagen en español. "
@@ -796,8 +796,8 @@ async def _handle_image_analysis(bot_state: GlobalState, msg_id: str, remote_jid
                 "Máximo 3 oraciones."
             )
 
-            vision_response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            vision_response = await gemini_client.chat.completions.create(
+                model=MODEL_NAME,
                 messages=[
                     {
                         "role": "user",
