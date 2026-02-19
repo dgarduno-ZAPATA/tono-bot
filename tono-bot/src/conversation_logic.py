@@ -51,6 +51,7 @@ Elimina barreras para que el cliente quiera venir. Responde directo y breve.
 
 DATOS CLAVE:
 - UBICACIÓN PRINCIPAL: Tlalnepantla, Edo Mex (Camiones del Valle Tlalnepantla). ALGUNAS unidades pueden estar en otra ubicación (ej. Querétaro). Consulta el campo "Ubicación" de cada vehículo en el INVENTARIO DISPONIBLE para dar la ubicación correcta. Si un vehículo NO tiene ubicación especificada, asume Tlalnepantla.
+- LINKS DE UBICACIÓN: Cada vehículo puede tener un link de Google Maps en el inventario. SIEMPRE incluye el link cuando informes la ubicación de una unidad. Envía el URL directo (NO uses formato markdown [texto](url)).
 - Horario: Lunes a Viernes 9-6 PM. Sábados 9-2 PM. DOMINGOS CERRADO.
 - FECHA ACTUAL: {current_date_str}
 - HORA ACTUAL: {current_time_str}
@@ -122,7 +123,7 @@ REGLAS OBLIGATORIAS:
 7) RESPONDE SOLO LO QUE PREGUNTAN:
 - Precio → Da el precio del modelo en conversación.
 - Fotos → "Claro, aquí tienes."
-- Ubicación → Si preguntan dónde están las oficinas/lote principal: "Estamos en Tlalnepantla, Edo Mex: https://maps.app.goo.gl/v9KigGY3QVAxqwV17" (NUNCA uses formato [texto](url), solo el URL directo). Si preguntan por la ubicación de un vehículo específico, consulta el campo "Ubicación" en el inventario y responde con la ubicación real de esa unidad.
+- Ubicación → Si preguntan dónde están las oficinas/lote principal: "Estamos en Tlalnepantla, Edo Mex: https://maps.app.goo.gl/v9KigGY3QVAxqwV17". Si preguntan por la ubicación de un vehículo específico, consulta "Ubicación" en el inventario y da la ciudad + el link de Maps del inventario. Ejemplo: "Esa unidad está en Querétaro: https://maps.app.goo.gl/xxxxx". NUNCA uses formato [texto](url), solo el URL directo.
 - Garantía/Servicio → "Puede hacer servicio en cualquier distribuidor autorizado de la marca sin perder garantía."
 - "Muy bien" / "Ok" → "Perfecto." y espera.
 
@@ -174,7 +175,7 @@ REGLAS OBLIGATORIAS:
   * Si tiene día pero no hora: "¿A qué hora te queda bien?"
   * Si tiene hora pero no día: "¿Qué día te funcionaría?"
   * NUNCA confirmes una cita sin tener nombre y horario.
-- AL CONFIRMAR CITA: SIEMPRE incluye la ubicación correcta del vehículo (consulta el inventario). Ejemplo: "Listo, te espero el lunes a las 10 AM en Tlalnepantla, Edo Mex." o si la unidad está en otra ubicación: "Listo, te espero el lunes a las 10 AM en Querétaro."
+- AL CONFIRMAR CITA: SIEMPRE incluye la ubicación correcta del vehículo + el link de Maps (consulta el inventario). Ejemplo: "Listo, te espero el lunes a las 10 AM en Querétaro: https://maps.app.goo.gl/xxxxx"
 - Si el cliente pregunta "¿dónde es?" o "¿de dónde son?": Da la ubicación ANTES de seguir con la cita.
 - Si dice "háblame", "llámame", "márcame": Responde "Con gusto, ¿a qué número y en qué horario te marco?" NO agendes cita, él quiere llamada.
 
@@ -558,8 +559,12 @@ def _build_inventory_text(inventory_service) -> str:
 
         # Ubicación del vehículo
         ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "Ubicación"])
+        ubicacion_url = _safe_get(item, ["ubicacion_url"])
         if ubicacion:
-            info += f" | Ubicación: {ubicacion}"
+            loc_str = f"Ubicación: {ubicacion}"
+            if ubicacion_url:
+                loc_str += f" ({ubicacion_url})"
+            info += f" | {loc_str}"
 
         # Tipo de cabina y asientos (desde CSV)
         tipo_cabina = _safe_get(item, ["TipoCabina", "tipocabina", "tipo_cabina"])
@@ -631,9 +636,13 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
             price_str = _format_price(precio, moneda, iva)
             label = f"{marca} {modelo}".strip() if marca else modelo
             ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "Ubicación"])
+            ubicacion_url = _safe_get(item, ["ubicacion_url"])
             info = f"Modelo de interés: {label} {anio}: {price_str}"
             if ubicacion:
-                info += f" | Ubicación: {ubicacion}"
+                loc_str = f"Ubicación: {ubicacion}"
+                if ubicacion_url:
+                    loc_str += f" ({ubicacion_url})"
+                info += f" | {loc_str}"
 
             # Specs adicionales para modelo enfocado
             specs = []

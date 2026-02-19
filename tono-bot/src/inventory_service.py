@@ -76,6 +76,7 @@ class InventoryService:
                 "iva_incluido": row.get("iva_incluido", ""),
                 "garantia_texto": row.get("garantia_texto", ""),
                 "ubicacion": row.get("ubicacion", ""),
+                "ubicacion_url": row.get("ubicacion_url", ""),
                 "descripcion_corta": row.get("descripcion_corta", ""),
                 "Financiamiento": row.get("Financiamiento", ""),
                 "Tipo de financiamiento": row.get("Tipo de financiamiento", ""),
