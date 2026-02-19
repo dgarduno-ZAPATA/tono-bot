@@ -199,10 +199,23 @@ def _extract_user_message(msg_obj: Dict[str, Any]) -> Tuple[str, bool, bool]:
     if "conversation" in msg_obj:
         return msg_obj.get("conversation") or "", False, False
 
-    # 2. Mensaje de texto extendido (reply, etc)
+    # 2. Mensaje de texto extendido (reply, link preview, etc)
     if "extendedTextMessage" in msg_obj:
         ext = msg_obj.get("extendedTextMessage") or {}
-        return ext.get("text") or "", False, False
+        text = ext.get("text") or ""
+
+        # Extraer metadata de link preview si existe
+        preview_parts: list[str] = []
+        for field in ("title", "description", "canonicalUrl", "matchedText"):
+            val = (ext.get(field) or "").strip()
+            if val and val != text:
+                preview_parts.append(val)
+        if preview_parts:
+            preview_ctx = " | ".join(preview_parts)
+            text = f"{text}\n[Link preview: {preview_ctx}]" if text else f"[Link preview: {preview_ctx}]"
+            logger.info(f"🔗 Link preview extraído: {preview_ctx[:120]}")
+
+        return text, False, False
 
     # 3. Imagen (con o sin caption) → marcar como imagen para análisis con Vision
     if "imageMessage" in msg_obj:
@@ -652,9 +665,9 @@ async def _handle_audio_transcription(bot_state: GlobalState, msg_id: str, remot
             logger.error(f"❌ Audio demasiado pequeño ({len(audio_bytes)} bytes), posiblemente corrupto")
             return ""
 
-        # === PASO 2: Transcribir con Whisper ===
+        # === PASO 2: Transcribir con Whisper (OpenAI) ===
         try:
-            from src.conversation_logic import client as openai_client
+            from src.conversation_logic import openai_client
 
             with open(temp_path, "rb") as audio_file:
                 transcript = await openai_client.audio.transcriptions.create(
@@ -771,9 +784,9 @@ async def _handle_image_analysis(bot_state: GlobalState, msg_id: str, remote_jid
 
         logger.info(f"✅ Imagen descargada: ~{len(base64_image) // 1024} KB base64")
 
-        # === PASO 2: Analizar con OpenAI Vision ===
+        # === PASO 2: Analizar con Gemini Vision ===
         try:
-            from src.conversation_logic import client as openai_client
+            from src.conversation_logic import client as gemini_client, MODEL_NAME
 
             vision_prompt = (
                 "Describe brevemente esta imagen en español. "
@@ -783,8 +796,8 @@ async def _handle_image_analysis(bot_state: GlobalState, msg_id: str, remote_jid
                 "Máximo 3 oraciones."
             )
 
-            vision_response = await openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            vision_response = await gemini_client.chat.completions.create(
+                model=MODEL_NAME,
                 messages=[
                     {
                         "role": "user",

@@ -14,8 +14,16 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # CONFIG
 # ============================================================
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-MODEL_NAME = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+# Cliente principal (Gemini) para chat y visión
+_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+client = AsyncOpenAI(
+    api_key=os.getenv("GEMINI_API_KEY", ""),
+    base_url=_GEMINI_BASE_URL,
+)
+MODEL_NAME = os.getenv("OPENAI_MODEL", "gemini-2.5-flash-lite")
+
+# Cliente secundario (OpenAI) solo para Whisper (transcripción de audio)
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
 
 # ============================================================
 # TIME (CDMX)
@@ -1471,14 +1479,14 @@ async def handle_message(
             except (APITimeoutError, RateLimitError) as e:
                 if _attempt < _MAX_RETRIES - 1:
                     backoff = 2 ** (_attempt + 1)
-                    logger.warning(f"⚠️ OpenAI retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    logger.warning(f"⚠️ LLM retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
                     await asyncio.sleep(backoff)
                 else:
                     raise
             except APIStatusError as e:
                 if e.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
                     backoff = 2 ** (_attempt + 1)
-                    logger.warning(f"⚠️ OpenAI 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
+                    logger.warning(f"⚠️ LLM 5xx retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: {e}")
                     await asyncio.sleep(backoff)
                 else:
                     raise
