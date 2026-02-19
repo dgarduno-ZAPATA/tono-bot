@@ -50,7 +50,7 @@ OBJETIVO: Tu trabajo NO es vender. Tu trabajo es DESTRABAR.
 Elimina barreras para que el cliente quiera venir. Responde directo y breve.
 
 DATOS CLAVE:
-- UBICACIÓN ÚNICA: Tlalnepantla, Edo Mex (Camiones del Valle Tlalnepantla). TODAS las unidades están en Tlalnepantla. NUNCA menciones otra ciudad (NO Cuautitlán, NO León, NO CDMX, NO Monterrey).
+- UBICACIÓN PRINCIPAL: Tlalnepantla, Edo Mex (Camiones del Valle Tlalnepantla). ALGUNAS unidades pueden estar en otra ubicación (ej. Querétaro). Consulta el campo "Ubicación" de cada vehículo en el INVENTARIO DISPONIBLE para dar la ubicación correcta. Si un vehículo NO tiene ubicación especificada, asume Tlalnepantla.
 - Horario: Lunes a Viernes 9-6 PM. Sábados 9-2 PM. DOMINGOS CERRADO.
 - FECHA ACTUAL: {current_date_str}
 - HORA ACTUAL: {current_time_str}
@@ -122,7 +122,7 @@ REGLAS OBLIGATORIAS:
 7) RESPONDE SOLO LO QUE PREGUNTAN:
 - Precio → Da el precio del modelo en conversación.
 - Fotos → "Claro, aquí tienes."
-- Ubicación → "Estamos en Tlalnepantla, Edo Mex: https://maps.app.goo.gl/v9KigGY3QVAxqwV17" (NUNCA uses formato [texto](url), solo el URL directo). SIEMPRE di Tlalnepantla, NUNCA otra ciudad.
+- Ubicación → Si preguntan dónde están las oficinas/lote principal: "Estamos en Tlalnepantla, Edo Mex: https://maps.app.goo.gl/v9KigGY3QVAxqwV17" (NUNCA uses formato [texto](url), solo el URL directo). Si preguntan por la ubicación de un vehículo específico, consulta el campo "Ubicación" en el inventario y responde con la ubicación real de esa unidad.
 - Garantía/Servicio → "Puede hacer servicio en cualquier distribuidor autorizado de la marca sin perder garantía."
 - "Muy bien" / "Ok" → "Perfecto." y espera.
 
@@ -174,7 +174,7 @@ REGLAS OBLIGATORIAS:
   * Si tiene día pero no hora: "¿A qué hora te queda bien?"
   * Si tiene hora pero no día: "¿Qué día te funcionaría?"
   * NUNCA confirmes una cita sin tener nombre y horario.
-- AL CONFIRMAR CITA: SIEMPRE incluye la ubicación. Ejemplo: "Listo, te espero el lunes a las 10 AM en Tlalnepantla, Edo Mex."
+- AL CONFIRMAR CITA: SIEMPRE incluye la ubicación correcta del vehículo (consulta el inventario). Ejemplo: "Listo, te espero el lunes a las 10 AM en Tlalnepantla, Edo Mex." o si la unidad está en otra ubicación: "Listo, te espero el lunes a las 10 AM en Querétaro."
 - Si el cliente pregunta "¿dónde es?" o "¿de dónde son?": Da la ubicación ANTES de seguir con la cita.
 - Si dice "háblame", "llámame", "márcame": Responde "Con gusto, ¿a qué número y en qué horario te marco?" NO agendes cita, él quiere llamada.
 
@@ -199,7 +199,7 @@ REGLAS OBLIGATORIAS:
 - Pedir nombre antes de dar el tuyo
 - Cambiar de modelo sin confirmación del cliente
 - Formato markdown para links (NO uses [texto](url), WhatsApp no lo soporta)
-- Mencionar ubicaciones que NO sean Tlalnepantla
+- Mencionar ubicaciones que NO estén en el inventario (solo usa ubicaciones reales del inventario o Tlalnepantla como default)
 
 16) NOMBRE OBLIGATORIO ANTES DE COTIZACIÓN O CITA:
 - ANTES de dar precio, cotización, corrida financiera o agendar cita, NECESITAS el nombre del cliente.
@@ -556,6 +556,11 @@ def _build_inventory_text(inventory_service) -> str:
         if colores:
             info += f" | Colores: {colores}"
 
+        # Ubicación del vehículo
+        ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "Ubicación"])
+        if ubicacion:
+            info += f" | Ubicación: {ubicacion}"
+
         # Tipo de cabina y asientos (desde CSV)
         tipo_cabina = _safe_get(item, ["TipoCabina", "tipocabina", "tipo_cabina"])
         asientos = _safe_get(item, ["Asientos", "asientos"])
@@ -625,7 +630,10 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
             anio = _safe_get(item, ["Anio", "Año", "anio"], default="")
             price_str = _format_price(precio, moneda, iva)
             label = f"{marca} {modelo}".strip() if marca else modelo
+            ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "Ubicación"])
             info = f"Modelo de interés: {label} {anio}: {price_str}"
+            if ubicacion:
+                info += f" | Ubicación: {ubicacion}"
 
             # Specs adicionales para modelo enfocado
             specs = []
