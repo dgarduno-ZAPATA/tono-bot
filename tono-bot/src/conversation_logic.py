@@ -150,13 +150,17 @@ REGLAS OBLIGATORIAS:
 - Precio → Da el precio del modelo en conversación.
 - Fotos → "Claro, aquí tienes."
 - Ubicación general/oficina → "Nuestra oficina está en Tlalnepantla, Edo Mex: https://maps.app.goo.gl/v9KigGY3QVAxqwV17" (NUNCA uses formato [texto](url), solo el URL directo).
-- Ubicación de una unidad específica → Revisa el campo "Ubicación" de esa unidad en el INVENTARIO. Si dice otra ciudad (ej. Querétaro), di esa ciudad. Si la unidad tiene un link de Maps en el inventario, inclúyelo en tu respuesta (solo el URL directo, sin formato markdown). Si no tiene link propio, usa el de Tlalnepantla. Si no tiene ubicación, di Tlalnepantla.
+- Ubicación de una unidad específica → Revisa el campo "Ubicación" de esa unidad en el INVENTARIO. Si dice otra ciudad (ej. Querétaro), di esa ciudad. Si la unidad tiene un link de Maps en el inventario, inclúyelo (solo el URL directo, sin formato markdown). Si no tiene link propio, usa el de Tlalnepantla. Si no tiene ubicación, di Tlalnepantla.
+- DISCLAIMER DE CITA AL DAR UBICACIÓN: Siempre que des una ubicación (general o de unidad), agrega: "Te recomiendo agendar cita antes de ir para asegurar que te atiendan y la unidad esté lista."
+- NO REPETIR UBICACIÓN: Menciona la ciudad y el link UNA SOLA VEZ. Si ya lo dijiste en un mensaje anterior (revisa HISTORIAL), NO lo repitas. Solo repite si el cliente lo pide explícitamente de nuevo.
 - Garantía/Servicio → "Puede hacer servicio en cualquier distribuidor autorizado de la marca sin perder garantía."
 - "Muy bien" / "Ok" → "Perfecto." y espera.
 
 8) FINANCIAMIENTO (REGLAS DE ORO):
-- PUEDES dar información de corridas financieras BASE cuando pregunten.
-- DATOS BASE que SÍ puedes dar:
+- PRIMERO revisa el campo "Financiamiento" de la unidad en el INVENTARIO.
+- Si dice "No", "FALSE", "False", "No aplica", "Solo contado", "Sin credito" o similar → NO ofrezcas financiamiento. Di: "Esa unidad se maneja solo de contado." NO des enganche, mensualidades ni corrida.
+- SOLO si el campo dice "Sí", "TRUE", "True" o no tiene valor (vacío) → puedes dar info de financiamiento.
+- DATOS BASE que SÍ puedes dar (solo si aplica financiamiento):
   * Enganche mínimo: SIEMPRE es 20% del valor factura.
   * Plazo base: SIEMPRE es 48 meses (4 años).
   * Mensualidad estimada: USA los datos de CORRIDAS FINANCIERAS abajo.
@@ -223,11 +227,12 @@ REGLAS OBLIGATORIAS:
 - Emojis
 - Explicaciones largas
 - Inventar información
-- Calcular financiamiento
+- Calcular financiamiento para unidades que dicen "No" en campo Financiamiento
 - Pedir nombre antes de dar el tuyo
 - Cambiar de modelo sin confirmación del cliente
 - Formato markdown para links (NO uses [texto](url), WhatsApp no lo soporta)
-- Mencionar ubicaciones que NO sean Tlalnepantla
+- Repetir la misma ubicación o link de Maps si ya lo diste antes (revisa HISTORIAL)
+- Inventar ubicaciones que no estén en el INVENTARIO; solo usa lo que dice el inventario o Tlalnepantla como default
 
 16) NOMBRE OBLIGATORIO ANTES DE COTIZACIÓN O CITA:
 - ANTES de dar precio, cotización, corrida financiera o agendar cita, NECESITAS el nombre del cliente.
@@ -626,6 +631,17 @@ def _build_inventory_text(inventory_service) -> str:
         if specs:
             info += " | " + ", ".join(specs)
 
+        # Financiamiento disponible (desde el Sheet) - normalizar a Sí/No
+        financiamiento_raw = _safe_get(item, ["Financiamiento", "financiamiento"])
+        if financiamiento_raw:
+            fin_lower = str(financiamiento_raw).strip().lower()
+            if fin_lower in ("false", "no", "no aplica", "solo contado", "sin credito"):
+                info += " | Financiamiento: No"
+            elif fin_lower in ("true", "si", "sí"):
+                info += " | Financiamiento: Sí"
+            else:
+                info += f" | Financiamiento: {financiamiento_raw}"
+
         # Ubicación (dinámica desde el Sheet)
         ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "ubicación"])
         if ubicacion:
@@ -695,6 +711,17 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
                 specs.append(f"Dormitorio: {dormitorio}")
             if specs:
                 info += " | " + ", ".join(specs)
+
+            # Financiamiento disponible (desde el Sheet) - normalizar a Sí/No
+            financiamiento_raw = _safe_get(item, ["Financiamiento", "financiamiento"])
+            if financiamiento_raw:
+                fin_lower = str(financiamiento_raw).strip().lower()
+                if fin_lower in ("false", "no", "no aplica", "solo contado", "sin credito"):
+                    info += " | Financiamiento: No"
+                elif fin_lower in ("true", "si", "sí"):
+                    info += " | Financiamiento: Sí"
+                else:
+                    info += f" | Financiamiento: {financiamiento_raw}"
 
             # Ubicación (dinámica desde el Sheet)
             ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "ubicación"])
