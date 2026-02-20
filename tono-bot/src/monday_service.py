@@ -41,6 +41,7 @@ VEHICLE_DROPDOWN_MAP = {
     "Toano Panel": ["toano", "panel", "toano panel"],
     "Tunland G7": ["g7", "tunland g7"],
     "Tunland G9": ["g9", "tunland g9"],
+    "Cascadia": ["cascadia"],
 }
 
 
@@ -60,13 +61,23 @@ def resolve_vehicle_to_dropdown(interest: str) -> str:
     """
     Dado un interés detectado por el bot (ej. 'Tunland G9 2025'),
     devuelve el label EXACTO del dropdown de Monday (ej. 'Tunland G9').
-    Retorna '' si no hay match.
+
+    1. Primero intenta match contra VEHICLE_DROPDOWN_MAP (aliases conocidos).
+    2. Si no hay match, genera un label dinámico limpiando marcas y años.
+       Esto permite que vehículos nuevos en inventario se registren en Monday
+       sin necesidad de actualizar el código.
     """
     if not interest:
         return ""
 
-    interest_lower = interest.lower().replace("foton", "").replace("freightliner", "").replace("diesel", "").replace("4x4", "").strip()
+    # Strip known brand names and noise
+    _brand_noise = ["foton", "freightliner"]
+    interest_lower = interest.lower()
+    for brand in _brand_noise:
+        interest_lower = interest_lower.replace(brand, "")
+    interest_lower = interest_lower.replace("diesel", "").replace("4x4", "").strip()
 
+    # 1) Try static map (exact alias matching)
     best_label = ""
     best_score = 0
 
@@ -79,7 +90,19 @@ def resolve_vehicle_to_dropdown(interest: str) -> str:
             best_score = score
             best_label = label
 
-    return best_label
+    if best_label:
+        return best_label
+
+    # 2) Dynamic fallback: generate label from cleaned interest
+    # Remove year patterns (2020-2029)
+    fallback = re.sub(r'\b20\d{2}\b', '', interest_lower).strip()
+    # Collapse whitespace
+    fallback = re.sub(r'\s+', ' ', fallback).strip()
+
+    if fallback and len(fallback) >= 2:
+        return fallback.title()
+
+    return ""
 
 
 def resolve_payment_to_label(payment: str) -> str:
@@ -521,14 +544,14 @@ class MondayService:
                 logger.info(f"🆕 Creando lead [{effective_stage}] en grupo '{month_group_name}': {phone_limpio}")
                 query_create = """
                 mutation ($board_id: ID!, $group_id: String!, $name: String!, $vals: JSON!) {
-                    create_item (board_id: $board_id, group_id: $group_id, item_name: $name, column_values: $vals) { id }
+                    create_item (board_id: $board_id, group_id: $group_id, item_name: $name, column_values: $vals, create_labels_if_missing: true) { id }
                 }
                 """
             else:
                 logger.info(f"🆕 Creando lead [{effective_stage}] (sin grupo): {phone_limpio}")
                 query_create = """
                 mutation ($board_id: ID!, $name: String!, $vals: JSON!) {
-                    create_item (board_id: $board_id, item_name: $name, column_values: $vals) { id }
+                    create_item (board_id: $board_id, item_name: $name, column_values: $vals, create_labels_if_missing: true) { id }
                 }
                 """
 
@@ -550,7 +573,7 @@ class MondayService:
             if col_vals:
                 query_update = """
                 mutation ($item_id: ID!, $board_id: ID!, $vals: JSON!) {
-                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
+                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals, create_labels_if_missing: true) { id }
                 }
                 """
                 vars_update = {

@@ -875,6 +875,8 @@ def _normalize_spanish(text: str) -> str:
     t = re.sub(r"\btunlan\b", "tunland", t)
     t = re.sub(r"\btunlad\b", "tunland", t)
     t = re.sub(r"\btunlnad\b", "tunland", t)
+    t = re.sub(r"\bcascadía\b", "cascadia", t)
+    t = re.sub(r"\bcaskadia\b", "cascadia", t)
 
     # Aliases naturales → nombre de modelo para matching
     # Pickups / Tunland
@@ -909,6 +911,9 @@ def _normalize_spanish(text: str) -> str:
         (r"\bla esta\b", "6x4"),
         (r"\bel camion grande\b", "6x4"),
         (r"\bel camión grande\b", "6x4"),
+        # Cascadia
+        (r"\bla cascadia\b", "cascadia"),
+        (r"\bel cascadia\b", "cascadia"),
     ]
 
     for pattern, replacement in alias_map:
@@ -1317,9 +1322,14 @@ def _lead_is_valid(lead: Dict[str, Any]) -> bool:
 # ============================================================
 # SMART CONTEXT INJECTION
 # ============================================================
-def _needs_inventory_context(user_message: str, turn_count: int, last_interest: str) -> bool:
-    """Decide if the full inventory list should be included in GPT context."""
-    msg = (user_message or "").lower()
+def _needs_inventory_context(user_message: str, turn_count: int, last_interest: str,
+                             inventory_service=None) -> bool:
+    """Decide if the full inventory list should be included in GPT context.
+
+    Vehicle keywords are built dynamically from the current inventory so that
+    new models added to Google Sheets are recognized without code changes.
+    """
+    msg = _normalize_spanish((user_message or "").lower())
 
     # First 2 turns: user is likely browsing, show full inventory
     if turn_count <= 2:
@@ -1327,16 +1337,33 @@ def _needs_inventory_context(user_message: str, turn_count: int, last_interest: 
 
     # No interest yet: show inventory if asking about vehicles/prices
     if not last_interest:
-        inventory_keywords = [
+        # Generic intent keywords (static - these describe *intent*, not models)
+        intent_keywords = [
             "modelo", "modelos", "precio", "precios", "cuanto", "cuánto",
             "costo", "disponible", "inventario", "catalogo", "catálogo",
             "que tienen", "qué tienen", "que venden", "qué venden",
             "opciones", "unidades", "vehiculo", "vehículo", "camion", "camión",
             "pickup", "camioneta", "tracto", "van", "panel",
-            "tunland", "toano", "miler", "miller", "esta", "e5", "g7", "g9",
-            "6x4", "11.8", "x13", "freightliner",
         ]
-        return any(k in msg for k in inventory_keywords)
+
+        if any(k in msg for k in intent_keywords):
+            return True
+
+        # Dynamic model keywords: extracted from the live inventory
+        items = getattr(inventory_service, "items", None) or []
+        _noise = {
+            "foton", "freightliner", "at", "mt", "diesel", "4x4",
+            "gris", "azul", "rojo", "negro", "blanco", "plata",
+        }
+        for item in items:
+            modelo = (item.get("Modelo") or item.get("modelo") or "").strip()
+            marca = (item.get("Marca") or item.get("marca") or "").strip()
+            for raw in (modelo, marca):
+                for tok in _normalize_spanish(raw.lower()).split():
+                    if len(tok) >= 2 and tok not in _noise and tok in msg:
+                        return True
+
+        return False
 
     # Interest already detected: only show full list if asking about other models
     change_keywords = [
@@ -1523,7 +1550,7 @@ async def handle_message(
     )
 
     # Smart context injection: only include inventory/financing when relevant
-    if _needs_inventory_context(user_message, turn_count, last_interest):
+    if _needs_inventory_context(user_message, turn_count, last_interest, inventory_service):
         inventory_text = _build_inventory_text(inventory_service)
         inventory_section = (
             "INVENTARIO DISPONIBLE (CATÁLOGO COMPLETO - estas son TODAS las marcas y modelos "
