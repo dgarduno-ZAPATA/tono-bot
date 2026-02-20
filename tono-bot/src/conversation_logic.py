@@ -875,6 +875,8 @@ def _normalize_spanish(text: str) -> str:
     t = re.sub(r"\btunlan\b", "tunland", t)
     t = re.sub(r"\btunlad\b", "tunland", t)
     t = re.sub(r"\btunlnad\b", "tunland", t)
+    t = re.sub(r"\bcascadía\b", "cascadia", t)
+    t = re.sub(r"\bcaskadia\b", "cascadia", t)
 
     # Aliases naturales → nombre de modelo para matching
     # Pickups / Tunland
@@ -909,6 +911,9 @@ def _normalize_spanish(text: str) -> str:
         (r"\bla esta\b", "6x4"),
         (r"\bel camion grande\b", "6x4"),
         (r"\bel camión grande\b", "6x4"),
+        # Cascadia
+        (r"\bla cascadia\b", "cascadia"),
+        (r"\bel cascadia\b", "cascadia"),
     ]
 
     for pattern, replacement in alias_map:
@@ -1334,7 +1339,7 @@ def _needs_inventory_context(user_message: str, turn_count: int, last_interest: 
             "opciones", "unidades", "vehiculo", "vehículo", "camion", "camión",
             "pickup", "camioneta", "tracto", "van", "panel",
             "tunland", "toano", "miler", "miller", "esta", "e5", "g7", "g9",
-            "6x4", "11.8", "x13", "freightliner",
+            "6x4", "11.8", "x13", "freightliner", "cascadia",
         ]
         return any(k in msg for k in inventory_keywords)
 
