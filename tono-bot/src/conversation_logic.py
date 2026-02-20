@@ -158,8 +158,8 @@ REGLAS OBLIGATORIAS:
 
 8) FINANCIAMIENTO (REGLAS DE ORO):
 - PRIMERO revisa el campo "Financiamiento" de la unidad en el INVENTARIO.
-- Si dice "No", "No aplica", "Solo contado" o similar → NO ofrezcas financiamiento. Di: "Esa unidad se maneja solo de contado." NO des enganche, mensualidades ni corrida.
-- SOLO si el campo dice "Sí" o no tiene valor (vacío) → puedes dar info de financiamiento.
+- Si dice "No", "FALSE", "False", "No aplica", "Solo contado", "Sin credito" o similar → NO ofrezcas financiamiento. Di: "Esa unidad se maneja solo de contado." NO des enganche, mensualidades ni corrida.
+- SOLO si el campo dice "Sí", "TRUE", "True" o no tiene valor (vacío) → puedes dar info de financiamiento.
 - DATOS BASE que SÍ puedes dar (solo si aplica financiamiento):
   * Enganche mínimo: SIEMPRE es 20% del valor factura.
   * Plazo base: SIEMPRE es 48 meses (4 años).
@@ -631,10 +631,16 @@ def _build_inventory_text(inventory_service) -> str:
         if specs:
             info += " | " + ", ".join(specs)
 
-        # Financiamiento disponible (desde el Sheet)
-        financiamiento = _safe_get(item, ["Financiamiento", "financiamiento"])
-        if financiamiento:
-            info += f" | Financiamiento: {financiamiento}"
+        # Financiamiento disponible (desde el Sheet) - normalizar a Sí/No
+        financiamiento_raw = _safe_get(item, ["Financiamiento", "financiamiento"])
+        if financiamiento_raw:
+            fin_lower = str(financiamiento_raw).strip().lower()
+            if fin_lower in ("false", "no", "no aplica", "solo contado", "sin credito"):
+                info += " | Financiamiento: No"
+            elif fin_lower in ("true", "si", "sí"):
+                info += " | Financiamiento: Sí"
+            else:
+                info += f" | Financiamiento: {financiamiento_raw}"
 
         # Ubicación (dinámica desde el Sheet)
         ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "ubicación"])
@@ -706,10 +712,16 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
             if specs:
                 info += " | " + ", ".join(specs)
 
-            # Financiamiento disponible (desde el Sheet)
-            financiamiento = _safe_get(item, ["Financiamiento", "financiamiento"])
-            if financiamiento:
-                info += f" | Financiamiento: {financiamiento}"
+            # Financiamiento disponible (desde el Sheet) - normalizar a Sí/No
+            financiamiento_raw = _safe_get(item, ["Financiamiento", "financiamiento"])
+            if financiamiento_raw:
+                fin_lower = str(financiamiento_raw).strip().lower()
+                if fin_lower in ("false", "no", "no aplica", "solo contado", "sin credito"):
+                    info += " | Financiamiento: No"
+                elif fin_lower in ("true", "si", "sí"):
+                    info += " | Financiamiento: Sí"
+                else:
+                    info += f" | Financiamiento: {financiamiento_raw}"
 
             # Ubicación (dinámica desde el Sheet)
             ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "ubicación"])
