@@ -544,14 +544,14 @@ class MondayService:
                 logger.info(f"🆕 Creando lead [{effective_stage}] en grupo '{month_group_name}': {phone_limpio}")
                 query_create = """
                 mutation ($board_id: ID!, $group_id: String!, $name: String!, $vals: JSON!) {
-                    create_item (board_id: $board_id, group_id: $group_id, item_name: $name, column_values: $vals) { id }
+                    create_item (board_id: $board_id, group_id: $group_id, item_name: $name, column_values: $vals, create_labels_if_missing: true) { id }
                 }
                 """
             else:
                 logger.info(f"🆕 Creando lead [{effective_stage}] (sin grupo): {phone_limpio}")
                 query_create = """
                 mutation ($board_id: ID!, $name: String!, $vals: JSON!) {
-                    create_item (board_id: $board_id, item_name: $name, column_values: $vals) { id }
+                    create_item (board_id: $board_id, item_name: $name, column_values: $vals, create_labels_if_missing: true) { id }
                 }
                 """
 
@@ -573,7 +573,7 @@ class MondayService:
             if col_vals:
                 query_update = """
                 mutation ($item_id: ID!, $board_id: ID!, $vals: JSON!) {
-                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals) { id }
+                    change_multiple_column_values (item_id: $item_id, board_id: $board_id, column_values: $vals, create_labels_if_missing: true) { id }
                 }
                 """
                 vars_update = {
