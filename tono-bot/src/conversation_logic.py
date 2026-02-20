@@ -150,7 +150,7 @@ REGLAS OBLIGATORIAS:
 - Precio → Da el precio del modelo en conversación.
 - Fotos → "Claro, aquí tienes."
 - Ubicación general/oficina → "Nuestra oficina está en Tlalnepantla, Edo Mex: https://maps.app.goo.gl/v9KigGY3QVAxqwV17" (NUNCA uses formato [texto](url), solo el URL directo).
-- Ubicación de una unidad específica → Revisa el campo "Ubicación" de esa unidad en el INVENTARIO. Si dice otra ciudad (ej. Querétaro), di esa ciudad. Si no tiene ubicación, di Tlalnepantla.
+- Ubicación de una unidad específica → Revisa el campo "Ubicación" de esa unidad en el INVENTARIO. Si dice otra ciudad (ej. Querétaro), di esa ciudad. Si la unidad tiene un link de Maps en el inventario, inclúyelo en tu respuesta (solo el URL directo, sin formato markdown). Si no tiene link propio, usa el de Tlalnepantla. Si no tiene ubicación, di Tlalnepantla.
 - Garantía/Servicio → "Puede hacer servicio en cualquier distribuidor autorizado de la marca sin perder garantía."
 - "Muy bien" / "Ok" → "Perfecto." y espera.
 
@@ -629,7 +629,11 @@ def _build_inventory_text(inventory_service) -> str:
         # Ubicación (dinámica desde el Sheet)
         ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "ubicación"])
         if ubicacion:
-            info += f" | Ubicación: {ubicacion}"
+            ubicacion_link = _safe_get(item, ["ubicacion_link"])
+            if ubicacion_link:
+                info += f" | Ubicación: {ubicacion} (Maps: {ubicacion_link})"
+            else:
+                info += f" | Ubicación: {ubicacion}"
 
         lines.append(info)
 
@@ -695,7 +699,11 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
             # Ubicación (dinámica desde el Sheet)
             ubicacion = _safe_get(item, ["ubicacion", "Ubicacion", "ubicación"])
             if ubicacion:
-                info += f" | Ubicación: {ubicacion}"
+                ubicacion_link = _safe_get(item, ["ubicacion_link"])
+                if ubicacion_link:
+                    info += f" | Ubicación: {ubicacion} (Maps: {ubicacion_link})"
+                else:
+                    info += f" | Ubicación: {ubicacion}"
 
             return info
 
