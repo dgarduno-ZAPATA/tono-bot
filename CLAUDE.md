@@ -80,6 +80,7 @@ MONDAY_PAYMENT_COLUMN_ID=""            # Monday.com payment status column (color
 MONDAY_APPOINTMENT_COLUMN_ID=""        # Monday.com appointment date column (date_mm0grgky)
 MONDAY_APPOINTMENT_TIME_COLUMN_ID=""   # Monday.com appointment time/hour column (hour_mm0hfk47)
 MONDAY_CMV_COLUMN_ID=""                # Monday.com CMV checkbox column (boolean_mm0g2zf3)
+MONDAY_SOURCE_COLUMN_ID=""             # Monday.com lead source/origin column - STATUS type (e.g., status_xxxxx)
 ```
 
 ## Sales Funnel System (V2)
@@ -115,12 +116,16 @@ The bot automatically tracks leads through a 10-stage sales funnel in Monday.com
 | Agenda Citas (Día) | Date | `date_mm0grgky` | Bot (solo fecha, sin hora) |
 | Hora Cita | Hour | `hour_mm0hfk47` | Bot (hora parseada de la cita) |
 | Confirmación CMV | Checkbox | `boolean_mm0g2zf3` | Human (manual) |
+| Origen Lead | Status | `MONDAY_SOURCE_COLUMN_ID` | Bot (auto-detected from CTWA/referral) |
 
 ### Vehicle Dropdown Labels
 `Tunland E5`, `ESTA 6x4 11.8`, `ESTA 6x4 X13`, `Miler`, `Toano Panel`, `Tunland G7`, `Tunland G9`
 
 ### Payment Status Labels
 `De Contado`, `Financiamiento`, `Por definir`
+
+### Lead Source Labels (Auto-detected)
+`Facebook Ad`, `Facebook Post`, `Instagram Ad`, `Instagram Post`, `Facebook`, `Instagram`, `Directo`
 
 ### Monday.com Board Setup
 - **Board**: "Leads Bot Adrian" (ID: `18396811838`)
@@ -151,7 +156,17 @@ All I/O operations use async/await:
 - Rate limit handling (429 responses)
 - Sanitized logging (no API keys in logs)
 
-### 4. Human Detection
+### 4. Facebook Referral Tracking (CTWA)
+Automatic detection of leads arriving from Facebook/Instagram ads:
+- **Baileys mode**: Extracts `contextInfo.conversionSource`, `entryPointConversionSource`, `entryPointConversionApp`
+- **Cloud API mode**: Extracts `referral` object with `source_url`, `source_id`, `ctwa_clid`, `headline`, etc.
+- Referral data captured on first message and persisted in session context (`referral_source`, `referral_data`)
+- Stored in `GlobalState.pending_referrals` until persisted to SQLite
+- Source label auto-populated in Monday.com "Origen Lead" column
+- Referral details included in Monday.com lead creation notes and owner alerts
+- Known Baileys limitation: `remoteJid` may arrive in `@lid` format (Evolution API issue #2267)
+
+### 5. Human Detection
 Multi-layer heuristics to detect when a human agent takes over:
 - Emoji presence in messages
 - Specific human phrases
@@ -262,6 +277,8 @@ curl http://localhost:8080/health
 6. **Human Typing Delay**: 5-10 second random delay simulates human response time
 
 7. **Rate Limiting**: Respect 429 responses with exponential backoff
+
+8. **Facebook Referral Tracking**: CTWA referral data extracted from first message webhook, persisted in session context, and sent to Monday.com source column. Supports both Baileys (`contextInfo`) and Cloud API (`referral` object) formats.
 
 ## Testing
 

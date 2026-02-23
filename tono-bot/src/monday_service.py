@@ -259,6 +259,9 @@ class MondayService:
         self.appointment_time_col_id = os.getenv("MONDAY_APPOINTMENT_TIME_COLUMN_ID")
         self.cmv_col_id = os.getenv("MONDAY_CMV_COLUMN_ID")
 
+        # --- V2 Referral Tracking ---
+        self.source_col_id = os.getenv("MONDAY_SOURCE_COLUMN_ID")
+
         # Log config
         if self.stage_col_id:
             logger.info(f"✅ Monday Stage Column: {self.stage_col_id}")
@@ -270,6 +273,7 @@ class MondayService:
             "payment": self.payment_col_id,
             "appointment": self.appointment_col_id,
             "appointment_time": self.appointment_time_col_id,
+            "source": self.source_col_id,
         }
         configured = {k: v for k, v in v2_cols.items() if v}
         if configured:
@@ -477,6 +481,12 @@ class MondayService:
                     except (ValueError, IndexError) as e:
                         logger.warning(f"⚠️ No se pudo parsear hora de cita: {appointment_iso.get('time')} - {e}")
 
+        # --- V2: Source / Referral (Status column) ---
+        if self.source_col_id:
+            referral_source = lead_data.get("referral_source") or ""
+            if referral_source and (is_new or referral_source != "Directo"):
+                col_vals[self.source_col_id] = {"label": referral_source}
+
         return col_vals
 
     async def create_or_update_lead(self, lead_data: dict, stage: str = None, add_note: str = None):
@@ -623,6 +633,17 @@ class MondayService:
                         detalles += f"📅 Cita: {lead_data.get('cita')}\n"
                 pago_label = resolve_payment_to_label(lead_data.get('pago', ''))
                 detalles += f"💰 Pago: {pago_label}\n"
+                # Referral source
+                referral_source = lead_data.get('referral_source', '')
+                if referral_source:
+                    detalles += f"📢 Origen: {referral_source}\n"
+                    referral_detail = lead_data.get('referral_data') or {}
+                    if referral_detail.get('headline'):
+                        detalles += f"📋 Anuncio: {referral_detail['headline']}\n"
+                    if referral_detail.get('source_id'):
+                        detalles += f"🔗 Ad ID: {referral_detail['source_id']}\n"
+                    if referral_detail.get('ctwa_clid'):
+                        detalles += f"🆔 CTWA Click ID: {referral_detail['ctwa_clid']}\n"
             else:
                 detalles = add_note or f"📊 Actualizado a etapa: {effective_stage}"
 
