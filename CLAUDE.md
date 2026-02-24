@@ -80,14 +80,14 @@ MONDAY_PAYMENT_COLUMN_ID=""            # Monday.com payment status column (color
 MONDAY_APPOINTMENT_COLUMN_ID=""        # Monday.com appointment date column (date_mm0grgky)
 MONDAY_APPOINTMENT_TIME_COLUMN_ID=""   # Monday.com appointment time/hour column (hour_mm0hfk47)
 MONDAY_CMV_COLUMN_ID=""                # Monday.com CMV checkbox column (boolean_mm0g2zf3)
-MONDAY_SOURCE_COLUMN_ID=""             # Monday.com lead source/origin column - STATUS type (e.g., status_xxxxx)
-MONDAY_CHANNEL_COLUMN_ID=""            # Monday.com channel column - STATUS type (Facebook/Instagram/Directo)
-MONDAY_SOURCE_TYPE_COLUMN_ID=""        # Monday.com source type column - STATUS type (Ad/Post/Directo)
-MONDAY_AD_ID_COLUMN_ID=""              # Monday.com Ad ID column - TEXT type (Meta Ad ID)
-MONDAY_CTWA_CLID_COLUMN_ID=""         # Monday.com CTWA Click ID column - TEXT type
-MONDAY_CAMPAIGN_NAME_COLUMN_ID=""      # Monday.com Campaign Name column - TEXT type (future Meta API enrichment)
-MONDAY_ADSET_NAME_COLUMN_ID=""         # Monday.com Ad Set Name column - TEXT type (future Meta API enrichment)
-MONDAY_AD_NAME_COLUMN_ID=""            # Monday.com Ad Name column - TEXT type (future Meta API enrichment)
+MONDAY_SOURCE_COLUMN_ID=""             # Monday.com lead source/origin column - STATUS type (color_mm0wb2gm)
+MONDAY_CHANNEL_COLUMN_ID=""            # Monday.com channel column - STATUS type (color_mm0wf5zn)
+MONDAY_SOURCE_TYPE_COLUMN_ID=""        # Monday.com source type column - STATUS type (color_mm0w1mtn)
+MONDAY_AD_ID_COLUMN_ID=""              # Monday.com Ad ID column - TEXT type (text_mm0wcdmz)
+MONDAY_CTWA_CLID_COLUMN_ID=""         # Monday.com CTWA Click ID column - TEXT type (text_mm0wwwg1)
+MONDAY_CAMPAIGN_NAME_COLUMN_ID=""      # Monday.com Campaign Name column - TEXT type (text_mm0w77pn)
+MONDAY_ADSET_NAME_COLUMN_ID=""         # Monday.com Ad Set Name column - TEXT type (text_mm0wtebg)
+MONDAY_AD_NAME_COLUMN_ID=""            # Monday.com Ad Name column - TEXT type (text_mm0wtpwb)
 ```
 
 ## Sales Funnel System (V2)
@@ -123,14 +123,14 @@ The bot automatically tracks leads through a 10-stage sales funnel in Monday.com
 | Agenda Citas (Día) | Date | `date_mm0grgky` | Bot (solo fecha, sin hora) |
 | Hora Cita | Hour | `hour_mm0hfk47` | Bot (hora parseada de la cita) |
 | Confirmación CMV | Checkbox | `boolean_mm0g2zf3` | Human (manual) |
-| Origen Lead | Status | `MONDAY_SOURCE_COLUMN_ID` | Bot (auto-detected from CTWA/referral) |
-| Canal | Status | `MONDAY_CHANNEL_COLUMN_ID` | Bot (Facebook/Instagram/Directo) |
-| Tipo Origen | Status | `MONDAY_SOURCE_TYPE_COLUMN_ID` | Bot (Ad/Post/Directo) |
-| Ad ID | Text | `MONDAY_AD_ID_COLUMN_ID` | Bot (Meta source_id from referral) |
-| CTWA CLID | Text | `MONDAY_CTWA_CLID_COLUMN_ID` | Bot (Click-to-WhatsApp click ID) |
-| Campaign Name | Text | `MONDAY_CAMPAIGN_NAME_COLUMN_ID` | Future (Meta Marketing API batch enrichment) |
-| Ad Set Name | Text | `MONDAY_ADSET_NAME_COLUMN_ID` | Future (Meta Marketing API batch enrichment) |
-| Ad Name | Text | `MONDAY_AD_NAME_COLUMN_ID` | Future (Meta Marketing API batch enrichment) |
+| Origen Lead | Status | `color_mm0wb2gm` | Bot (auto-detected from CTWA/referral) |
+| Canal | Status | `color_mm0wf5zn` | Bot (Facebook/Instagram/Directo) |
+| Tipo Origen | Status | `color_mm0w1mtn` | Bot (Ad/Post/Directo) |
+| Ad ID | Text | `text_mm0wcdmz` | Bot (Meta source_id from referral) |
+| CTWA CLID | Text | `text_mm0wwwg1` | Bot (Click-to-WhatsApp click ID) |
+| Campaign Name | Text | `text_mm0w77pn` | Future (Meta Marketing API batch enrichment) |
+| Ad Set Name | Text | `text_mm0wtebg` | Future (Meta Marketing API batch enrichment) |
+| Ad Name | Text | `text_mm0wtpwb` | Future (Meta Marketing API batch enrichment) |
 
 ### Vehicle Dropdown Labels
 `Tunland E5`, `ESTA 6x4 11.8`, `ESTA 6x4 X13`, `Miler`, `Toano Panel`, `Tunland G7`, `Tunland G9`
@@ -148,7 +148,7 @@ The bot automatically tracks leads through a 10-stage sales funnel in Monday.com
 `Ad`, `Post`, `Directo`
 
 ### Monday.com Board Setup
-- **Board**: "Leads Bot Adrian" (ID: `18396811838`)
+- **Board**: "Leads Tractos y Max" (ID: `18396811838`)
 - **Estado column** (STATUS, ID: `status`): Labels listed in funnel table above
 - **Groups**: Auto-created by month (e.g., "FEBRERO 2026")
 - Set all `MONDAY_*` env vars in Render (see Environment Variables section)
