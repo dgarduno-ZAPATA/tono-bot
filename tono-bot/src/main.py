@@ -136,6 +136,11 @@ class GlobalState:
         # 📢 REFERRAL TRACKING: Datos de origen de Facebook/Instagram ads
         self.pending_referrals: Dict[str, Dict[str, str]] = {}  # jid -> referral_data
 
+        # 🔒 LOCK PER JID: Evita procesamiento concurrente para el mismo usuario
+        # Sin esto, dos lotes de mensajes pueden correr en paralelo, leer contexto
+        # stale de SQLite, y el segundo sobreescribir el contexto del primero.
+        self.processing_locks: Dict[str, asyncio.Lock] = {}
+
 
 # === 3. LIFESPAN (INICIO/CIERRE) ===
 @asynccontextmanager
@@ -577,214 +582,225 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
     """
     Procesa todos los mensajes acumulados de un usuario como uno solo.
     Se ejecuta después de MESSAGE_ACCUMULATION_SECONDS sin nuevos mensajes.
+
+    Usa un lock per-JID para evitar procesamiento concurrente del mismo usuario.
+    Sin esto, si llegan mensajes rápidos, dos lotes pueden correr en paralelo,
+    ambos leer contexto stale de SQLite, y el segundo sobreescribir el contexto
+    correcto del primero (causando pérdida de modelo de interés, etc).
     """
-    # Obtener y limpiar mensajes pendientes
-    messages = bot_state.pending_messages.pop(remote_jid, [])
-    bot_state.pending_message_tasks.pop(remote_jid, None)
+    # Obtener o crear lock para este JID
+    if remote_jid not in bot_state.processing_locks:
+        bot_state.processing_locks[remote_jid] = asyncio.Lock()
+    lock = bot_state.processing_locks[remote_jid]
 
-    if not messages:
-        return
+    async with lock:
+        # Obtener y limpiar mensajes pendientes (DENTRO del lock)
+        messages = bot_state.pending_messages.pop(remote_jid, [])
+        bot_state.pending_message_tasks.pop(remote_jid, None)
 
-    # Combinar mensajes en uno solo
-    if len(messages) == 1:
-        combined_message = messages[0]
-    else:
-        combined_message = " | ".join(messages)
-        logger.info(f"📦 Mensajes acumulados ({len(messages)}): '{combined_message[:100]}...'")
-
-    # === Verificar silenciamiento ===
-    if remote_jid in bot_state.silenced_users:
-        silence_value = bot_state.silenced_users[remote_jid]
-        if isinstance(silence_value, (int, float)):
-            if time.time() < silence_value:
-                mins_left = int((silence_value - time.time()) / 60)
-                logger.info(f"🤐 Bot silenciado en {remote_jid} ({mins_left} min restantes)")
-                return
-            else:
-                del bot_state.silenced_users[remote_jid]
-                logger.info(f"✅ Bot reactivado automáticamente en {remote_jid}")
-        elif silence_value is True:
-            logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
+        if not messages:
             return
 
-    # === Comandos especiales ===
-    if combined_message.lower() == "/silencio":
-        bot_state.silenced_users[remote_jid] = True
-        await send_evolution_message(bot_state, remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
-        if settings.OWNER_PHONE:
-            clean_client = remote_jid.split("@")[0]
-            alerta = f"*HANDOFF ACTIVADO*\n\nEl chat con wa.me/{clean_client} ha sido pausado."
-            await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
-        return
-
-    if combined_message.lower() == "/activar":
-        bot_state.silenced_users.pop(remote_jid, None)
-        await send_evolution_message(bot_state, remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
-        return
-
-    # === Refrescar inventario ===
-    await _ensure_inventory_loaded(bot_state)
-
-    store = bot_state.store
-    if not store:
-        logger.error("❌ MemoryStore no inicializado.")
-        return
-
-    session = await store.get(remote_jid) or {"state": "start", "context": {}}
-    state = session.get("state", "start")
-    context = session.get("context", {}) or {}
-
-    # === REFERRAL: Persistir datos de referral en contexto de sesión ===
-    # Solo se guarda una vez (primer mensaje con datos de referral)
-    if not context.get("referral_source"):
-        pending_ref = bot_state.pending_referrals.pop(remote_jid, None)
-        if pending_ref:
-            context["referral_source"] = _build_referral_label(pending_ref)
-            context["referral_data"] = pending_ref
-            logger.info(f"📢 Referral guardado en contexto: {context['referral_source']}")
-    else:
-        # Clean up pending referral if already persisted
-        bot_state.pending_referrals.pop(remote_jid, None)
-
-    # Delay humano
-    await human_typing_delay()
-
-    # === Procesar con IA ===
-    try:
-        result = await handle_message(combined_message, bot_state.inventory, state, context)
-    except Exception as e:
-        logger.error(f"❌ Error IA: {e}")
-        result = {
-            "reply": "Dame un momento...",
-            "new_state": state,
-            "context": context,
-            "media_urls": [],
-            "lead_info": None
-        }
-
-    reply_text = (result.get("reply") or "").strip()
-    media_urls = result.get("media_urls") or []
-    lead_info = result.get("lead_info")
-    pdf_info = result.get("pdf_info")
-
-    # Guardar estado
-    try:
-        await store.upsert(
-            remote_jid,
-            str(result.get("new_state", state)),
-            dict(result.get("context", context)),
-        )
-    except Exception as e:
-        logger.error(f"⚠️ Error guardando memoria: {e}")
-
-    # Verificar si hay que enviar un PDF
-    if pdf_info:
-        logger.info(f"📄 PDF info recibido: {pdf_info}")
-        if pdf_info.get("pdf_url"):
-            # Enviar texto + PDF
-            logger.info(f"📤 Enviando PDF: {pdf_info.get('filename')} -> {remote_jid}")
-            await send_evolution_document(
-                bot_state,
-                remote_jid,
-                reply_text,
-                pdf_info.get("pdf_url"),
-                pdf_info.get("filename", "documento.pdf")
-            )
+        # Combinar mensajes en uno solo
+        if len(messages) == 1:
+            combined_message = messages[0]
         else:
-            # PDF detectado pero no disponible - enviar solo texto
-            logger.info(f"📄 PDF detectado pero no disponible: {pdf_info}")
-            await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
-    else:
-        # Enviar respuesta normal (texto + fotos si las hay)
-        await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
+            combined_message = " | ".join(messages)
+            logger.info(f"📦 Mensajes acumulados ({len(messages)}): '{combined_message[:100]}...'")
 
-    # === FUNNEL TRACKING (V2) ===
-    funnel_stage = result.get("funnel_stage", "1er Contacto")
-    funnel_data = result.get("funnel_data", {})
-    is_disinterest = result.get("is_disinterest", False)
-    previous_stage = context.get("funnel_stage", "")
-
-    # V2: Update Monday on any stage change, including 1er Contacto and new stages
-    v2_stages = ("1er Contacto", "Intención", "Cotización", "Cita Programada", "Sin Interes")
-
-    # Also update Monday when customer name is newly detected (even without stage change)
-    previous_name = (context.get("user_name") or "").strip()
-    current_name = (funnel_data.get("nombre") or "").strip()
-    name_just_detected = bool(current_name and not previous_name)
-
-    should_update_monday = (
-        (funnel_stage in v2_stages and funnel_stage != previous_stage) or
-        (name_just_detected and funnel_stage in v2_stages)
-    )
-
-    if should_update_monday:
-        try:
-            # Use different dedupe key when it's a name-only update vs stage change
-            is_stage_change = (funnel_stage != previous_stage)
-            funnel_key = f"{remote_jid}|{funnel_stage}" if is_stage_change else f"{remote_jid}|name|{current_name}"
-            if funnel_key not in bot_state.processed_lead_ids:
-                bot_state.processed_lead_ids.add(funnel_key)
-
-                # Get referral source from context (persisted from first message)
-                result_context = result.get("context", context) or {}
-                referral_source = result_context.get("referral_source") or context.get("referral_source") or ""
-                referral_detail = result_context.get("referral_data") or context.get("referral_data") or {}
-
-                lead_data = {
-                    "telefono": remote_jid.split("@")[0],
-                    "external_id": f"accumulated_{int(time.time())}",
-                    "nombre": funnel_data.get("nombre") or "Lead sin nombre",
-                    "interes": funnel_data.get("interes") or "",
-                    "cita": funnel_data.get("cita"),
-                    "pago": funnel_data.get("pago"),
-                    "referral_source": referral_source,
-                    "referral_data": referral_detail,
-                }
-
-                # Build referral note suffix
-                referral_note = ""
-                if referral_source:
-                    referral_note = f"\n📢 Origen: {referral_source}"
-                    if referral_detail.get("headline"):
-                        referral_note += f" - {referral_detail['headline']}"
-                    if referral_detail.get("source_id"):
-                        referral_note += f" (ID: {referral_detail['source_id']})"
-
-                stage_notes = {
-                    "1er Contacto": f"📩 Primer contacto (turno {funnel_data.get('turn_count', '?')}){referral_note}",
-                    "Intención": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
-                    "Cotización": f"📄 Cotización enviada: {funnel_data.get('interes', 'N/A')}",
-                    "Cita Programada": f"✅ Cita programada: {funnel_data.get('cita', 'N/A')}",
-                    "Sin Interes": f"🚫 Lead expresó desinterés",
-                }
-
-                if is_stage_change:
-                    note = stage_notes.get(funnel_stage)
+        # === Verificar silenciamiento ===
+        if remote_jid in bot_state.silenced_users:
+            silence_value = bot_state.silenced_users[remote_jid]
+            if isinstance(silence_value, (int, float)):
+                if time.time() < silence_value:
+                    mins_left = int((silence_value - time.time()) / 60)
+                    logger.info(f"🤐 Bot silenciado en {remote_jid} ({mins_left} min restantes)")
+                    return
                 else:
-                    note = f"👤 Nombre detectado: {current_name}"
+                    del bot_state.silenced_users[remote_jid]
+                    logger.info(f"✅ Bot reactivado automáticamente en {remote_jid}")
+            elif silence_value is True:
+                logger.info(f"🤐 Bot silenciado permanentemente en {remote_jid}")
+                return
 
-                effective_stage = funnel_stage if is_stage_change else None
-                logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - nombre={current_name} - {lead_data.get('interes')}")
-                await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
+        # === Comandos especiales ===
+        if combined_message.lower() == "/silencio":
+            bot_state.silenced_users[remote_jid] = True
+            await send_evolution_message(bot_state, remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
+            if settings.OWNER_PHONE:
+                clean_client = remote_jid.split("@")[0]
+                alerta = f"*HANDOFF ACTIVADO*\n\nEl chat con wa.me/{clean_client} ha sido pausado."
+                await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
+            return
 
-        except Exception as e:
-            logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+        if combined_message.lower() == "/activar":
+            bot_state.silenced_users.pop(remote_jid, None)
+            await send_evolution_message(bot_state, remote_jid, "Bot activado de nuevo. ¿En qué te ayudo?")
+            return
 
-    # Lead calificado - notificar
-    # Get referral source for alerts
-    result_ctx = result.get("context", context) or {}
-    alert_referral = result_ctx.get("referral_source") or context.get("referral_source") or ""
+        # === Refrescar inventario ===
+        await _ensure_inventory_loaded(bot_state)
 
-    if lead_info:
+        store = bot_state.store
+        if not store:
+            logger.error("❌ MemoryStore no inicializado.")
+            return
+
+        session = await store.get(remote_jid) or {"state": "start", "context": {}}
+        state = session.get("state", "start")
+        context = session.get("context", {}) or {}
+
+        # === REFERRAL: Persistir datos de referral en contexto de sesión ===
+        # Solo se guarda una vez (primer mensaje con datos de referral)
+        if not context.get("referral_source"):
+            pending_ref = bot_state.pending_referrals.pop(remote_jid, None)
+            if pending_ref:
+                context["referral_source"] = _build_referral_label(pending_ref)
+                context["referral_data"] = pending_ref
+                logger.info(f"📢 Referral guardado en contexto: {context['referral_source']}")
+        else:
+            # Clean up pending referral if already persisted
+            bot_state.pending_referrals.pop(remote_jid, None)
+
+        # Delay humano
+        await human_typing_delay()
+
+        # === Procesar con IA ===
         try:
-            lead_key = f"{remote_jid}|lead"
-            if lead_key not in bot_state.processed_lead_ids:
-                bot_state.processed_lead_ids.add(lead_key)
-                await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=True, referral_source=alert_referral)
+            result = await handle_message(combined_message, bot_state.inventory, state, context)
         except Exception as e:
-            logger.error(f"❌ Error procesando LEAD calificado: {e}")
-    else:
-        await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=False, referral_source=alert_referral)
+            logger.error(f"❌ Error IA: {e}")
+            result = {
+                "reply": "Dame un momento...",
+                "new_state": state,
+                "context": context,
+                "media_urls": [],
+                "lead_info": None
+            }
+
+        reply_text = (result.get("reply") or "").strip()
+        media_urls = result.get("media_urls") or []
+        lead_info = result.get("lead_info")
+        pdf_info = result.get("pdf_info")
+
+        # Guardar estado
+        try:
+            await store.upsert(
+                remote_jid,
+                str(result.get("new_state", state)),
+                dict(result.get("context", context)),
+            )
+        except Exception as e:
+            logger.error(f"⚠️ Error guardando memoria: {e}")
+
+        # Verificar si hay que enviar un PDF
+        if pdf_info:
+            logger.info(f"📄 PDF info recibido: {pdf_info}")
+            if pdf_info.get("pdf_url"):
+                # Enviar texto + PDF
+                logger.info(f"📤 Enviando PDF: {pdf_info.get('filename')} -> {remote_jid}")
+                await send_evolution_document(
+                    bot_state,
+                    remote_jid,
+                    reply_text,
+                    pdf_info.get("pdf_url"),
+                    pdf_info.get("filename", "documento.pdf")
+                )
+            else:
+                # PDF detectado pero no disponible - enviar solo texto
+                logger.info(f"📄 PDF detectado pero no disponible: {pdf_info}")
+                await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
+        else:
+            # Enviar respuesta normal (texto + fotos si las hay)
+            await send_evolution_message(bot_state, remote_jid, reply_text, media_urls)
+
+        # === FUNNEL TRACKING (V2) ===
+        funnel_stage = result.get("funnel_stage", "1er Contacto")
+        funnel_data = result.get("funnel_data", {})
+        is_disinterest = result.get("is_disinterest", False)
+        previous_stage = context.get("funnel_stage", "")
+
+        # V2: Update Monday on any stage change, including 1er Contacto and new stages
+        v2_stages = ("1er Contacto", "Intención", "Cotización", "Cita Programada", "Sin Interes")
+
+        # Also update Monday when customer name is newly detected (even without stage change)
+        previous_name = (context.get("user_name") or "").strip()
+        current_name = (funnel_data.get("nombre") or "").strip()
+        name_just_detected = bool(current_name and not previous_name)
+
+        should_update_monday = (
+            (funnel_stage in v2_stages and funnel_stage != previous_stage) or
+            (name_just_detected and funnel_stage in v2_stages)
+        )
+
+        if should_update_monday:
+            try:
+                # Use different dedupe key when it's a name-only update vs stage change
+                is_stage_change = (funnel_stage != previous_stage)
+                funnel_key = f"{remote_jid}|{funnel_stage}" if is_stage_change else f"{remote_jid}|name|{current_name}"
+                if funnel_key not in bot_state.processed_lead_ids:
+                    bot_state.processed_lead_ids.add(funnel_key)
+
+                    # Get referral source from context (persisted from first message)
+                    result_context = result.get("context", context) or {}
+                    referral_source = result_context.get("referral_source") or context.get("referral_source") or ""
+                    referral_detail = result_context.get("referral_data") or context.get("referral_data") or {}
+
+                    lead_data = {
+                        "telefono": remote_jid.split("@")[0],
+                        "external_id": f"accumulated_{int(time.time())}",
+                        "nombre": funnel_data.get("nombre") or "Lead sin nombre",
+                        "interes": funnel_data.get("interes") or "",
+                        "cita": funnel_data.get("cita"),
+                        "pago": funnel_data.get("pago"),
+                        "referral_source": referral_source,
+                        "referral_data": referral_detail,
+                    }
+
+                    # Build referral note suffix
+                    referral_note = ""
+                    if referral_source:
+                        referral_note = f"\n📢 Origen: {referral_source}"
+                        if referral_detail.get("headline"):
+                            referral_note += f" - {referral_detail['headline']}"
+                        if referral_detail.get("source_id"):
+                            referral_note += f" (ID: {referral_detail['source_id']})"
+
+                    stage_notes = {
+                        "1er Contacto": f"📩 Primer contacto (turno {funnel_data.get('turn_count', '?')}){referral_note}",
+                        "Intención": f"🎯 Interesado en: {funnel_data.get('interes', 'N/A')}",
+                        "Cotización": f"📄 Cotización enviada: {funnel_data.get('interes', 'N/A')}",
+                        "Cita Programada": f"✅ Cita programada: {funnel_data.get('cita', 'N/A')}",
+                        "Sin Interes": f"🚫 Lead expresó desinterés",
+                    }
+
+                    if is_stage_change:
+                        note = stage_notes.get(funnel_stage)
+                    else:
+                        note = f"👤 Nombre detectado: {current_name}"
+
+                    effective_stage = funnel_stage if is_stage_change else None
+                    logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - nombre={current_name} - {lead_data.get('interes')}")
+                    await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
+
+            except Exception as e:
+                logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+
+        # Lead calificado - notificar
+        # Get referral source for alerts
+        result_ctx = result.get("context", context) or {}
+        alert_referral = result_ctx.get("referral_source") or context.get("referral_source") or ""
+
+        if lead_info:
+            try:
+                lead_key = f"{remote_jid}|lead"
+                if lead_key not in bot_state.processed_lead_ids:
+                    bot_state.processed_lead_ids.add(lead_key)
+                    await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=True, referral_source=alert_referral)
+            except Exception as e:
+                logger.error(f"❌ Error procesando LEAD calificado: {e}")
+        else:
+            await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=False, referral_source=alert_referral)
 
 
 async def _schedule_accumulated_processing(bot_state: GlobalState, remote_jid: str):
