@@ -1618,6 +1618,12 @@ async def handle_message(
     last_interest = (context.get("last_interest") or "").strip()
     last_appointment = (context.get("last_appointment") or "").strip()
     last_payment = (context.get("last_payment") or "").strip()
+
+    # Auto-populate interest from tracking ID if not yet detected from conversation
+    if not last_interest:
+        tracking_vehicle = (context.get("tracking_data") or {}).get("vehicle_label", "")
+        if tracking_vehicle:
+            last_interest = tracking_vehicle
     try:
         turn_count = int(context.get("turn_count", 0)) + 1
     except (ValueError, TypeError):
@@ -1690,6 +1696,13 @@ async def handle_message(
                 "Ejemplo: 'Con gusto, ¿con quién tengo el gusto?' ***"
             )
 
+    # Tracking context: if client arrived via ad tracking ID, inject this info
+    tracking_context = ""
+    tracking_id = context.get("tracking_id")
+    if tracking_id:
+        tracking_vehicle = (context.get("tracking_data") or {}).get("vehicle_label", "")
+        tracking_context = f"ORIGEN: Este cliente llegó por un anuncio de {tracking_vehicle} (Tracking: {tracking_id}). Ya sabemos su modelo de interés, NO preguntes qué modelo le interesa.\n"
+
     context_block = (
         f"TURNO: {turn_count} {'(PRIMER MENSAJE - puedes saludar)' if turn_count == 1 else '(NO saludes, ve directo al punto)'}\n"
         f"MOMENTO ACTUAL: {current_time_str}\n"
@@ -1697,6 +1710,7 @@ async def handle_message(
         f"INTERÉS DETECTADO: {last_interest or '(Sin modelo)'}\n"
         f"CITA DETECTADA: {last_appointment or '(Sin cita)'}\n"
         f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
+        f"{tracking_context}"
         f"{inventory_section}"
         f"{financing_section}"
         f"HISTORIAL DE CHAT:\n{history[-3000:]}"
@@ -1778,6 +1792,11 @@ async def handle_message(
         "photo_index": context.get("photo_index", 0),
         # Mantener tipo de PDF solicitado para peticiones genéricas
         "last_pdf_request_type": context.get("last_pdf_request_type"),
+        # Preservar referral + tracking data across turns (BUG FIX: se perdían)
+        "referral_source": context.get("referral_source"),
+        "referral_data": context.get("referral_data"),
+        "tracking_id": context.get("tracking_id"),
+        "tracking_data": context.get("tracking_data"),
     }
 
     # Pasamos new_context (la función lo modificará)
