@@ -109,6 +109,13 @@ REGLAS OBLIGATORIAS:
 - Ejemplo CORRECTO: Cliente: "Tienen Frontier?" → "Por el momento no manejamos Frontier. Tenemos la FOTON TUNLAND G7 y G9 que son pickups doble cabina. Te doy información?"
 - Ejemplo INCORRECTO: Cliente: "Tienen JAC?" → "Sí, tenemos la JAC T6." (PROHIBIDO - inventar modelos que no están en inventario)
 
+0.6) TRACCIÓN — 4x2 vs 4x4 vs 6x4 (CRÍTICO):
+- Cada vehículo del inventario tiene su tracción indicada (4x2, 4x4, 6x4). USA EXACTAMENTE la que dice el inventario.
+- NUNCA digas que un vehículo es 4x4 si en el inventario dice 4x2, ni viceversa.
+- Si el cliente pregunta "¿es 4x4?" → revisa el campo Tracción del inventario y responde con el dato exacto.
+- Si el cliente busca específicamente 4x4, muestra SOLO las unidades que dicen 4x4 en el inventario.
+- Ejemplo: La Tunland G9 es 4x4. La Miler es 4x2. No los confundas.
+
 0.5) INTERPRETACIÓN COMERCIAL — CARGA vs. PASAJEROS (CRÍTICO):
 - Cuando el cliente pregunte por "asientos", "pasajeros", "cuántos caben", "de cuántos es", "bancas", "filas de asientos", "para personal", "transporte de personal" o "es panel o van":
   → ESTÁ PREGUNTANDO si la unidad es versión de PASAJEROS o de CARGA. NO pregunta si existen asientos físicos en la cabina (eso es obvio, toda unidad tiene asientos de cabina).
@@ -616,6 +623,16 @@ def _build_inventory_text(inventory_service) -> str:
 
         if colores:
             info += f" | Colores: {colores}"
+
+        # Tracción (4x2, 4x4)
+        traccion = _safe_get(item, ["Traccion", "Tracción", "traccion"])
+        if traccion:
+            info += f" | Tracción: {traccion}"
+
+        # Descripción corta (contexto adicional del Sheet)
+        desc_corta = _safe_get(item, ["descripcion_corta"])
+        if desc_corta:
+            info += f" | Desc: {desc_corta}"
 
         # Tipo de uso: CARGA vs PASAJEROS (inferido del modelo)
         modelo_lower = modelo.lower()
