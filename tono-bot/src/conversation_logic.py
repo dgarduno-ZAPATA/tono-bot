@@ -1360,9 +1360,11 @@ def _pick_media_urls(
 
     # C) PRIORIDAD 3: Usar last_interest sin mención (para "otra foto" sin decir modelo)
     if not target_item and last_interest:
+        # Strip year from last_interest for comparison (e.g. "ESTA 6X4 11.8 2023" → "ESTA 6X4 11.8")
+        interest_no_year = re.sub(r'\s+20\d{2}$', '', last_interest).strip()
         for item in items:
             modelo = _safe_get(item, ["Modelo", "modelo", "id_modelo"]).strip()
-            if _normalize_spanish(modelo) == _normalize_spanish(last_interest):
+            if _normalize_spanish(modelo) == _normalize_spanish(interest_no_year):
                 target_item = item
                 target_model_name = modelo
                 break
