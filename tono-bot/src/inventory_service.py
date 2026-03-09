@@ -96,6 +96,8 @@ class InventoryService:
                 "EjeDelantera": row.get("Eje Delantera", row.get("EjeDelantera", "")),
                 "EjeTrasera": row.get("Eje Trasera", row.get("EjeTrasera", "")),
                 "Dormitorio": row.get("Dormitorio", ""),
+                "Traccion": row.get("Traccion", row.get("Tracción", row.get("traccion", ""))),
+                "condicion": row.get("condicion", row.get("Condicion", row.get("Condición", ""))),
             }
             normalized.append(item)
 
