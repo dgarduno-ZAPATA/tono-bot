@@ -33,6 +33,7 @@
 │   ├── AI_ARCHITECTURE.md          # AI architecture & concurrency
 │   └── RUNBOOK.md                  # Troubleshooting & operations
 └── tono-bot/                       # Main application directory
+    ├── .dockerignore               # Excludes .env, .db, .git from Docker builds
     ├── Dockerfile                  # Alternative Docker config
     ├── requirements.txt            # Python dependencies
     ├── src/
@@ -63,6 +64,7 @@
 | CRM | Monday.com GraphQL API |
 | Data | Pandas 2.2.3, Google Sheets CSV |
 | Config | Pydantic Settings 2.6.1 |
+| Monitoring | Sentry SDK 2.19.2 (opt-in via SENTRY_DSN) |
 | Timezone | pytz (America/Mexico_City) |
 
 > **Note:** A single OpenAI SDK (`openai==1.59.7`) handles both Gemini (via `base_url`) and OpenAI (native) clients.
@@ -102,6 +104,9 @@ HUMAN_DETECTION_WINDOW_SECONDS=3       # Time window for human detection
 # --- Logging ---
 LOG_WEBHOOK_PAYLOAD=true               # Enable/disable webhook payload logging
 LOG_WEBHOOK_PAYLOAD_MAX_CHARS=6000     # Truncate webhook logs at N chars
+
+# --- Monitoring ---
+SENTRY_DSN=""                          # Sentry DSN (opt-in, enables error tracking + 10% tracing)
 
 # --- Monday.com ---
 MONDAY_API_KEY=""                      # Monday.com API key
@@ -254,6 +259,12 @@ Automatic detection of leads arriving from Facebook/Instagram ads:
 - Known Baileys limitation: `source_id` (Ad ID) is NOT available — only Cloud API provides it via `referral.source_id`
 - Campaign Name, Ad Set Name, Ad Name require Meta Marketing API batch enrichment (future feature)
 
+### 10. Error Monitoring (Sentry)
+- **Opt-in**: Only active if `SENTRY_DSN` env var is set (empty = disabled, zero impact)
+- **FastAPI integration**: Auto-captures unhandled exceptions with full stack traces
+- **Trace sampling**: 10% of requests sampled for performance monitoring
+- **Init**: Conditional at startup in `main.py`, before any request processing
+
 ### 9. Human Detection
 Multi-layer heuristics to detect when a human agent takes over:
 - Emoji presence in messages
@@ -382,6 +393,10 @@ Deployed on **Render** PaaS:
 - Dockerfile at repo root
 - Environment variables configured in Render dashboard
 - SQLite database persisted in `/app/tono-bot/db/`
+- **Docker hardening**:
+  - Non-root user (`appuser`) — limits blast radius if container is compromised
+  - `HEALTHCHECK` against `/health` (30s interval, 5s timeout, 10s start period)
+  - `.dockerignore` excludes `.env`, `*.db`, `.git`, `__pycache__/`, `*.md` from builds
 
 ## Recent Development Focus
 
@@ -391,6 +406,9 @@ Based on commit history:
 - Token optimization for GPT context
 - Infrastructure reliability (retry logic, error handling)
 - Dependency injection (no module-level globals)
+- Docker hardening (non-root user, HEALTHCHECK, .dockerignore)
+- Sentry error monitoring integration (opt-in)
+- Cascadia/Freightliner vehicle synonym mapping
 
 ## Common Issues & Solutions
 
