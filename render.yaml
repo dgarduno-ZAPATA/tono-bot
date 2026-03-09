@@ -7,27 +7,26 @@
 #   3. Render creará el servicio automáticamente
 #   4. Configura las variables de entorno marcadas como "sync: false"
 #      (secretos) en el dashboard de Render
-#   5. Agrega un Persistent Disk en el dashboard:
-#      - Name: tono-bot-db
-#      - Mount Path: /app/tono-bot/db
-#      - Size: 1 GB
+#   5. El Persistent Disk se crea automáticamente (definido abajo)
 #   6. Actualiza la webhook URL en Evolution API al nuevo dominio
 # ============================================================
 
 services:
   - type: web
     name: tono-bot
+    plan: starter          # Siempre encendido, persistent disk, 0.5 CPU
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: ./tono-bot
     repo: https://github.com/dgarduno-ZAPATA/tono-bot
     branch: main
     region: oregon
+    numInstances: 1
 
-    # Health check
-    healthCheckPath: /
+    # Health check — debe coincidir con el endpoint real en main.py
+    healthCheckPath: /health
 
-    # Persistent disk para SQLite (agregar manualmente si Blueprint no lo soporta)
+    # Persistent disk para SQLite
     disk:
       name: tono-bot-db
       mountPath: /app/tono-bot/db
