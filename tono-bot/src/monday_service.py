@@ -41,7 +41,7 @@ VEHICLE_DROPDOWN_MAP = {
     "Toano Panel": ["toano", "panel", "toano panel"],
     "Tunland G7": ["g7", "tunland g7"],
     "Tunland G9": ["g9", "tunland g9"],
-    "Cascadia": ["cascadia"],
+    "Cascadia": ["cascadia", "freightliner"],
 }
 
 

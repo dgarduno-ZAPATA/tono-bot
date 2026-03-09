@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # Acumulación de mensajes rápidos
     MESSAGE_ACCUMULATION_SECONDS: float = 8.0  # Espera para acumular mensajes seguidos
 
+    # Monitoreo
+    SENTRY_DSN: str = ""  # Si se configura, habilita Sentry error tracking
+
     class Config:
         env_file = ".env"
         extra = "ignore"
@@ -67,6 +70,15 @@ try:
 except Exception as e:
     print(f"❌ FATAL: Error en configuración de variables de entorno: {e}")
     raise
+
+# Sentry (error monitoring) — solo si SENTRY_DSN está configurado
+if settings.SENTRY_DSN:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        traces_sample_rate=0.1,
+        environment="production",
+    )
 
 # Logs
 logging.basicConfig(
