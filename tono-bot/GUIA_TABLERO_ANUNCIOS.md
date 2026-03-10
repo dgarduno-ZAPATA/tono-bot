@@ -39,10 +39,22 @@ El codigo es lo que conecta al cliente con el anuncio. Tiene este formato:
 | Tunland G9 | `TG9` | `TG9-A1` | `TG9-A2` | `TG9-A3` |
 | Tunland E5 | `TE5` | `TE5-A1` | `TE5-A2` | `TE5-A3` |
 | Miler | `ML` | `ML-A1` | `ML-A2` | `ML-A3` |
-| Toano Panel | `TP` | `TP-A1` | `TP-A2` | `TP-A3` |
+| Toano Panel (2024 y 2025) | `TP` | `TP-A1` | `TP-A2` | `TP-A3` |
 | ESTA 6x4 11.8 | `E11` | `E11-A1` | `E11-A2` | `E11-A3` |
 | ESTA 6x4 X13 | `EX` | `EX-A1` | `EX-A2` | `EX-A3` |
 | Cascadia | `CA` | `CA-A1` | `CA-A2` | `CA-A3` |
+
+### Vehiculos con varios anos (ejemplo: Toano Panel)
+
+Si tienes el mismo modelo en diferentes anos (ej: Toano 2024 y Toano 2025), **usa el mismo codigo `TP`**. El numero secuencial distingue cada anuncio:
+
+| Elemento en Monday | Codigo | Mensaje prellenado |
+|---------------------|--------|-------------------|
+| Toano 2024 - Promo Precio | `TP-A1` | "Hola, me interesa la Toano Panel (TP-A1)" |
+| Toano 2025 - Video Lanzamiento | `TP-A2` | "Hola, me interesa la Toano Panel (TP-A2)" |
+| Toano 2025 - Reel Financiamiento | `TP-A3` | "Hola, me interesa la Toano Panel (TP-A3)" |
+
+El nombre descriptivo en Monday ("Toano 2024 - Promo Precio") es lo que te dice de que ano es cada anuncio. El codigo solo identifica **cual anuncio** trajo al cliente.
 
 ### Reglas del codigo
 
@@ -88,13 +100,18 @@ El codigo NO va en la imagen ni en el texto del anuncio que lee la gente. Va en 
 2. Haz clic en **"+ Crear nueva"** (o edita una existente)
 3. Ve a la seccion del **Mensaje inicial del cliente** (el texto pre-escrito que aparecera en el celular del cliente cuando se abra WhatsApp)
 4. Borra las preguntas por defecto ("Quiero mas informacion", "Tienen disponibilidad?", etc.)
-5. Escribe el mensaje incluyendo el codigo exacto de Monday:
+5. Escribe el mensaje incluyendo el codigo exacto de Monday. Hazlo natural para el cliente:
 
 ```
-Hola, me interesa TG9-A3
+Hola, me interesa la Tunland G9 (TG9-A3)
 ```
 
-> **Opcional**: Puedes hacerlo mas natural, por ejemplo: "Hola, vi su anuncio en Facebook y me interesa TG9-A3. Me dan informes?" - el bot lo detectara igual mientras el codigo este bien escrito.
+> **Otros ejemplos validos**:
+> - "Hola, vi su anuncio y me interesa la Toano Panel (TP-A2)"
+> - "Hola, me interesa el Miler (ML-A1). Me dan informes?"
+> - "Hola, me interesa TG9-A3"
+>
+> El bot detecta el codigo en cualquier parte del mensaje. Lo importante es que el codigo este bien escrito.
 
 > **IMPORTANTE**: El codigo (`TG9-A3`) debe estar EXACTAMENTE como lo registraste en Monday. Respeta mayusculas y el guion.
 
@@ -117,7 +134,7 @@ Hola, me interesa TG9-A3
 ## Que pasa cuando un cliente hace clic en el anuncio?
 
 1. El cliente hace clic en el anuncio de Facebook/Instagram
-2. Se abre WhatsApp con el mensaje prellenado: "Hola, me interesa TG9-A3"
+2. Se abre WhatsApp con el mensaje prellenado: "Hola, me interesa la Tunland G9 (TG9-A3)"
 3. El bot **automaticamente**:
    - Detecta el codigo `TG9-A3`
    - Sabe que el cliente quiere una **Tunland G9**
@@ -130,7 +147,7 @@ Hola, me interesa TG9-A3
 
 1. Ve un anuncio atractivo de la Tunland G9 en Facebook/Instagram
 2. Le da clic al boton **"Enviar mensaje"**
-3. Se abre su WhatsApp y en la caja de texto ya dice "Hola, me interesa TG9-A3"
+3. Se abre su WhatsApp y en la caja de texto ya dice "Hola, me interesa la Tunland G9 (TG9-A3)"
 4. El cliente solo presiona el boton de enviar
 5. El bot le responde sobre la Tunland G9 sin que el cliente vea ningun codigo raro
 
@@ -152,9 +169,9 @@ Digamos que vas a crear 3 anuncios para la Tunland G9 en marzo:
 
 | Elemento | Codigo | Modelo | Tipo | Mensaje prellenado en WhatsApp |
 |----------|--------|--------|------|-------------------------------|
-| G9 - Video Testimonio Cliente | `TG9-A1` | Tunland G9 | Promocion | "Hola, me interesa TG9-A1" |
-| G9 - Comparativa vs Competencia | `TG9-A2` | Tunland G9 | Promocion | "Hola, me interesa TG9-A2" |
-| G9 - Promo Financiamiento | `TG9-A3` | Tunland G9 | Promocion | "Hola, me interesa TG9-A3" |
+| G9 - Video Testimonio Cliente | `TG9-A1` | Tunland G9 | Promocion | "Hola, me interesa la Tunland G9 (TG9-A1)" |
+| G9 - Comparativa vs Competencia | `TG9-A2` | Tunland G9 | Promocion | "Hola, me interesa la Tunland G9 (TG9-A2)" |
+| G9 - Promo Financiamiento | `TG9-A3` | Tunland G9 | Promocion | "Hola, me interesa la Tunland G9 (TG9-A3)" |
 
 Despues de un mes, revisas en el tablero de **Leads** y filtras por Tracking ID:
 - `TG9-A1` trajo 25 leads, 3 citas, 1 venta → **Buen anuncio**
@@ -180,6 +197,9 @@ Si el codigo no coincide con ningun modelo (ej: escribiste `TG9A1` sin guion), e
 - `TG9-A2` para el mismo contenido en Instagram
 
 Si no te importa distinguir la plataforma, puedes usar el mismo codigo en ambas.
+
+### Tengo Toano 2024 y 2025, necesito codigos diferentes?
+**No.** Ambos usan `TP`. El numero secuencial (`TP-A1`, `TP-A2`, etc.) identifica cada anuncio. En el nombre del elemento en Monday especificas el ano: "Toano 2024 - Promo" vs "Toano 2025 - Video". Esto aplica igual para cualquier modelo que tenga diferentes anos.
 
 ### Que numero sigue si ya tengo TG9-A1 y TG9-A2?
 `TG9-A3`. Siempre el siguiente numero. Revisa en el tablero cual fue el ultimo que usaste para ese modelo.
