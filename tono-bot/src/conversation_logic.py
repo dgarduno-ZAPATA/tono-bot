@@ -1305,16 +1305,19 @@ def _pick_media_urls(
     # Usa regex \b para evitar falsos positivos como "¿esta foto es real?"
     # que no es una petición sino una pregunta sobre una foto ya enviada
     explicit_photo_patterns = [
-        r"\b(mandame|mándame|pasame|pásame|enviame|envíame|comparteme|compárteme)\b.{0,10}\b(foto|fotos|imagen|imagenes|imágenes)\b",
-        r"\b(ver|quiero)\b.{0,10}\b(foto|fotos|imagen|imagenes|imágenes)\b",
-        r"\b(enseñame|enséñame|muestrame|muéstrame)\b.{0,10}\b(foto|fotos)\b",
+        r"\b(mandame|mándame|pasame|pásame|enviame|envíame|comparteme|compárteme)\b.{0,10}\b(foto|fotos|photos?|imagen|imagenes|imágenes)\b",
+        r"\b(ver|quiero)\b.{0,10}\b(foto|fotos|photos?|imagen|imagenes|imágenes)\b",
+        r"\b(enseñame|enséñame|muestrame|muéstrame)\b.{0,10}\b(foto|fotos|photos?)\b",
         r"\bfotos\b",  # "fotos" plural casi siempre es petición
+        r"\bphotos?\b",  # English variants: "photo" / "photos"
+        r"\buna\s+foto\b",  # "una foto por fa" es petición explícita
+        r"\bfoto\b.{0,15}\b(por\s*fa|porfa|por\s*favor|porfavor|please|plis|plz)\b",  # "foto por fa/favor"
     ]
     # Foto singular solo cuenta si NO es pregunta sobre foto ya enviada
-    singular_photo_question = bool(re.search(r"\b(esta|esa|la|cual|cuál)\s+foto\b", msg))
+    singular_photo_question = bool(re.search(r"\b(esta|esa|la|cual|cuál)\s+(foto|photo)\b", msg))
 
     # Keywords que SOLO funcionan si ya hay contexto de fotos (photo_model existe)
-    context_photo_keywords = ["otra foto", "mas fotos", "más fotos", "siguiente foto", "otra imagen"]
+    context_photo_keywords = ["otra foto", "mas fotos", "más fotos", "siguiente foto", "otra imagen", "more photos", "another photo"]
 
     current_photo_model = (context.get("photo_model") or "").strip()
 
