@@ -1686,6 +1686,7 @@ async def handle_message(
     inventory_service,
     state: str,
     context: Dict[str, Any],
+    campaign_service=None,
 ) -> Dict[str, Any]:
     user_message = user_message or ""
     context = context or {}
@@ -1832,6 +1833,17 @@ async def handle_message(
                     f"Si el anuncio menciona un vehículo específico, ESE es probablemente el vehículo de interés del cliente.\n"
                 )
 
+    # Campañas activas del Sheet
+    campaigns_section = ""
+    if campaign_service:
+        try:
+            await campaign_service.ensure_loaded()
+            campaigns_section = campaign_service.build_campaigns_prompt_block()
+            if campaigns_section:
+                campaigns_section += "\n"
+        except Exception as e:
+            logger.error(f"⚠️ Error cargando campañas para prompt: {e}")
+
     context_block = (
         f"TURNO: {turn_count} {'(PRIMER MENSAJE - puedes saludar)' if turn_count == 1 else '(NO saludes, ve directo al punto)'}\n"
         f"MOMENTO ACTUAL: {current_time_str}\n"
@@ -1841,6 +1853,7 @@ async def handle_message(
         f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
         f"{tracking_context}"
         f"{ad_context_section}"
+        f"{campaigns_section}"
         f"{inventory_section}"
         f"{financing_section}"
         f"HISTORIAL DE CHAT:\n{history[-3000:]}"
