@@ -19,6 +19,7 @@ from pydantic_settings import BaseSettings
 
 # === IMPORTACIONES PROPIAS ===
 from src.inventory_service import InventoryService
+from src.campaign_service import CampaignService
 from src.conversation_logic import (
     handle_message,
     client as gemini_client,
@@ -43,6 +44,8 @@ class Settings(BaseSettings):
     EVO_INSTANCE: str = "Maximo Cervantes 2"
     OWNER_PHONE: Optional[str] = None
     SHEET_CSV_URL: Optional[str] = None
+    CAMPAIGNS_CSV_URL: Optional[str] = None
+    CAMPAIGNS_REFRESH_SECONDS: int = 300
     INVENTORY_REFRESH_SECONDS: int = 300
 
     # Logging del payload (evita logs gigantes)
@@ -129,6 +132,7 @@ class GlobalState:
     def __init__(self):
         self.http_client: Optional[httpx.AsyncClient] = None
         self.inventory: Optional[InventoryService] = None
+        self.campaigns: Optional[CampaignService] = None
         self.store: Optional[MemoryStore] = None
 
         # dedupe RAM (O(1) lookup con evicción FIFO)
@@ -190,6 +194,18 @@ async def lifespan(app: FastAPI):
         logger.info(f"✅ Inventario cargado: {count} items.")
     except Exception as e:
         logger.error(f"⚠️ Error cargando inventario inicial: {e}")
+
+    # B2) Campañas
+    bot_state.campaigns = CampaignService(
+        csv_url=settings.CAMPAIGNS_CSV_URL,
+        refresh_seconds=settings.CAMPAIGNS_REFRESH_SECONDS,
+    )
+    try:
+        await bot_state.campaigns.load(force=True)
+        active_count = len(bot_state.campaigns.get_active_campaigns())
+        logger.info(f"📢 Campañas cargadas: {active_count} activas.")
+    except Exception as e:
+        logger.error(f"⚠️ Error cargando campañas iniciales: {e}")
 
     # C) Memoria
     bot_state.store = MemoryStore()
@@ -722,7 +738,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
 
             # === Procesar con IA ===
             try:
-                result = await handle_message(combined_message, bot_state.inventory, state, context)
+                result = await handle_message(combined_message, bot_state.inventory, state, context, campaign_service=bot_state.campaigns)
             except Exception as e:
                 logger.error(f"❌ Error IA: {e}")
                 result = {
