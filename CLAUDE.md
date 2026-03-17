@@ -442,7 +442,7 @@ curl http://localhost:8080/health
 
 8. **Facebook Referral Tracking**: CTWA referral data extracted from first message webhook, persisted in session context, and sent to Monday.com source column. Supports both Baileys (`contextInfo`) and Cloud API (`referral` object) formats.
 
-9. **Ad Tracking ID (V3)**: Internal attribution system detecting `<MODEL_CODE>-A<NUMBER>` pattern in first message. Auto-resolves vehicle model, strips code before GPT, persists in context, populates Monday.com Tracking ID column, and connects lead to Anuncios board.
+9. **Ad Tracking ID (V3)**: Internal attribution system detecting `<MODEL_CODE>-<CAMPAIGN_TYPE><NUMBER>` pattern (e.g., `TG9-A1`, `CA-SU1`, `ML-LQ2`) in first message. Campaign types: A (Anuncio), SU (Subasta), LQ (Liquidación), PR (Promoción), EV (Evento). Auto-resolves vehicle model and campaign type, strips code before GPT, persists in context, populates Monday.com Tracking ID column, and connects lead to Anuncios board.
 
 ## Testing
 

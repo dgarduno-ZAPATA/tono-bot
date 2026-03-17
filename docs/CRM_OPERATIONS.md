@@ -118,6 +118,52 @@ Cada transición de estado genera una nota en Monday.com con detalles:
 | Instagram | Instagram | Directo |
 | Directo | Directo | Directo |
 
+## Sistema de Tracking ID (V3)
+
+### Formato
+`<MODELO>-<TIPO_CAMPAÑA><NUMERO>` — Embebido en mensajes pre-llenados de anuncios de WhatsApp.
+
+### Códigos de Modelo
+`TG7` (Tunland G7), `TG9` (Tunland G9), `TE5` (Tunland E5), `ML` (Miler), `TP` (Toano Panel), `E11` (ESTA 6x4 11.8), `EX` (ESTA 6x4 X13), `CA` (Cascadia)
+
+### Tipos de Campaña
+
+| Código | Tipo | Descripción |
+|--------|------|-------------|
+| `A` | Anuncio | Anuncio regular de Facebook/Instagram |
+| `SU` | Subasta | Mejor Propuesta / Subasta |
+| `LQ` | Liquidación | Liquidación / Precio especial |
+| `PR` | Promoción | Promoción especial |
+| `EV` | Evento | Evento / Open House |
+
+Ejemplos: `TG9-A1`, `CA-SU1`, `ML-LQ2`, `TP-PR1`, `E11-EV1`
+
+### Flujo de Tracking ID
+
+1. Anuncio en Meta tiene mensaje pre-llenado: "Hola CA-SU1"
+2. Bot detecta patrón `[A-Z][A-Z0-9]{1,3}-(A|SU|LQ|PR|EV)\d{1,3}` en primer mensaje
+3. Modelo auto-resuelto → `last_interest` = etiqueta del vehículo
+4. Tipo de campaña resuelto → contexto incluye tipo (ej: "Subasta de Cascadia")
+5. Tracking ID eliminado del mensaje antes de enviar a GPT
+6. Lead creado en Monday.com con columna Tracking ID populada
+7. Lead vinculado a ítem en tablero Anuncios via Connect Boards
+8. Alerta al owner incluye Tracking ID
+
+### Columnas en Monday.com
+
+| Variable | Descripción |
+|----------|-------------|
+| MONDAY_TRACKING_ID_COLUMN_ID | Columna Text para Tracking ID en Leads |
+| MONDAY_ADS_BOARD_ID | ID del tablero Anuncios |
+| MONDAY_ADS_TRACKING_COLUMN_ID | Columna Text de Tracking ID en Anuncios |
+| MONDAY_LEADS_CONNECT_ADS_COLUMN_ID | Columna Connect Boards (Leads → Anuncios) |
+
+### Coexistencia con CTWA
+- Tracking ID funciona con **Baileys** (no necesita Meta API)
+- CTWA requiere Meta Cloud API
+- Ambos sistemas coexisten: si un lead tiene CTWA Y Tracking ID, ambos se guardan
+- Si solo hay Tracking ID, `referral_source` = `"Ad Tracking: CA-SU1"`
+
 ## Retry Logic
 
 - Todas las mutaciones GraphQL tienen retry con backoff exponencial

@@ -315,14 +315,42 @@ Proceso:
 ### 4.10 Tracking de origen del lead (Referral Tracking)
 
 **Evento disparador:**
-- Primer mensaje que incluye información de referencia.
+- Primer mensaje que incluye información de referencia (CTWA) o un Tracking ID embebido.
 
 **Datos detectables:**
-referral, conversionSource, ad_id, ctwa_clid.
+referral, conversionSource, ad_id, ctwa_clid, Tracking ID (`MODELO-TIPO+NUMERO`).
 
 **Acción ejecutada:**
 - Se almacenan los datos en la sesión.
 - Se actualizan columnas en Monday: Origen Lead, Canal, Tipo de Origen (y cuando aplique: Ad ID, Click ID).
+
+---
+
+### 4.11 Sistema de Tracking ID interno (V3)
+
+**Evento disparador:**
+- Primer mensaje del cliente contiene un código de tracking embebido (ej: "Hola CA-SU1", "Me interesa TG9-A3").
+
+**Formato del código:**
+`<MODELO>-<TIPO_CAMPAÑA><NUMERO>` donde:
+- MODELO: código del vehículo (TG7, TG9, TE5, ML, TP, E11, EX, CA)
+- TIPO_CAMPAÑA: tipo de anuncio (A=Anuncio, SU=Subasta, LQ=Liquidación, PR=Promoción, EV=Evento)
+- NUMERO: secuencial por modelo y tipo (1-999)
+
+**Ejemplos:** `TG9-A1` (Tunland G9, Anuncio #1), `CA-SU1` (Cascadia, Subasta #1), `ML-LQ2` (Miler, Liquidación #2)
+
+**Acción ejecutada:**
+- Se detecta el patrón en el primer mensaje.
+- Se resuelve automáticamente el modelo de interés (`last_interest`).
+- Se resuelve el tipo de campaña para inyectar contexto al GPT (ej: "Subasta de Cascadia").
+- Se elimina el código del mensaje antes de enviarlo al GPT.
+- Se crea el lead en Monday.com con la columna Tracking ID populada.
+- Se vincula el lead con el ítem correspondiente en el tablero de Anuncios.
+- Se envía alerta al owner incluyendo el Tracking ID.
+
+**Coexistencia con CTWA:**
+- Tracking ID funciona con Baileys (no necesita Meta API).
+- Si un lead tiene ambos (CTWA y Tracking ID), ambos se guardan.
 
 ────────────────────────────────────────────────────────────
 ## 5) ACCIONES ASÍNCRONAS Y AUTOMATIZACIONES (GESTIÓN DE ESTADOS)
