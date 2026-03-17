@@ -1560,6 +1560,7 @@ async def health(request: Request):
         "llm_model": LLM_MODEL_NAME,
         "llm_fallback": FALLBACK_MODEL,
         "inventory_count": len(getattr(bot_state.inventory, "items", []) or []),
+        "active_campaigns": len(bot_state.campaigns.get_active_campaigns()) if bot_state.campaigns else 0,
         "silenced_chats": len(bot_state.silenced_users),
         "processed_msgs_cache": len(bot_state.processed_message_ids),
         "processed_leads_cache": len(bot_state.processed_lead_ids),
@@ -1568,6 +1569,30 @@ async def health(request: Request):
         "handoff_enabled": bool(settings.TEAM_NUMBERS.strip()),
         "auto_reactivate_minutes": settings.AUTO_REACTIVATE_MINUTES,
         "message_accumulation_seconds": settings.MESSAGE_ACCUMULATION_SECONDS,
+    }
+
+
+@app.get("/campaigns")
+async def campaigns_endpoint(request: Request):
+    """Muestra campañas activas cargadas desde Google Sheets."""
+    bot_state: GlobalState = request.app.state.bot
+    if not bot_state.campaigns:
+        return {"status": "disabled", "campaigns": [], "message": "CAMPAIGNS_CSV_URL no configurado"}
+
+    active = bot_state.campaigns.get_active_campaigns()
+    return {
+        "status": "ok",
+        "total_loaded": len(bot_state.campaigns.campaigns),
+        "active_count": len(active),
+        "campaigns": [
+            {
+                "name": c.name,
+                "tracking_id": c.tracking_id or None,
+                "keywords": c.keywords or [],
+                "instructions_preview": c.instructions[:150] + "..." if len(c.instructions) > 150 else c.instructions,
+            }
+            for c in active
+        ],
     }
 
 
