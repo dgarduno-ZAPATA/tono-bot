@@ -202,7 +202,7 @@ The bot automatically tracks leads through a 10-stage sales funnel in Monday.com
 Since Baileys/Evolution API does NOT provide Meta Ads metadata reliably, the bot uses an internal Tracking ID system for ad attribution.
 
 ### Tracking ID Format
-`<MODEL_CODE>-A<NUMBER>` — Embedded in pre-filled WhatsApp ad messages.
+`<MODEL_CODE>-<CAMPAIGN_TYPE><NUMBER>` — Embedded in pre-filled WhatsApp ad messages.
 
 ### Model Code Map
 | Code | Vehicle |
@@ -216,17 +216,27 @@ Since Baileys/Evolution API does NOT provide Meta Ads metadata reliably, the bot
 | `EX` | ESTA 6x4 X13 |
 | `CA` | Cascadia |
 
-Examples: `TG9-A1` (Tunland G9, Ad #1), `ML-A2` (Miler, Ad #2)
+### Campaign Type Codes
+| Code | Type | Description |
+|------|------|-------------|
+| `A` | Anuncio | Regular Facebook/Instagram ad |
+| `SU` | Subasta | Mejor Propuesta / Subasta |
+| `LQ` | Liquidación | Liquidación / Precio especial |
+| `PR` | Promoción | Promoción especial |
+| `EV` | Evento | Evento / Open House |
+
+Examples: `TG9-A1` (Tunland G9, Ad #1), `CA-SU1` (Cascadia, Subasta #1), `ML-LQ2` (Miler, Liquidación #2)
 
 ### How It Works
-1. Facebook/Instagram ad has pre-filled message: "Hola, me interesa TG9-A1"
-2. Bot detects pattern `[A-Z][A-Z0-9]{1,3}-A\d{1,3}` in first message
-3. Model auto-resolved → `last_interest` set to "Tunland G9"
-4. Tracking ID stripped from message before GPT processing
-5. GPT receives tracking context: "Este cliente llegó por anuncio de Tunland G9"
-6. Lead created in Monday.com with tracking_id column populated
-7. Lead linked to Anuncio item via Connect Boards column
-8. Owner alert includes tracking ID
+1. Facebook/Instagram ad has pre-filled message: "Hola, me interesa TG9-A1" or "Hola CA-SU1"
+2. Bot detects pattern `[A-Z][A-Z0-9]{1,3}-(A|SU|LQ|PR|EV)\d{1,3}` in first message
+3. Model auto-resolved → `last_interest` set to vehicle label
+4. Campaign type resolved → context includes type (e.g., "Subasta de Cascadia")
+5. Tracking ID stripped from message before GPT processing
+6. GPT receives tracking context: "Este cliente llegó por Subasta de Cascadia"
+7. Lead created in Monday.com with tracking_id column populated
+8. Lead linked to Anuncio item via Connect Boards column
+9. Owner alert includes tracking ID
 
 ### Monday.com Anuncios Board
 Separate board for cataloging active ads:
