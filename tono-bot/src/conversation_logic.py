@@ -1799,8 +1799,13 @@ async def handle_message(
     tracking_context = ""
     tracking_id = context.get("tracking_id")
     if tracking_id:
-        tracking_vehicle = (context.get("tracking_data") or {}).get("vehicle_label", "")
-        tracking_context = f"ORIGEN: Este cliente llegó por un anuncio de {tracking_vehicle} (Tracking: {tracking_id}). Ya sabemos su modelo de interés, NO preguntes qué modelo le interesa.\n"
+        tracking_data = context.get("tracking_data") or {}
+        tracking_vehicle = tracking_data.get("vehicle_label", "")
+        campaign_type_label = tracking_data.get("campaign_type_label", "Anuncio")
+        tracking_context = (
+            f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
+            f"(Tracking: {tracking_id}). Ya sabemos su modelo de interés, NO preguntes qué modelo le interesa.\n"
+        )
 
     # Build ad context section if referral has externalAdReply info
     ad_context_section = ""

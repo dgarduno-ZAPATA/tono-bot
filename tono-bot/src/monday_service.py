@@ -48,7 +48,8 @@ VEHICLE_DROPDOWN_MAP = {
 # ============================================================
 # V3: TRACKING ID → Internal ad attribution (Baileys workaround)
 # ============================================================
-# Format: <MODEL_CODE>-A<NUMBER> (e.g., TG9-A1 = Tunland G9, Ad 1)
+# Format: <MODEL_CODE>-<CAMPAIGN_TYPE><NUMBER>
+# Examples: TG9-A1 (Tunland G9 Ad 1), CA-SU1 (Cascadia Subasta 1)
 MODEL_CODE_MAP = {
     "TG7": "Tunland G7",
     "TG9": "Tunland G9",
@@ -58,16 +59,28 @@ MODEL_CODE_MAP = {
     "E11": "ESTA 6x4 11.8",
     "EX":  "ESTA 6x4 X13",
     "CA":  "Cascadia",
-    "SU":  "Cascadia",  # Campaña Mejor Propuesta - Seminuevos/Subasta
 }
 
-TRACKING_ID_PATTERN = re.compile(r'\b([A-Z][A-Z0-9]{1,3})-A(\d{1,3})\b', re.IGNORECASE)
+# Campaign type codes for tracking IDs
+CAMPAIGN_TYPE_MAP = {
+    "A":  "Anuncio",            # Regular ad (default)
+    "SU": "Subasta",            # Mejor Propuesta / Subasta
+    "LQ": "Liquidación",        # Liquidación / Precio especial
+    "PR": "Promoción",          # Promoción especial
+    "EV": "Evento",             # Evento / Open House
+}
+
+TRACKING_ID_PATTERN = re.compile(
+    r'\b([A-Z][A-Z0-9]{1,3})-(A|SU|LQ|PR|EV)(\d{1,3})\b', re.IGNORECASE
+)
 
 
 def extract_tracking_id(text: str) -> dict | None:
     """
     Detects a tracking ID pattern in the message text.
-    Returns dict with tracking_id, model_code, ad_number, vehicle_label or None.
+    Format: MODEL-TYPE+NUMBER (e.g., CA-SU1, TG9-A1, ML-LQ2)
+    Returns dict with tracking_id, model_code, campaign_type, campaign_type_label,
+    ad_number, vehicle_label or None.
     """
     if not text:
         return None
@@ -77,16 +90,20 @@ def extract_tracking_id(text: str) -> dict | None:
         return None
 
     model_code = m.group(1).upper()
-    ad_number = int(m.group(2))
+    campaign_type = m.group(2).upper()
+    ad_number = int(m.group(3))
     vehicle_label = MODEL_CODE_MAP.get(model_code)
 
     if not vehicle_label:
         return None
 
-    tracking_id = f"{model_code}-A{ad_number}"
+    campaign_type_label = CAMPAIGN_TYPE_MAP.get(campaign_type, "Anuncio")
+    tracking_id = f"{model_code}-{campaign_type}{ad_number}"
     return {
         "tracking_id": tracking_id,
         "model_code": model_code,
+        "campaign_type": campaign_type,
+        "campaign_type_label": campaign_type_label,
         "ad_number": ad_number,
         "vehicle_label": vehicle_label,
     }
