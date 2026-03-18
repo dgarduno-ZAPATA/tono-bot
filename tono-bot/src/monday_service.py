@@ -71,7 +71,7 @@ CAMPAIGN_TYPE_MAP = {
 }
 
 TRACKING_ID_PATTERN = re.compile(
-    r'\b([A-Z][A-Z0-9]{1,3})-(A|SU|LQ|PR|EV)(\d{1,3})\b', re.IGNORECASE
+    r'\b([A-Z][A-Z0-9]{1,3})[-_](A|SU|LQ|PR|EV)(\d{1,3})\b', re.IGNORECASE
 )
 
 

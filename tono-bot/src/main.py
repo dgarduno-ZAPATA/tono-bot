@@ -710,23 +710,21 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                 bot_state.pending_referrals.pop(remote_jid, None)
 
             # === TRACKING ID: Persistir datos de tracking en contexto de sesión ===
-            # Solo se guarda una vez (primer mensaje con tracking ID)
-            if not context.get("tracking_id"):
-                pending_track = bot_state.pending_tracking_ids.pop(remote_jid, None)
-                if pending_track:
-                    context["tracking_id"] = pending_track["tracking_id"]
+            # Si llega un nuevo tracking ID, reemplaza al anterior (permite testing
+            # desde el mismo número y clientes que regresan por otro anuncio).
+            pending_track = bot_state.pending_tracking_ids.pop(remote_jid, None)
+            if pending_track:
+                new_tid = pending_track["tracking_id"]
+                old_tid = context.get("tracking_id")
+                if old_tid != new_tid:
+                    context["tracking_id"] = new_tid
                     context["tracking_data"] = pending_track
-                    # Auto-set vehicle interest from tracking code
-                    if not context.get("last_interest"):
-                        context["last_interest"] = pending_track["vehicle_label"]
-                        logger.info(f"🏷️ Auto-interés desde tracking: {pending_track['vehicle_label']}")
-                    # Set referral source if no CTWA referral already captured
-                    if not context.get("referral_source"):
-                        context["referral_source"] = f"Ad Tracking: {pending_track['tracking_id']}"
-                    logger.info(f"🏷️ Tracking ID guardado en contexto: {pending_track['tracking_id']} → {pending_track['vehicle_label']}")
-            else:
-                # Clean up pending tracking if already persisted
-                bot_state.pending_tracking_ids.pop(remote_jid, None)
+                    # Update vehicle interest from new tracking code
+                    context["last_interest"] = pending_track["vehicle_label"]
+                    logger.info(f"🏷️ Auto-interés desde tracking: {pending_track['vehicle_label']}")
+                    # Update referral source
+                    context["referral_source"] = f"Ad Tracking: {new_tid}"
+                    logger.info(f"🏷️ Tracking ID {'actualizado' if old_tid else 'guardado'} en contexto: {new_tid} → {pending_track['vehicle_label']}")
 
             # === Strip tracking ID from message before GPT ===
             # Prevents GPT from echoing the code in its response
