@@ -831,6 +831,10 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                         # Get tracking ID from context
                         tracking_id = result_context.get("tracking_id") or context.get("tracking_id") or ""
                         tracking_data = result_context.get("tracking_data") or context.get("tracking_data") or {}
+                        if tracking_id:
+                            logger.info(f"🏷️ MONDAY lead_data incluye tracking_id='{tracking_id}'")
+                        else:
+                            logger.info(f"🏷️ MONDAY lead_data SIN tracking_id (result_ctx={bool(result_context.get('tracking_id'))}, ctx={bool(context.get('tracking_id'))})")
 
                         lead_data = {
                             "telefono": remote_jid.split("@")[0],
