@@ -1786,12 +1786,24 @@ async def handle_message(
     # If so, the campaign instructions already contain the vehicle info (e.g. Cascadia
     # liquidación) and injecting the full inventory would confuse GPT with unrelated models.
     _has_campaign_instructions = False
+    _matched_campaign = None
     tracking_id = context.get("tracking_id")
     if tracking_id and campaign_service:
         try:
             await campaign_service.ensure_loaded()
-            matched_campaign = campaign_service.find_campaign_by_tracking_id(tracking_id)
-            if matched_campaign and matched_campaign.instructions:
+            # 1. Match exacto por tracking ID (CA-SU1 == CA-SU1)
+            _matched_campaign = campaign_service.find_campaign_by_tracking_id(tracking_id)
+            if not _matched_campaign:
+                # 2. Fallback: match por prefijo de modelo (CA-SU1 → "CA" → encuentra "CA-A1")
+                model_code = (context.get("tracking_data") or {}).get("model_code", "")
+                if model_code:
+                    _matched_campaign = campaign_service.find_campaign_by_model_code(model_code)
+                    if _matched_campaign:
+                        logger.info(
+                            f"🏷️ Campaña matcheada por modelo: {tracking_id} → "
+                            f"{_matched_campaign.tracking_id} ({_matched_campaign.name})"
+                        )
+            if _matched_campaign and _matched_campaign.instructions:
                 _has_campaign_instructions = True
         except Exception:
             pass
@@ -1840,14 +1852,19 @@ async def handle_message(
         tracking_data = context.get("tracking_data") or {}
         tracking_vehicle = tracking_data.get("vehicle_label", "")
         campaign_type_label = tracking_data.get("campaign_type_label", "Anuncio")
-        if _has_campaign_instructions:
-            # Campaign instructions contain all vehicle details — tell GPT to rely on them
+        if _has_campaign_instructions and _matched_campaign:
+            # Inyectar instrucciones de campaña DIRECTAMENTE en el tracking context.
+            # Esto es mucho más efectivo que depender de un bloque genérico de campañas
+            # porque GPT ve las instrucciones justo al lado del origen del cliente.
             tracking_context = (
                 f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
-                f"(Tracking: {tracking_id}). "
-                f"IMPORTANTE: Este vehículo tiene INSTRUCCIONES DE CAMPAÑA específicas más abajo. "
-                f"USA ESAS INSTRUCCIONES para responder sobre el {tracking_vehicle}. "
-                f"NO uses el inventario general para este vehículo.\n"
+                f"(Tracking: {tracking_id}).\n"
+                f"*** CAMPAÑA APLICABLE: \"{_matched_campaign.name}\" ***\n"
+                f"INSTRUCCIONES DE CAMPAÑA (SEGUIR CON PRIORIDAD ABSOLUTA sobre inventario general):\n"
+                f"{_matched_campaign.instructions}\n"
+                f"*** FIN INSTRUCCIONES DE CAMPAÑA ***\n"
+                f"IMPORTANTE: Para este cliente, SIGUE las instrucciones de campaña. "
+                f"NO uses precio ni condiciones del inventario general para esta unidad.\n"
             )
         else:
             tracking_context = (
@@ -1889,8 +1906,12 @@ async def handle_message(
                 )
 
     # Campañas activas del Sheet
+    # Si la campaña ya se inyectó directamente en tracking_context, no duplicar.
     campaigns_section = ""
-    if campaign_service:
+    if _has_campaign_instructions and _matched_campaign:
+        # Ya inyectada en tracking_context → omitir bloque genérico
+        pass
+    elif campaign_service:
         try:
             await campaign_service.ensure_loaded()
             campaigns_section = campaign_service.build_campaigns_prompt_block()
