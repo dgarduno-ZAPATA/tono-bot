@@ -1782,7 +1782,27 @@ async def handle_message(
     )
 
     # Smart context injection: only include inventory/financing when relevant
-    if _needs_inventory_context(user_message, turn_count, last_interest, inventory_service):
+    # Check if client arrived via campaign tracking ID with active campaign instructions.
+    # If so, the campaign instructions already contain the vehicle info (e.g. Cascadia
+    # liquidación) and injecting the full inventory would confuse GPT with unrelated models.
+    _has_campaign_instructions = False
+    tracking_id = context.get("tracking_id")
+    if tracking_id and campaign_service:
+        try:
+            await campaign_service.ensure_loaded()
+            matched_campaign = campaign_service.find_campaign_by_tracking_id(tracking_id)
+            if matched_campaign and matched_campaign.instructions:
+                _has_campaign_instructions = True
+        except Exception:
+            pass
+
+    if _has_campaign_instructions:
+        # Campaign has specific instructions for this vehicle — skip general inventory
+        # to avoid confusing GPT with unrelated models. Focused inventory is still
+        # included if the vehicle happens to be in the catalog too.
+        focused = _build_focused_inventory_text(inventory_service, last_interest) if last_interest else ""
+        inventory_section = f"{focused}\n" if focused else ""
+    elif _needs_inventory_context(user_message, turn_count, last_interest, inventory_service):
         inventory_text = _build_inventory_text(inventory_service)
         inventory_section = (
             "INVENTARIO DISPONIBLE (CATÁLOGO COMPLETO - estas son TODAS las marcas y modelos "
@@ -1816,17 +1836,26 @@ async def handle_message(
 
     # Tracking context: if client arrived via ad tracking ID, inject this info
     tracking_context = ""
-    tracking_id = context.get("tracking_id")
     if tracking_id:
         tracking_data = context.get("tracking_data") or {}
         tracking_vehicle = tracking_data.get("vehicle_label", "")
         campaign_type_label = tracking_data.get("campaign_type_label", "Anuncio")
-        tracking_context = (
-            f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
-            f"(Tracking: {tracking_id}). Sabemos su modelo de interés. "
-            f"Si es el primer mensaje, confirma brevemente que le interesa el {tracking_vehicle} "
-            f"antes de dar precio, ubicación y condiciones completas.\n"
-        )
+        if _has_campaign_instructions:
+            # Campaign instructions contain all vehicle details — tell GPT to rely on them
+            tracking_context = (
+                f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
+                f"(Tracking: {tracking_id}). "
+                f"IMPORTANTE: Este vehículo tiene INSTRUCCIONES DE CAMPAÑA específicas más abajo. "
+                f"USA ESAS INSTRUCCIONES para responder sobre el {tracking_vehicle}. "
+                f"NO uses el inventario general para este vehículo.\n"
+            )
+        else:
+            tracking_context = (
+                f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
+                f"(Tracking: {tracking_id}). Sabemos su modelo de interés. "
+                f"Si es el primer mensaje, confirma brevemente que le interesa el {tracking_vehicle} "
+                f"antes de dar precio, ubicación y condiciones completas.\n"
+            )
 
     # Build ad context section if referral has externalAdReply info
     ad_context_section = ""
