@@ -1801,6 +1801,7 @@ async def handle_message(
     # If so, the campaign instructions already contain the vehicle info (e.g. Cascadia
     # liquidación) and injecting the full inventory would confuse GPT with unrelated models.
     _has_campaign_instructions = False
+    _is_special_campaign_no_instructions = False
     _matched_campaign = None
     tracking_id = context.get("tracking_id")
     if tracking_id and campaign_service:
@@ -1820,13 +1821,21 @@ async def handle_message(
                         )
             if _matched_campaign and _matched_campaign.instructions:
                 _has_campaign_instructions = True
+            elif not _matched_campaign:
+                active_count = len(campaign_service.get_active_campaigns())
+                logger.warning(
+                    f"⚠️ Tracking {tracking_id} sin campaña matcheada "
+                    f"({active_count} campañas activas, csv_url={'Sí' if campaign_service.csv_url else 'No'})"
+                )
         except Exception:
             pass
+    elif tracking_id and not campaign_service:
+        logger.warning(f"⚠️ Tracking {tracking_id} detectado pero campaign_service=None")
 
-    if _has_campaign_instructions:
-        # Campaign has specific instructions for this vehicle — skip general inventory
-        # to avoid confusing GPT with unrelated models. Focused inventory is still
-        # included if the vehicle happens to be in the catalog too.
+    if _has_campaign_instructions or _is_special_campaign_no_instructions:
+        # Campaign has specific instructions OR it's a special campaign type (SU/LQ/PR/EV)
+        # without instructions — skip general inventory to avoid confusing GPT with
+        # unrelated models or standard prices that don't apply to the campaign.
         focused = _build_focused_inventory_text(inventory_service, last_interest) if last_interest else ""
         inventory_section = f"{focused}\n" if focused else ""
     elif _needs_inventory_context(user_message, turn_count, last_interest, inventory_service):
@@ -1884,12 +1893,44 @@ async def handle_message(
                 f"Si ya pediste datos y el cliente preguntó algo, responde su pregunta primero.\n"
             )
         else:
-            tracking_context = (
-                f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
-                f"(Tracking: {tracking_id}). Sabemos su modelo de interés. "
-                f"Si es el primer mensaje, confirma brevemente que le interesa el {tracking_vehicle} "
-                f"antes de dar precio, ubicación y condiciones completas.\n"
-            )
+            campaign_type_code = (tracking_data.get("campaign_type") or "A").upper()
+            _is_special_campaign = campaign_type_code in ("SU", "LQ", "PR", "EV")
+            if _is_special_campaign:
+                # Cliente llegó por campaña especial (Mejor Precio, Liquidación, Promoción,
+                # Evento) pero NO hay instrucciones de campaña cargadas en Google Sheets.
+                # El bot NO debe dar precios de inventario general porque la campaña tiene
+                # condiciones especiales que no conocemos. Mejor recolectar datos.
+                _is_special_campaign_no_instructions = True
+                logger.warning(
+                    f"⚠️ Tracking {tracking_id} tipo={campaign_type_code} ({campaign_type_label}) "
+                    f"pero SIN instrucciones de campaña. ¿CAMPAIGNS_CSV_URL configurado?"
+                )
+                tracking_context = (
+                    f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
+                    f"(Tracking: {tracking_id}).\n"
+                    f"*** CAMPAÑA ESPECIAL SIN INSTRUCCIONES DETALLADAS ***\n"
+                    f"Este cliente viene de una campaña de tipo '{campaign_type_label}' para el "
+                    f"{tracking_vehicle}. Esta campaña tiene condiciones especiales (precio, "
+                    f"dinámica, reglas) que NO están en el inventario general.\n"
+                    f"REGLAS CRÍTICAS PARA ESTE CLIENTE:\n"
+                    f"1. NO des el precio del inventario general. El precio de esta campaña puede "
+                    f"ser diferente al del inventario.\n"
+                    f"2. NO uses el disclaimer de intermediario (regla 2) con este cliente.\n"
+                    f"3. Confirma su interés en el {tracking_vehicle} y pregunta: "
+                    f"'¿Me compartes tu nombre para registrarte en la dinámica?'\n"
+                    f"4. Recolecta: nombre, teléfono, correo, ciudad.\n"
+                    f"5. Si pregunta por precio o condiciones de la campaña, di: "
+                    f"'Un asesor te contacta con los detalles de esta dinámica.'\n"
+                    f"6. Tu objetivo es capturar datos del cliente y pasarlo a un asesor, "
+                    f"NO cotizar desde inventario.\n"
+                )
+            else:
+                tracking_context = (
+                    f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
+                    f"(Tracking: {tracking_id}). Sabemos su modelo de interés. "
+                    f"Si es el primer mensaje, confirma brevemente que le interesa el {tracking_vehicle} "
+                    f"antes de dar precio, ubicación y condiciones completas.\n"
+                )
 
     # Build ad context section if referral has externalAdReply info
     ad_context_section = ""

@@ -200,6 +200,12 @@ async def lifespan(app: FastAPI):
         csv_url=settings.CAMPAIGNS_CSV_URL,
         refresh_seconds=settings.CAMPAIGNS_REFRESH_SECONDS,
     )
+    if not settings.CAMPAIGNS_CSV_URL:
+        logger.warning(
+            "⚠️ CAMPAIGNS_CSV_URL no configurado. Las campañas especiales (Mejor Precio, "
+            "Liquidación, Promoción, Evento) NO tendrán instrucciones personalizadas. "
+            "El bot caerá al modo genérico de captura de datos para tracking IDs especiales."
+        )
     try:
         await bot_state.campaigns.load(force=True)
         active_count = len(bot_state.campaigns.get_active_campaigns())
