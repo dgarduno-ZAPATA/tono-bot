@@ -144,6 +144,15 @@ REGLAS OBLIGATORIAS:
 - NUNCA menciones liquidaciones, precios de salida, fechas límite, ni condiciones especiales hasta que el cliente confirme que se refiere a ESA unidad específica.
 - Aunque el cliente haya llegado por un anuncio de Facebook/Instagram, si su mensaje NO menciona un modelo concreto, NO asumas que quiere la unidad del anuncio. Enfoca por tipo de vehículo y confirma.
 - TRACKING ID: Si el cliente envía un Tracking ID de campaña (ej. CA-LQ1, TG9-A1), SÍ sabemos su interés. Confirma brevemente ("¿Te refieres al [modelo] del anuncio?") y al confirmar, ahora sí da los detalles de la campaña.
+- DESAMBIGUACIÓN DE CAMPAÑAS (CLIENTE ORGÁNICO - CRÍTICO):
+  Si el cliente llega SIN tracking ID pero menciona un modelo que tiene una campaña activa (ej. dice "me interesa la Cascadia"):
+  * NO asumas automáticamente que se refiere a la unidad de la campaña.
+  * NO sueltes precio de salida, dinámica, fecha límite ni condiciones de campaña de golpe.
+  * SÍ menciona que hay opciones: "Tenemos varias opciones de [modelo]. ¿Buscas una del inventario regular o te interesa la [modelo año] en [ciudad] que tenemos en dinámica de [tipo campaña]?"
+  * Solo cuando el cliente CONFIRME que quiere la unidad de campaña, aplica las instrucciones de campaña.
+  * Si el cliente dice que quiere otra unidad o inventario regular, ignora la campaña y sigue flujo normal.
+  * Usa atributos distintivos para perfilar: año, ciudad, precio de referencia, tipo de dinámica.
+  * Ejemplo: Cliente dice "Info de la Cascadia" → "Claro, tenemos una Cascadia 2014 en León con dinámica de Mejor Propuesta, pero también te puedo apoyar con otras opciones. ¿Cuál te interesa?"
 - Cuando el cliente es ambiguo, compórtate como asesor consultivo que perfila, no como cotizador automático que suelta toda la información de golpe.
 
 0.5) INTERPRETACIÓN COMERCIAL — CARGA vs. PASAJEROS (CRÍTICO):
@@ -1832,10 +1841,48 @@ async def handle_message(
     elif tracking_id and not campaign_service:
         logger.warning(f"⚠️ Tracking {tracking_id} detectado pero campaign_service=None")
 
-    if _has_campaign_instructions or _is_special_campaign_no_instructions:
+    # === KEYWORD-BASED CAMPAIGN MATCHING (organic arrivals) ===
+    # If no tracking ID detected, try matching campaigns by keywords in the user message
+    # OR in the detected interest (last_interest). This handles:
+    # - Turn 1: "me interesa la Cascadia" → keyword in message
+    # - Turn 2+: client confirmed interest, last_interest="Cascadia" → keyword in interest
+    _is_organic_campaign_match = False
+    if not tracking_id and campaign_service:
+        try:
+            await campaign_service.ensure_loaded()
+            # Check previously persisted organic campaign match
+            _organic_tid = context.get("organic_campaign_tid")
+            if _organic_tid:
+                _kw_campaign = campaign_service.find_campaign_by_tracking_id(_organic_tid)
+                if _kw_campaign and _kw_campaign.instructions:
+                    _matched_campaign = _kw_campaign
+                    _has_campaign_instructions = True
+                    _is_organic_campaign_match = True
+            # If no persisted match, try keywords in current message + last_interest
+            if not _matched_campaign:
+                search_text = f"{user_message or ''} {last_interest or ''}".strip()
+                if search_text:
+                    _kw_campaign = campaign_service.find_campaign_by_keywords(search_text)
+                    if _kw_campaign and _kw_campaign.instructions:
+                        _matched_campaign = _kw_campaign
+                        _has_campaign_instructions = True
+                        _is_organic_campaign_match = True
+                        # Persist the organic match so it carries across turns
+                        context["organic_campaign_tid"] = _kw_campaign.tracking_id
+                        logger.info(
+                            f"🔑 Campaña matcheada por keywords (orgánico): "
+                            f"{_kw_campaign.tracking_id} ({_kw_campaign.name}) "
+                            f"— texto: {search_text[:80]}"
+                        )
+        except Exception as e:
+            logger.error(f"⚠️ Error en keyword campaign matching: {e}")
+
+    if (_has_campaign_instructions or _is_special_campaign_no_instructions) and not _is_organic_campaign_match:
         # Campaign has specific instructions OR it's a special campaign type (SU/LQ/PR/EV)
         # without instructions — skip general inventory to avoid confusing GPT with
         # unrelated models or standard prices that don't apply to the campaign.
+        # NOTE: For organic keyword matches, we KEEP full inventory because the client
+        # may not want the campaign — they might want a regular unit from inventory.
         focused = _build_focused_inventory_text(inventory_service, last_interest) if last_interest else ""
         inventory_section = f"{focused}\n" if focused else ""
     elif _needs_inventory_context(user_message, turn_count, last_interest, inventory_service):
@@ -1936,6 +1983,33 @@ async def handle_message(
                     f"Si es el primer mensaje, confirma brevemente que le interesa el {tracking_vehicle} "
                     f"antes de dar precio, ubicación y condiciones completas.\n"
                 )
+    elif _is_organic_campaign_match and _matched_campaign:
+        # Cliente llegó orgánicamente pero mencionó un vehículo con campaña activa.
+        # Inyectar contexto de campaña de forma MÁS SUAVE que para tracking ID:
+        # - NO forzar la dinámica de inmediato
+        # - SÍ incluir las instrucciones para que el bot las conozca
+        # - Dejar que la conversación fluya naturalmente
+        campaign_vehicle = _matched_campaign.tracking_id.split("-")[0] if _matched_campaign.tracking_id else ""
+        # Resolve model code to label for display
+        from src.monday_service import MODEL_CODE_MAP
+        campaign_vehicle_label = MODEL_CODE_MAP.get(campaign_vehicle.upper(), campaign_vehicle)
+        tracking_context = (
+            f"CONTEXTO CAMPAÑA (cliente orgánico): Este cliente llegó por su cuenta "
+            f"(NO por un anuncio con tracking ID). Mencionó interés en {campaign_vehicle_label}.\n"
+            f"*** HAY UNA CAMPAÑA ACTIVA para este vehículo: \"{_matched_campaign.name}\" ***\n"
+            f"INSTRUCCIONES DE CAMPAÑA (REFERENCIA — aplícalas solo cuando sea natural en la conversación):\n"
+            f"{_matched_campaign.instructions}\n"
+            f"*** FIN INSTRUCCIONES DE CAMPAÑA ***\n"
+            f"REGLAS PARA CLIENTE ORGÁNICO:\n"
+            f"1. NO asumas que el cliente ya conoce la dinámica/campaña. Pregunta naturalmente.\n"
+            f"2. Si el cliente pregunta precio o disponibilidad del {campaign_vehicle_label}, "
+            f"puedes mencionar que hay una dinámica/promoción especial activa y explicar brevemente.\n"
+            f"3. Deja que la conversación fluya. Si el cliente solo quiere info general, dásela.\n"
+            f"4. Si el cliente muestra interés concreto, ENTONCES guíalo hacia la dinámica de campaña.\n"
+            f"5. Sigue ofreciendo el inventario completo si el cliente pregunta por otros modelos.\n"
+            f"INTERPRETACIÓN DE MONTOS: En contexto de esta campaña con precios en cientos de miles, "
+            f"interpreta cantidades cortas en su equivalente correcto: '700' = $700,000, '650' = $650,000.\n"
+        )
 
     # Build ad context section if referral has externalAdReply info
     ad_context_section = ""
@@ -1969,12 +2043,13 @@ async def handle_message(
                 )
 
     # Campañas activas del Sheet
-    # ONLY inject campaign instructions for clients who arrived via tracking ID.
-    # Never inject generic campaign block for non-campaign clients — it confuses GPT
-    # into applying campaign rules (e.g. "Mejor Propuesta") to unrelated conversations.
+    # Campaign instructions are injected via tracking_context for both:
+    # 1. Tracking ID matches (ad arrivals) — with PRIORITY instructions
+    # 2. Keyword matches (organic arrivals) — with softer DISAMBIGUATION instructions
+    # Never inject generic campaign block for non-campaign clients — it confuses GPT.
     campaigns_section = ""
     if _has_campaign_instructions and _matched_campaign:
-        # Ya inyectada en tracking_context → omitir bloque genérico
+        # Ya inyectada en tracking_context (tracking ID o keyword match) → omitir bloque genérico
         pass
     elif tracking_id and campaign_service:
         # Client has tracking ID but no matched campaign — try generic block
