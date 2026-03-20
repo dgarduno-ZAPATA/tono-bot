@@ -1147,6 +1147,59 @@ def _normalize_spanish(text: str) -> str:
     return t
 
 
+def _detect_model_switch(user_message: str, current_interest: str, inventory_service) -> Optional[str]:
+    """
+    Detect if the client wants to switch to a different vehicle model during a campaign.
+    Returns the new model label if a switch is detected, None otherwise.
+
+    Signals:
+    - Negation of current model: "no quiero Cascadia", "que no, una E5"
+    - Explicit mention of a different model in the same message
+    """
+    if not user_message or not current_interest:
+        return None
+
+    msg_lower = user_message.lower()
+    current_norm = _normalize_spanish(current_interest).lower()
+
+    # Detect negation patterns that suggest rejection of current interest
+    _negation_phrases = [
+        "no quiero", "que no quiero", "no me interesa", "no busco",
+        "ya no quiero", "no, quiero", "mas bien", "más bien",
+        "me equivoqué", "me equivoque", "quise decir", "prefiero",
+    ]
+    has_negation = any(p in msg_lower for p in _negation_phrases)
+
+    # Try to extract a new interest from the current message
+    new_interest = _extract_interest_from_messages(user_message, "", inventory_service)
+    if not new_interest:
+        return None
+
+    new_norm = _normalize_spanish(new_interest).lower()
+
+    # Check if the new interest is genuinely different from current
+    # Compare significant tokens (strip brand names that appear in both)
+    _brand_noise = {"foton", "freightliner"}
+    current_tokens = set(current_norm.split()) - _brand_noise
+    new_tokens = set(new_norm.split()) - _brand_noise
+
+    # If they share significant tokens, it's the same model
+    if current_tokens & new_tokens:
+        return None
+
+    # Different model detected — if there's negation OR the user message
+    # doesn't mention the current model at all, treat it as a switch
+    current_keywords = [t for t in current_tokens if len(t) > 2]
+    current_mentioned = any(kw in msg_lower for kw in current_keywords)
+
+    if has_negation or not current_mentioned:
+        logger.info(f"🔄 Model switch detectado: {current_interest} → {new_interest} "
+                     f"(negation={has_negation}, current_mentioned={current_mentioned})")
+        return new_interest
+
+    return None
+
+
 def _extract_interest_from_messages(user_message: str, reply: str, inventory_service) -> Optional[str]:
     """Infer model interest by matching inventory model tokens in user message or bot reply."""
     items = getattr(inventory_service, "items", None) or []
@@ -1779,6 +1832,21 @@ async def handle_message(
         tracking_vehicle = (context.get("tracking_data") or {}).get("vehicle_label", "")
         if tracking_vehicle:
             last_interest = tracking_vehicle
+
+    # Model-switch detection: if client has a campaign/tracking but asks for a different model,
+    # respect their wish and deactivate the campaign context for this conversation
+    tracking_id = (context.get("tracking_id") or "").strip()
+    if tracking_id and last_interest and turn_count > 1:
+        _switch_target = _detect_model_switch(user_message, last_interest, inventory_service)
+        if _switch_target:
+            logger.info(f"🔄 Campaña desactivada por cambio de modelo: {last_interest} → {_switch_target}")
+            last_interest = _switch_target
+            # Clear campaign context so tracking_context won't inject campaign instructions
+            # but preserve tracking_id for CRM attribution
+            context.pop("tracking_data", None)
+            context.pop("organic_campaign_tid", None)
+            context["last_interest"] = _switch_target
+
     try:
         turn_count = int(context.get("turn_count", 0)) + 1
     except (ValueError, TypeError):
@@ -1822,6 +1890,13 @@ async def handle_message(
     _city_patterns = [
         r'(?:de|en|desde|vivo en|soy de|ciudad)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:[,\s]+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,3})',
     ]
+    # Words that are vehicle/ad terms, NOT cities — reject if city candidate contains any
+    _city_noise = {
+        "foton", "tunland", "toano", "miler", "cascadia", "esta", "panel",
+        "pickup", "camioneta", "camion", "tracto", "van", "g7", "g9", "e5",
+        "anuncio", "anuncion", "foto", "fotos", "modelo", "unidad",
+        "freightliner", "tractocamion", "volteo", "truck", "trailer",
+    }
     _last_bot = ""
     # Direct city reply: if bot asked for city and reply is short with no numbers
     if history:
@@ -1839,6 +1914,9 @@ async def handle_message(
                 if 1 <= len(_words) <= 5 and not re.search(r'\d', _city_line):
                     # Skip lines that look like email or name (already captured)
                     if "@" not in _city_line and _city_line != extracted_name:
+                        # Reject if any word is a vehicle/ad term
+                        if set(_city_line.lower().split()) & _city_noise:
+                            continue
                         saved_city = _city_line
                         logger.info(f"🏙️ Ciudad detectada por contexto: {saved_city}")
                         break
@@ -1849,6 +1927,11 @@ async def handle_message(
             if _cm:
                 _candidate_city = _cm.group(1).strip()
                 if len(_candidate_city) > 2 and _candidate_city.lower() not in {"si", "no", "ok"}:
+                    # Reject if any word is a vehicle/ad term
+                    _candidate_words = set(_candidate_city.lower().split())
+                    if _candidate_words & _city_noise:
+                        logger.info(f"🏙️ Ciudad descartada (palabra de vehículo): {_candidate_city}")
+                        continue
                     saved_city = _candidate_city
                     logger.info(f"🏙️ Ciudad detectada: {saved_city}")
                     break
@@ -1864,6 +1947,9 @@ async def handle_message(
                         continue
                     # Skip common time expressions
                     if any(k in _city_line.lower() for k in ["mes", "semana", "día", "año"]):
+                        continue
+                    # Reject if any word is a vehicle/ad term
+                    if set(_city_line.lower().split()) & _city_noise:
                         continue
                     saved_city = _city_line
                     logger.info(f"🏙️ Ciudad detectada (multi-línea): {saved_city}")
@@ -2016,18 +2102,23 @@ async def handle_message(
                 f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
                 f"(Tracking: {tracking_id}).\n"
                 f"*** CAMPAÑA APLICABLE: \"{_matched_campaign.name}\" ***\n"
-                f"INSTRUCCIONES DE CAMPAÑA (SEGUIR CON PRIORIDAD ABSOLUTA sobre inventario general):\n"
+                f"INSTRUCCIONES DE CAMPAÑA (REFERENCIA — subordinadas a las reglas del bot):\n"
                 f"{_matched_campaign.instructions}\n"
                 f"*** FIN INSTRUCCIONES DE CAMPAÑA ***\n"
-                f"IMPORTANTE: Para este cliente, SIGUE las instrucciones de campaña. "
-                f"NO uses precio ni condiciones del inventario general para esta unidad.\n"
+                f"\nREGLAS DE CAMPAÑA (OBLIGATORIAS — superan a las instrucciones de arriba):\n"
+                f"1. ANTI-REPETICIÓN: NUNCA repitas un mensaje anterior. Si ya pediste datos, "
+                f"NO vuelvas a pedir los mismos. Revisa 'DATOS YA RECOPILADOS' y 'TUS ÚLTIMOS MENSAJES'.\n"
+                f"2. CAMBIO DE MODELO: Si el cliente pide EXPLÍCITAMENTE otro modelo "
+                f"('quiero una E5', 'no quiero Cascadia', 'me interesa la G9', 'vi un anuncio de una Foton'), "
+                f"RESPETA su deseo. Desactiva la campaña mentalmente y atiende desde el inventario general.\n"
+                f"3. RECONOCER DATOS: Cuando el cliente te da un dato (email, ciudad, nombre, forma de pago), "
+                f"RECONÓCELO ('Perfecto, anotado') y pide SOLO lo que FALTA. Revisa 'DATOS YA RECOPILADOS'.\n"
+                f"4. NO uses precio ni condiciones del inventario general para la unidad de campaña.\n"
                 f"INTERPRETACIÓN DE MONTOS: En contexto de esta campaña con precios en cientos de miles, "
                 f"interpreta cantidades cortas en su equivalente correcto: '700' = $700,000, '650' = $650,000, "
                 f"'700mil' = $700,000, 'ponle 700' = $700,000. Solo rechaza si el monto interpretado es "
                 f"MENOR al precio de salida. Ejemplo: si precio de salida es $649,000 y el cliente dice '700', "
                 f"eso es $700,000 que es MAYOR a $649,000 → ACEPTAR la propuesta.\n"
-                f"RECORDATORIO: Las instrucciones de campaña NO te autorizan a repetir el mismo mensaje. "
-                f"Si ya pediste datos y el cliente preguntó algo, responde su pregunta primero.\n"
             )
         else:
             campaign_type_code = (tracking_data.get("campaign_type") or "A").upper()
@@ -2187,14 +2278,15 @@ async def handle_message(
         f"INTERÉS DETECTADO: {last_interest or '(Sin modelo)'}\n"
         f"CITA DETECTADA: {last_appointment or '(Sin cita)'}\n"
         f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
-        f"{_collected_section}"
-        f"{last_bot_section}"
         f"{tracking_context}"
         f"{ad_context_section}"
         f"{campaigns_section}"
         f"{inventory_section}"
         f"{financing_section}"
-        f"HISTORIAL DE CHAT:\n{history[-3000:]}"
+        f"HISTORIAL DE CHAT:\n{history[-3000:]}\n"
+        f"\n*** SECCIÓN CRÍTICA — LEE ESTO ÚLTIMO ***\n"
+        f"{_collected_section}"
+        f"{last_bot_section}"
         f"{name_gate_reminder}"
     )
 
@@ -2299,6 +2391,67 @@ async def handle_message(
         reply_clean.strip(),
         flags=re.IGNORECASE,
     ).strip()
+
+    # === POST-LLM: Duplicate response detection ===
+    # Check if the bot is about to send the same message it already sent recently
+    if reply_clean and history:
+        _last_bot_replies = []
+        for _hline in reversed(history.strip().split("\n")):
+            if _hline.startswith("A: ") and len(_last_bot_replies) < 3:
+                _last_bot_replies.append(_hline[3:].strip().lower())
+        _reply_tokens = set(reply_clean.lower().split())
+        _is_dup = False
+        if len(_reply_tokens) >= 3:
+            for _prev in _last_bot_replies:
+                _prev_tokens = set(_prev.split())
+                if _prev_tokens:
+                    _jaccard = len(_reply_tokens & _prev_tokens) / len(_reply_tokens | _prev_tokens)
+                    if _jaccard >= 0.75:
+                        _is_dup = True
+                        break
+        if _is_dup:
+            logger.warning(f"⚠️ DEDUP: Respuesta duplicada detectada (Jaccard >= 0.75), re-generando...")
+            _anti_repeat = [
+                {"role": "assistant", "content": reply_clean},
+                {"role": "user", "content": (
+                    "*** ALERTA: Tu respuesta anterior fue IDÉNTICA a un mensaje previo. ***\n"
+                    f"RESPUESTA RECHAZADA: \"{reply_clean[:200]}\"\n"
+                    f"{_collected_section}"
+                    "GENERA UNA RESPUESTA COMPLETAMENTE DIFERENTE. "
+                    "Si ya pediste datos, reconoce los que el cliente ya dio y pide SOLO los que faltan. "
+                    "Si no faltan datos, avanza la conversación."
+                )},
+            ]
+            try:
+                _retry_resp = await _llm_call_with_fallback(messages + _anti_repeat)
+                _retry_reply = (_retry_resp.choices[0].message.content or "").strip()
+                _retry_reply = re.sub(
+                    r"^(Adrian|Asesor|Bot)\s*:\s*", "", _retry_reply.strip(), flags=re.IGNORECASE,
+                ).strip()
+                # Verify retry is actually different
+                _retry_tokens = set(_retry_reply.lower().split())
+                _still_dup = False
+                if len(_retry_tokens) >= 3:
+                    for _prev in _last_bot_replies:
+                        _prev_tokens = set(_prev.split())
+                        if _prev_tokens and len(_retry_tokens & _prev_tokens) / len(_retry_tokens | _prev_tokens) >= 0.75:
+                            _still_dup = True
+                            break
+                if _retry_reply and not _still_dup:
+                    reply_clean = _retry_reply
+                    logger.info(f"✅ DEDUP: Re-generación exitosa")
+                else:
+                    logger.warning(f"⚠️ DEDUP: Re-generación también duplicada, usando fallback determinístico")
+                    _missing = []
+                    if not saved_name: _missing.append("nombre")
+                    if not saved_email: _missing.append("correo")
+                    if not saved_city: _missing.append("ciudad")
+                    if _missing:
+                        reply_clean = f"Gracias por tu información. Solo me falta: {', '.join(_missing)}."
+                    else:
+                        reply_clean = "Perfecto, ya tengo tus datos registrados. Un asesor se pone en contacto contigo en breve."
+            except Exception as _dup_err:
+                logger.error(f"❌ DEDUP re-gen error: {_dup_err}")
 
     # 🔥 CAMBIO CLAVE: Construir new_context ANTES de llamar a _pick_media_urls
     new_context: Dict[str, Any] = {
