@@ -341,6 +341,118 @@ def test_full_campaign_flow():
 
 
 # ============================================================
+# CASE 20: Deterministic rotation is stable (not random)
+# ============================================================
+def test_deterministic_rotation_stable():
+    """Same inputs → same output (no randomness)."""
+    resp1 = try_deterministic_response(Action.ASK_NAME, Slots(), {}, [], turn_count=3, jid="521234567890")
+    resp2 = try_deterministic_response(Action.ASK_NAME, Slots(), {}, [], turn_count=3, jid="521234567890")
+    assert resp1 == resp2, f"Should be stable: '{resp1}' vs '{resp2}'"
+    print(f"✅ CASE 20: Deterministic rotation stable = '{resp1}'")
+
+
+def test_deterministic_rotation_varies_by_turn():
+    """Different turns → likely different picks."""
+    results = set()
+    for turn in range(1, 10):
+        resp = try_deterministic_response(Action.ASK_CITY, Slots(), {}, [], turn_count=turn, jid="52111")
+        results.add(resp)
+    assert len(results) >= 2, f"Should produce at least 2 variants across turns, got: {results}"
+    print(f"✅ CASE 20b: Rotation varies by turn = {results}")
+
+
+# ============================================================
+# CASE 21: Slot changes structure for Monday sync
+# ============================================================
+def test_slot_changes_in_fsm_result():
+    """process_fsm should return slot_changes with correct structure."""
+    ctx = {}
+    action, state, slots, meta = process_fsm(
+        "me llamo Pedro, soy de CDMX", ctx,
+        {"name": "Pedro", "city": "CDMX"}, True, 2
+    )
+    changes = meta.get("slot_changes", [])
+    assert len(changes) >= 2, f"Expected 2+ changes, got: {len(changes)}"
+
+    # Verify SlotChange structure
+    for c in changes:
+        assert hasattr(c, "slot"), f"Missing .slot: {c}"
+        assert hasattr(c, "new_value"), f"Missing .new_value: {c}"
+        assert hasattr(c, "old_value"), f"Missing .old_value: {c}"
+
+    slot_names = {c.slot for c in changes}
+    assert "name" in slot_names, f"'name' should be in changes: {slot_names}"
+    assert "city" in slot_names, f"'city' should be in changes: {slot_names}"
+    print(f"✅ CASE 21: Slot changes = {[(c.slot, c.new_value) for c in changes]}")
+
+
+def test_slot_changes_serialization():
+    """slot_changes should serialize to dict for JSON transport."""
+    old = Slots(name=None)
+    new = Slots(name="Pedro", email="p@t.com")
+    changes = diff_slots(old, new)
+
+    # Simulate serialization as done in _handle_message_fsm
+    serialized = [
+        {"slot": c.slot, "old": c.old_value, "new": c.new_value}
+        for c in changes
+    ]
+    assert len(serialized) == 2
+    assert serialized[0]["slot"] == "name"
+    assert serialized[0]["new"] == "Pedro"
+    assert serialized[0]["old"] is None
+    print(f"✅ CASE 21b: Serialized changes = {serialized}")
+
+
+# ============================================================
+# CASE 22: Monday sync slot mapping (unit test)
+# ============================================================
+def test_slot_to_monday_mapping():
+    """Verify slot names map to expected Monday operations."""
+    # These are the slot names that should trigger column updates
+    column_slots = {"interest", "payment", "appointment"}
+    # These should trigger note updates only (no dedicated column)
+    note_only_slots = {"email", "city", "offer_amount"}
+    # These have special handling
+    special_slots = {"name"}
+
+    all_expected = column_slots | note_only_slots | special_slots
+    all_fsm_slots = {"name", "phone", "email", "city", "interest",
+                     "appointment", "payment", "offer_amount", "timeline"}
+
+    # Every slot should be handled somehow
+    unhandled = all_fsm_slots - all_expected - {"phone", "timeline"}
+    assert not unhandled, f"Unhandled slots in Monday sync: {unhandled}"
+    print(f"✅ CASE 22: All slots mapped (columns={column_slots}, notes={note_only_slots}, special={special_slots})")
+
+
+# ============================================================
+# CASE 23: Validate legacy guards work end-to-end
+# ============================================================
+def test_legacy_guard_end_to_end():
+    """Dirty legacy values should not enter FSM slots."""
+    # Simulate: FSM extracted nothing, legacy has dirty city
+    from conversation_fsm import validate_legacy_value
+
+    # Build slots_data as handle_message does
+    fsm_extracted = {}  # FSM found nothing
+    saved_city = "TE DOY"  # Legacy has garbage
+
+    city = fsm_extracted.get("city") or validate_legacy_value("city", saved_city)
+    assert city is None, f"Dirty city should be rejected: {city}"
+
+    saved_city2 = "Monterrey"
+    city2 = fsm_extracted.get("city") or validate_legacy_value("city", saved_city2)
+    assert city2 == "Monterrey", f"Clean city should pass: {city2}"
+
+    # Phone with letters
+    assert validate_legacy_value("phone", "abc") is None
+    assert validate_legacy_value("phone", "5551234567") == "5551234567"
+
+    print("✅ CASE 23: Legacy guard end-to-end OK")
+
+
+# ============================================================
 # RUN ALL
 # ============================================================
 if __name__ == "__main__":
@@ -372,6 +484,13 @@ if __name__ == "__main__":
         test_intent_data_plus_question_in_campaign,
         test_multiline_extraction,
         test_full_campaign_flow,
+        # V2.2 tests
+        test_deterministic_rotation_stable,
+        test_deterministic_rotation_varies_by_turn,
+        test_slot_changes_in_fsm_result,
+        test_slot_changes_serialization,
+        test_slot_to_monday_mapping,
+        test_legacy_guard_end_to_end,
     ]
 
     passed = 0

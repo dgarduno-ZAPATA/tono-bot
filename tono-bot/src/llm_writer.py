@@ -8,8 +8,8 @@ V2: Adds deterministic templates for repetitive actions (ASK_NAME, ASK_EMAIL,
     ASK_CITY, ASK_TIMELINE, WAIT_MODE, ESCALATE) — these skip the LLM entirely.
 """
 
+import hashlib
 import logging
-import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from conversation_fsm import Action, Slots
@@ -279,12 +279,15 @@ def try_deterministic_response(
     slots: Slots,
     meta: Optional[Dict[str, Any]] = None,
     last_bot_messages: Optional[List[str]] = None,
+    turn_count: int = 0,
+    jid: str = "",
 ) -> Optional[str]:
     """
     Try to generate a deterministic response (no LLM needed).
     Returns the response text, or None if the action needs LLM.
 
-    Uses template rotation and avoids repeating the last bot message.
+    Uses stable hash-based rotation (not random) for reproducibility.
+    Avoids repeating the last bot message.
     """
     meta = meta or {}
     last_msgs = [m.lower() for m in (last_bot_messages or [])]
@@ -294,7 +297,7 @@ def try_deterministic_response(
         next_slot = meta.get("next_slot", "")
         slot_label = _SLOT_LABELS.get(next_slot, next_slot)
         candidates = [t.replace("{slot_label}", slot_label) for t in _ACK_TEMPLATES]
-        return _pick_non_repeat(candidates, last_msgs)
+        return _pick_non_repeat(candidates, last_msgs, action.value, turn_count, jid)
 
     # CONFIRM_REGISTRATION: deterministic
     if action == Action.CONFIRM_REGISTRATION:
@@ -303,18 +306,35 @@ def try_deterministic_response(
     # Simple deterministic actions
     templates = _DETERMINISTIC_TEMPLATES.get(action)
     if templates:
-        return _pick_non_repeat(templates, last_msgs)
+        return _pick_non_repeat(templates, last_msgs, action.value, turn_count, jid)
 
     return None
 
 
-def _pick_non_repeat(candidates: List[str], last_msgs: List[str]) -> str:
-    """Pick a template that doesn't repeat the last bot message."""
-    # Shuffle to avoid always picking the same one
-    shuffled = list(candidates)
-    random.shuffle(shuffled)
-    for candidate in shuffled:
-        if candidate.lower() not in last_msgs:
-            return candidate
-    # All repeated — return first anyway
-    return candidates[0]
+def _pick_non_repeat(
+    candidates: List[str],
+    last_msgs: List[str],
+    action_name: str = "",
+    turn_count: int = 0,
+    jid: str = "",
+) -> str:
+    """
+    Pick a template using stable hash-based rotation.
+    Deterministic: same (action, turn, jid) → same pick.
+    Falls back to next candidate if the pick was already said.
+    """
+    if not candidates:
+        return ""
+
+    # Stable index from hash of (action + turn + jid)
+    seed = f"{action_name}:{turn_count}:{jid}"
+    idx = int(hashlib.md5(seed.encode()).hexdigest(), 16) % len(candidates)
+
+    # Try starting from hashed index, skip if it was the last message
+    for offset in range(len(candidates)):
+        pick = candidates[(idx + offset) % len(candidates)]
+        if pick.lower() not in last_msgs:
+            return pick
+
+    # All repeated — return the hashed pick anyway
+    return candidates[idx]

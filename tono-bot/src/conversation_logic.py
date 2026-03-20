@@ -1865,6 +1865,7 @@ async def _handle_message_fsm(
         slots=slots,
         meta=meta,
         last_bot_messages=last_bot_messages,
+        turn_count=turn_count,
     )
     used_deterministic = reply_clean is not None
 
