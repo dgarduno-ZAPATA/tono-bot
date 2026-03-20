@@ -18,6 +18,10 @@ USER appuser
 
 # 5. Python config
 ENV PYTHONPATH=/app
+# Explicitly set WEB_CONCURRENCY=1 — the app uses in-memory state (pending_messages,
+# dedup sets, per-JID locks) that would break with multiple workers.
+# This prevents Render from auto-setting a higher value.
+ENV WEB_CONCURRENCY=1
 
 EXPOSE 8080
 
@@ -26,4 +30,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
 # 7. Arranque
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
