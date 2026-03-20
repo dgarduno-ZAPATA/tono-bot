@@ -601,7 +601,7 @@ def _extract_offer(text: str, history: str = "") -> Optional[str]:
         return None
 
     m = re.search(
-        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|propuesta|oferta|monto)\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)?'
+        r'(?:(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|(?:quiero|puedo|voy\s+a)\s+dar|propuesta|oferta|monto)\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)?)'
         r'|\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)\b',
         msg, re.IGNORECASE
     )
@@ -621,8 +621,8 @@ def _extract_offer(text: str, history: str = "") -> Optional[str]:
     offer_asking = ["propuesta", "oferta", "monto", "cuánto sería", "cuanto sería"]
     bot_asked_offer = any(k in last_bot for k in offer_asking)
     if bot_asked_offer:
-        contextual_amount = re.fullmatch(
-            r'(?:que\s+)?(?:(?:son|es)\s+)?\$?\s*(\d[\d,\.\s]{0,9})\s*(?:pesos?)?\s*',
+        contextual_amount = re.search(
+            r'(?:^|(?:que\s+)?(?:(?:son|es|sería[n]?)\s+)?)\$?\s*(\d[\d,\.\s]{0,9})\s*(?:pesos?)?',
             msg,
             re.IGNORECASE,
         )
