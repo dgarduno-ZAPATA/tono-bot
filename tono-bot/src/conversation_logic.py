@@ -1698,10 +1698,13 @@ def _pick_media_urls(
     if not urls:
         return []
 
-    # Lock in this unit's ubicacion so subsequent ask_location uses the same item
-    if item_ubic and not context.get("interest_ubicacion"):
+    # Lock in this unit's ubicacion so subsequent ask_location uses the same item.
+    # Only set if not already pinned by an explicit user mention (explicit_user wins).
+    _current_src = context.get("interest_ubicacion_source")
+    if item_ubic and _current_src != "explicit_user":
         context["interest_ubicacion"] = item_ubic
-        logger.info(f"📸 interest_ubicacion fijado desde fotos: '{item_ubic}'")
+        context["interest_ubicacion_source"] = "photo_lock"
+        logger.info(f"📸 interest_ubicacion fijado desde fotos (photo_lock): '{item_ubic}'")
 
     # 6) Si cambió de modelo, reiniciar índice
     if _normalize_spanish(target_model_name) != _normalize_spanish(current_photo_model):
@@ -1988,12 +1991,20 @@ async def _handle_message_fsm(
     has_campaign = bool(campaign and campaign.instructions)
     campaign_type = (context.get("tracking_data") or {}).get("campaign_type", "A")
 
-    # Detect vehicle ubicacion from user message (e.g. "Cascadia de León")
+    # Detect vehicle ubicacion from user message (e.g. "Cascadia de León" or "no, la de Querétaro")
+    # Explicit user mention ALWAYS overrides any previous inference (photo_lock, user_city_hint)
     _interest = slots_data.get("interest") or context.get("last_interest", "")
     _vehicle_ubic = _detect_vehicle_ubicacion(user_message, inventory_service, _interest)
     if _vehicle_ubic:
+        _prev_ubic = context.get("interest_ubicacion")
         context["interest_ubicacion"] = _vehicle_ubic
-        logger.info(f"📍 Vehicle ubicacion stored: {_vehicle_ubic}")
+        context["interest_ubicacion_source"] = "explicit_user"
+        logger.info(f"📍 Vehicle ubicacion stored (explicit_user): {_vehicle_ubic}")
+        # If the unit changed, reset photo carousel so next photos start from the new unit
+        if _prev_ubic and _normalize_spanish(_prev_ubic) != _normalize_spanish(_vehicle_ubic):
+            context["photo_index"] = 0
+            context["photo_model"] = ""
+            logger.info(f"📸 Photo carousel reset: unit changed from '{_prev_ubic}' → '{_vehicle_ubic}'")
 
     # Run FSM
     action, new_state, slots, meta = process_fsm(
@@ -2988,13 +2999,20 @@ async def handle_message(
         "tracking_data": context.get("tracking_data"),
         # Vehicle ubicacion: which specific unit is of interest (for photo/location filtering)
         "interest_ubicacion": context.get("interest_ubicacion"),
+        "interest_ubicacion_source": context.get("interest_ubicacion_source"),
     }
 
-    # Detect vehicle ubicacion in legacy path too
+    # Detect vehicle ubicacion in legacy path too — explicit user mention always wins
     _vehicle_ubic = _detect_vehicle_ubicacion(user_message, inventory_service, last_interest)
     if _vehicle_ubic:
+        _prev_ubic_legacy = new_context.get("interest_ubicacion")
         new_context["interest_ubicacion"] = _vehicle_ubic
-        logger.info(f"📍 Vehicle ubicacion stored (legacy): {_vehicle_ubic}")
+        new_context["interest_ubicacion_source"] = "explicit_user"
+        logger.info(f"📍 Vehicle ubicacion stored (legacy, explicit_user): {_vehicle_ubic}")
+        if _prev_ubic_legacy and _normalize_spanish(_prev_ubic_legacy) != _normalize_spanish(_vehicle_ubic):
+            new_context["photo_index"] = 0
+            new_context["photo_model"] = ""
+            logger.info(f"📸 Photo carousel reset (legacy): unit changed '{_prev_ubic_legacy}' → '{_vehicle_ubic}'")
 
     # Pasamos new_context (la función lo modificará)
     media_urls = _pick_media_urls(user_message, reply_clean, inventory_service, new_context)
