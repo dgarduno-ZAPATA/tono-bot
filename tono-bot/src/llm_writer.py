@@ -92,8 +92,8 @@ _ACTION_PROMPTS: Dict[Action, str] = {
     ),
 
     Action.ANSWER_QUESTION: (
-        "ACCIÓN: Responde la pregunta del cliente usando el contexto disponible.\n"
-        "Usa el INVENTARIO si es relevante. Sé conciso (máximo 2 oraciones).\n"
+        "ACCIÓN: Responde DIRECTAMENTE la pregunta que hizo el cliente. No cambies de tema ni pidas datos hasta haber respondido.\n"
+        "Usa el INVENTARIO o INSTRUCCIONES DE CAMPAÑA si son relevantes. Sé conciso (máximo 2 oraciones).\n"
         "Si hay varias unidades del mismo modelo en diferentes ubicaciones, pregunta al cliente cuál le interesa.\n"
         "Si el cliente pregunta por ubicación, usa la ubicación de la unidad específica del inventario.\n"
         "Si no sabes algo: 'Eso lo confirmo y te aviso.'"
@@ -239,6 +239,16 @@ def build_writer_prompt(
             "Si la duda persiste, ofrece conectarlo con un asesor humano."
         )
 
+    # Sandwich: answer side question AND ask for next missing slot in one message
+    if meta.get("sandwich_next") and not meta.get("is_trust_concern"):
+        next_label = _SLOT_LABELS.get(meta["sandwich_next"], meta["sandwich_next"])
+        parts.append(
+            "\nIMPORTANTE — RESPUESTA + CONTINUACIÓN:\n"
+            f"Responde la pregunta del cliente PRIMERO (máx. 1 oración). "
+            f"Luego, en la MISMA respuesta, pide su {next_label} de forma natural.\n"
+            f"Ejemplo: 'Puedes visitarla de lunes a viernes de 9 a 6. ¿Me compartes tu {next_label}?'"
+        )
+
     # When an offer was just provided, add validation guidance
     if acknowledged_data.get("offer_amount") and campaign_instructions:
         parts.append(
@@ -361,8 +371,9 @@ def try_deterministic_response(
     if action == Action.ACKNOWLEDGE_AND_ASK_NEXT:
         ack_data = meta.get("acknowledged_data") or {}
         # If offer_amount was just provided, let LLM handle it so it can
-        # validate against starting price and respond contextually
-        if ack_data.get("offer_amount"):
+        # validate against starting price and respond contextually.
+        # If appointment was just provided, let LLM acknowledge it warmly.
+        if ack_data.get("offer_amount") or ack_data.get("appointment"):
             return None
         next_slot = meta.get("next_slot", "")
         slot_label = _SLOT_LABELS.get(next_slot, next_slot)
@@ -374,7 +385,7 @@ def try_deterministic_response(
 
     # CONFIRM_REGISTRATION: deterministic
     if action == Action.CONFIRM_REGISTRATION:
-        return "Perfecto, ya tengo tus datos registrados. Un asesor se pone en contacto contigo en breve."
+        return "Perfecto, ya tengo tus datos registrados. Un asesor se pondrá en contacto contigo en breve. ¿Tienes alguna duda sobre la dinámica o la unidad?"
 
     # Simple deterministic actions
     templates = _DETERMINISTIC_TEMPLATES.get(action)
