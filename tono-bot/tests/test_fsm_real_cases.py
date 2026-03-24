@@ -830,6 +830,89 @@ def test_primero_quiero_ir_not_timeline():
 
 
 # ============================================================
+# V2.6 TESTS — Ángel conversation regression fixes
+# ============================================================
+
+def test_appointment_in_new_data_triggers_provide_data():
+    """
+    When new_data contains 'appointment', classify_intent must return PROVIDE_DATA
+    (not ASK_QUESTION) so the cita gets acknowledged via ACKNOWLEDGE_AND_ASK_NEXT.
+    """
+    slots = Slots(name="Ángel Juárez", email="angeljd25@gmail.com")
+    new_data = {"appointment": "Mañana 12:00 PM"}
+    intent = classify_intent(
+        message="Puedo ir mañana a medio día",
+        slots=slots,
+        new_data=new_data,
+        current_state=ConversationState.CAMPAIGN_ENTRY,
+        has_campaign=True,
+    )
+    assert intent == Intent.PROVIDE_DATA, f"Expected PROVIDE_DATA, got {intent}"
+    print("✅ ÁNGEL FIX 1: appointment in new_data → Intent.PROVIDE_DATA")
+
+
+def test_collecting_data_ask_appointment_no_name_sandwich():
+    """
+    In COLLECTING_DATA state, ASK_APPOINTMENT intent with no name must return
+    ANSWER_QUESTION (sandwich) instead of ASK_NAME so the question is answered first.
+    """
+    action, new_state, _slots, meta = process_fsm(
+        user_message="¿Cuándo puedo ir a verla?",
+        context={"fsm_state": "collecting_data", "last_interest": "Cascadia"},
+        new_data={},
+        has_campaign=False,
+        turn_count=3,
+    )
+    assert action == Action.ANSWER_QUESTION, f"Expected ANSWER_QUESTION, got {action}"
+    assert meta.get("sandwich_next") == "name", f"Expected sandwich_next='name', got {meta.get('sandwich_next')!r}"
+    print("✅ ÁNGEL FIX 2: COLLECTING_DATA + ASK_APPOINTMENT + no name → ANSWER_QUESTION with sandwich_next='name'")
+
+
+def test_campaign_entry_ask_appointment_sandwich_next():
+    """
+    In CAMPAIGN_ENTRY state, ASK_APPOINTMENT intent must return ANSWER_QUESTION
+    with sandwich_next set to the first missing campaign slot (e.g. 'name').
+    """
+    context = {
+        "fsm_state": "campaign_entry",
+        "tracking_data": {"campaign_type": "SU"},
+    }
+    action, new_state, slots, meta = process_fsm(
+        user_message="¿Cuándo puedo ir?",
+        context=context,
+        new_data={},
+        has_campaign=True,
+        turn_count=2,
+        campaign_type="SU",
+    )
+    assert action == Action.ANSWER_QUESTION, f"Expected ANSWER_QUESTION, got {action}"
+    assert meta.get("sandwich_next") is not None, "Expected sandwich_next to be set"
+    assert meta.get("is_side_question") is True, "Expected is_side_question=True"
+    print(f"✅ ÁNGEL FIX 3: CAMPAIGN_ENTRY + ASK_APPOINTMENT → ANSWER_QUESTION with sandwich_next={meta['sandwich_next']!r}")
+
+
+def test_deterministic_forces_llm_for_appointment_ack():
+    """
+    try_deterministic_response for ACKNOWLEDGE_AND_ASK_NEXT must return None
+    when 'appointment' is in acknowledged_data so LLM can write a warm acknowledgment.
+    """
+    slots = Slots(name="Ángel Juárez", email="angeljd25@gmail.com", appointment="Mañana 12:00 PM")
+    meta = {
+        "acknowledged_data": {"appointment": "Mañana 12:00 PM"},
+        "next_slot": "city",
+    }
+    result = try_deterministic_response(
+        action=Action.ACKNOWLEDGE_AND_ASK_NEXT,
+        slots=slots,
+        meta=meta,
+        last_bot_messages=[],
+        turn_count=4,
+    )
+    assert result is None, f"Expected None (force LLM), got {result!r}"
+    print("✅ ÁNGEL FIX 4: ACKNOWLEDGE_AND_ASK_NEXT with appointment ack → None (forces LLM)")
+
+
+# ============================================================
 # RUN ALL
 # ============================================================
 if __name__ == "__main__":
@@ -892,6 +975,11 @@ if __name__ == "__main__":
         test_ya_te_lo_pase_not_name,
         test_puja_question_not_city_or_timeline,
         test_primero_quiero_ir_not_timeline,
+        # V2.6 tests — Ángel conversation regression fixes
+        test_appointment_in_new_data_triggers_provide_data,
+        test_collecting_data_ask_appointment_no_name_sandwich,
+        test_campaign_entry_ask_appointment_sandwich_next,
+        test_deterministic_forces_llm_for_appointment_ack,
     ]
 
     passed = 0

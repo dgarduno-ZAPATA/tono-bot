@@ -750,7 +750,7 @@ def classify_intent(
         return Intent.WAIT
 
     # Check if providing data (in response to a previous ask)
-    if new_data and any(new_data.get(k) for k in ("name", "email", "city", "phone", "offer_amount", "timeline")):
+    if new_data and any(new_data.get(k) for k in ("name", "email", "city", "phone", "offer_amount", "timeline", "appointment")):
         has_question = "?" in msg
         if not has_question:
             return Intent.PROVIDE_DATA
@@ -889,6 +889,12 @@ def decide_action(
         if intent in (Intent.ASK_QUESTION, Intent.ASK_PRICE, Intent.ASK_FINANCING,
                        Intent.ASK_LOCATION, Intent.ASK_APPOINTMENT, Intent.TRUST_CONCERN):
             meta_extra: Dict[str, Any] = {"is_trust_concern": True} if intent == Intent.TRUST_CONCERN else {}
+            # Sandwich: after answering, naturally ask for next missing slot
+            # (except trust concerns — give the client space to settle doubts first)
+            if intent != Intent.TRUST_CONCERN:
+                _missing = _get_campaign_missing(slots, campaign_type)
+                if _missing:
+                    meta_extra["sandwich_next"] = _missing[0]
             return _ret(Action.ANSWER_QUESTION, ConversationState.CAMPAIGN_ENTRY,
                         {"is_side_question": True, **meta_extra})
 
@@ -951,7 +957,11 @@ def decide_action(
             if slots.name:
                 return _ret(Action.ASK_APPOINTMENT, ConversationState.APPOINTMENT_SCHEDULING)
             else:
-                return _ret(Action.ASK_NAME, ConversationState.COLLECTING_DATA, {"reason": "need_name_for_appointment"})
+                # Answer the appointment question FIRST, then ask for name (sandwich pattern)
+                return _ret(Action.ANSWER_QUESTION, ConversationState.COLLECTING_DATA, {
+                    "is_side_question": True,
+                    "sandwich_next": "name",
+                })
 
         if not slots.missing_for_lead():
             return _ret(Action.CONFIRM_LEAD, ConversationState.QUALIFIED)
