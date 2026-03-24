@@ -2017,6 +2017,7 @@ async def _handle_message_fsm(
         has_campaign=has_campaign,
         turn_count=turn_count,
         campaign_type=campaign_type,
+        form_url=campaign.form_url if campaign else "",
     )
 
     # Build last bot messages for anti-repetition
@@ -2103,6 +2104,13 @@ async def _handle_message_fsm(
                 reply_clean = re.sub(r'^(?:Adrian|Asesor|Bot)\s*:\s*', '', reply_clean, flags=re.IGNORECASE).strip()
             except Exception:
                 pass  # Keep first attempt
+
+    # Post-LLM: ensure form URL is always present when required
+    _form_url = meta.get("form_url", "")
+    if _form_url and reply_clean and _form_url not in reply_clean:
+        if action in (Action.PRESENT_CAMPAIGN, Action.ANSWER_QUESTION):
+            reply_clean = reply_clean + f"\nPara registrar tu propuesta: {_form_url}"
+            logger.info(f"📋 Form URL appended to {action.value} response")
 
     # Update history
     new_history = (history + f"\nC: {user_message}\nA: {reply_clean}").strip()

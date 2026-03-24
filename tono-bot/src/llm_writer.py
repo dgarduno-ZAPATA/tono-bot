@@ -148,6 +148,13 @@ _ACTION_PROMPTS: Dict[Action, str] = {
         "Nuevo interés: {new_interest}\n"
         "Responde: 'Claro, con gusto te ayudo con la {new_interest}.' y da info del inventario."
     ),
+
+    Action.SEND_FORM: (
+        "ACCIÓN: Dirige al cliente al formulario de registro para dejar su propuesta.\n"
+        "Link del formulario: {form_url}\n"
+        "Sé breve y natural: 'Para registrar tu propuesta, completa el formulario aquí: {form_url}'\n"
+        "No pidas datos por chat."
+    ),
 }
 
 # Slot name → human-readable label
@@ -197,7 +204,7 @@ def build_writer_prompt(
     # Campaign instructions (if relevant)
     if campaign_instructions and action in (
         Action.PRESENT_CAMPAIGN, Action.ACKNOWLEDGE_AND_ASK_NEXT,
-        Action.CONFIRM_REGISTRATION, Action.ANSWER_QUESTION,
+        Action.CONFIRM_REGISTRATION, Action.ANSWER_QUESTION, Action.SEND_FORM,
     ):
         parts.append(f"INSTRUCCIONES DE CAMPAÑA:\n{campaign_instructions}")
         parts.append("")
@@ -223,6 +230,7 @@ def build_writer_prompt(
     action_prompt = action_prompt.replace("{acknowledged_data}", ack_str)
     action_prompt = action_prompt.replace("{slots_summary}", slots.filled_summary())
     action_prompt = action_prompt.replace("{new_interest}", meta.get("new_interest", ""))
+    action_prompt = action_prompt.replace("{form_url}", meta.get("form_url", ""))
 
     parts.append(action_prompt)
 
@@ -237,6 +245,23 @@ def build_writer_prompt(
             "- Opera de forma transparente: precio visible, proceso claro, sin intermediarios.\n"
             "NO sigas pidiendo datos hasta que el cliente muestre apertura.\n"
             "Si la duda persiste, ofrece conectarlo con un asesor humano."
+        )
+
+    # Form-based campaign: when action is PRESENT_CAMPAIGN, include the form link
+    if meta.get("form_url") and action == Action.PRESENT_CAMPAIGN:
+        parts.append(
+            f"\nOBLIGATORIO — LINK DE REGISTRO (incluir siempre):\n"
+            f"Esta campaña registra propuestas vía formulario externo. "
+            f"Presenta la dinámica brevemente (1 oración) y cierra TU MENSAJE con esta línea exacta:\n"
+            f"Para registrar tu propuesta: {meta['form_url']}\n"
+            f"NO hagas preguntas de seguimiento. El link es todo lo que necesitan."
+        )
+
+    # Form-based campaign: when answering a side question, remind client of form at the end
+    if meta.get("form_url") and action == Action.ANSWER_QUESTION and meta.get("is_side_question"):
+        parts.append(
+            f"\nOBLIGATORIO — INCLUYE ESTA LÍNEA AL FINAL DE TU RESPUESTA (textual):\n"
+            f"Para registrar tu propuesta: {meta['form_url']}"
         )
 
     # Sandwich: answer side question AND ask for next missing slot in one message
@@ -382,6 +407,13 @@ def try_deterministic_response(
         if _is_duplicate_response(response, last_msgs):
             return None  # All ACK variants are duplicates → let LLM generate fresh
         return response
+
+    # SEND_FORM: deterministic — always include the actual URL
+    if action == Action.SEND_FORM:
+        form_url = (meta or {}).get("form_url", "")
+        if form_url:
+            return f"Para registrar tu propuesta, completa el formulario aquí: {form_url}"
+        return None  # No URL available — fall back to LLM
 
     # CONFIRM_REGISTRATION: deterministic
     if action == Action.CONFIRM_REGISTRATION:
