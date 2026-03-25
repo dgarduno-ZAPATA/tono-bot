@@ -9,9 +9,12 @@ import time
 import re
 import base64
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from urllib.parse import quote
 from collections import deque, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
+
+import pytz
 
 import httpx
 from fastapi import FastAPI, Request
@@ -48,8 +51,9 @@ class Settings(BaseSettings):
     CAMPAIGNS_REFRESH_SECONDS: int = 300
     INVENTORY_REFRESH_SECONDS: int = 300
 
-    # Logging del payload (evita logs gigantes)
-    LOG_WEBHOOK_PAYLOAD: bool = True
+    # Logging del payload — desactivado por defecto en producción para proteger PII.
+    # Activa con LOG_WEBHOOK_PAYLOAD=true solo en desarrollo/debugging.
+    LOG_WEBHOOK_PAYLOAD: bool = False
     LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
 
     # Handoff
@@ -219,6 +223,13 @@ async def lifespan(app: FastAPI):
         await _store.init()
         bot_state.store = _store
         logger.info("✅ MemoryStore inicializado.")
+        # Purge expired sessions at startup (non-blocking, best-effort)
+        try:
+            _purged = await _store.purge_expired()
+            if _purged > 0:
+                logger.info(f"🗑️ Startup purge: {_purged} sesiones expiradas eliminadas.")
+        except Exception as _pe:
+            logger.warning(f"⚠️ Startup purge falló (no crítico): {_pe}")
     except Exception as e:
         bot_state.store = None
         logger.error(f"⚠️ Error iniciando MemoryStore: {e}")
@@ -515,18 +526,42 @@ async def _ensure_inventory_loaded(bot_state: GlobalState) -> None:
 def _safe_log_payload(prefix: str, obj: Any) -> None:
     """
     Log controlado CON SANITIZACIÓN.
+
+    Redacta:
+    - API keys, passwords, tokens (credenciales)
+    - Números de teléfono / remoteJid (PII)
+    - Contenido de mensajes del cliente (PII)
+    - CTWA / referral IDs y conversion data (PII de atribución)
     """
     if not settings.LOG_WEBHOOK_PAYLOAD:
         return
     try:
         raw = json.dumps(obj, ensure_ascii=False)
-        
-        # 🔒 SANITIZAR información sensible
+
+        # 🔒 Credenciales
         raw = raw.replace(settings.EVOLUTION_API_KEY, "***REDACTED***")
         raw = re.sub(r'"apikey":\s*"[^"]*"', '"apikey": "***"', raw)
         raw = re.sub(r'"password":\s*"[^"]*"', '"password": "***"', raw)
         raw = re.sub(r'"token":\s*"[^"]*"', '"token": "***"', raw)
-        
+
+        # 🔒 PII — teléfonos / JIDs
+        raw = re.sub(r'"remoteJid":\s*"[^"]*"', '"remoteJid": "***"', raw)
+        raw = re.sub(r'"participant":\s*"[^"]*@[^"]*"', '"participant": "***"', raw)
+        raw = re.sub(r'"owner":\s*"[^"]*@[^"]*"', '"owner": "***"', raw)
+        raw = re.sub(r'"sender":\s*"[^"]*"', '"sender": "***"', raw)
+        raw = re.sub(r'"phoneNumber":\s*"[^"]*"', '"phoneNumber": "***"', raw)
+
+        # 🔒 PII — contenido de mensajes
+        raw = re.sub(r'"conversation":\s*"[^"]*"', '"conversation": "***"', raw)
+        raw = re.sub(r'"caption":\s*"[^"]*"', '"caption": "***"', raw)
+        raw = re.sub(r'"text":\s*\{[^}]*\}', '"text": "***"', raw)
+
+        # 🔒 PII — datos de atribución/referral
+        raw = re.sub(r'"ctwa_clid":\s*"[^"]*"', '"ctwa_clid": "***"', raw)
+        raw = re.sub(r'"source_id":\s*"[^"]*"', '"source_id": "***"', raw)
+        raw = re.sub(r'"conversionData":\s*"[^"]*"', '"conversionData": "***"', raw)
+        raw = re.sub(r'"conversionSource":\s*"[^"]*"', '"conversionSource": "***"', raw)
+
         if len(raw) > settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS:
             raw = raw[: settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS] + " ...[TRUNCATED]"
         logger.info(f"{prefix}{raw}")
@@ -686,6 +721,17 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                     clean_client = remote_jid.split("@")[0]
                     alerta = f"*HANDOFF ACTIVADO*\n\nEl chat con wa.me/{clean_client} ha sido pausado."
                     await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
+                # Also notify the team (permanent silence — no reactivation time)
+                team = _parse_team_numbers()
+                clean_client = _clean_phone_or_jid(remote_jid)
+                for _tn in team:
+                    try:
+                        await send_evolution_message(
+                            bot_state, _tn,
+                            f"🤝 *HANDOFF MANUAL (/silencio)*\n\nChat: wa.me/{clean_client}\nBot desactivado indefinidamente.\nUsa /activar en el chat para reactivarlo."
+                        )
+                    except Exception:
+                        pass
                 return
 
             if combined_message.lower() == "/activar":
@@ -1616,6 +1662,48 @@ async def notify_owner(bot_state: GlobalState, user_number_or_jid: str, user_mes
     await send_evolution_message(bot_state, settings.OWNER_PHONE, alert_text)
 
 
+# === 9.5 NOTIFICACIÓN DE HANDOFF AL EQUIPO ===
+def _parse_team_numbers() -> List[str]:
+    """Return list of clean phone numbers from TEAM_NUMBERS setting."""
+    raw = (settings.TEAM_NUMBERS or "").strip()
+    if not raw:
+        return []
+    return [n.strip() for n in raw.split(",") if n.strip()]
+
+
+async def _notify_handoff_to_team(bot_state: GlobalState, client_jid: str) -> None:
+    """Send a handoff alert to every number in TEAM_NUMBERS.
+
+    Called when a human agent message is detected on the business WhatsApp,
+    so the team knows the bot is silenced and which chat needs attention.
+    """
+    team = _parse_team_numbers()
+    if not team:
+        return
+
+    clean_client = _clean_phone_or_jid(client_jid)
+    reactivate_min = settings.AUTO_REACTIVATE_MINUTES
+
+    tz = pytz.timezone("America/Mexico_City")
+    reactivate_at = datetime.now(tz) + timedelta(minutes=reactivate_min)
+    reactivate_str = reactivate_at.strftime("%H:%M")
+
+    alert = (
+        "🤝 *ASESOR TOMÓ CONTROL*\n\n"
+        f"Chat: wa.me/{clean_client}\n"
+        f"Bot silenciado por {reactivate_min} min.\n"
+        f"Reactivación automática: {reactivate_str} (CDMX)\n\n"
+        "_(El bot no responderá en ese chat hasta entonces)_"
+    )
+
+    for number in team:
+        try:
+            await send_evolution_message(bot_state, number, alert)
+            logger.info(f"📣 Handoff notificado a {number} (chat={clean_client})")
+        except Exception as e:
+            logger.warning(f"⚠️ No se pudo notificar handoff a {number}: {e}")
+
+
 # === 10. PROCESADOR CENTRAL ===
 async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
     key = data.get("key", {}) or {}
@@ -1681,6 +1769,8 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         # 3. Si NO es del bot Y NO es automático → Es un HUMANO → SILENCIAR
         logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} - silenciando bot por {settings.AUTO_REACTIVATE_MINUTES} min")
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
+        # Notify the support team so they know the bot is silent and the chat needs attention
+        asyncio.create_task(_notify_handoff_to_team(bot_state, remote_jid))
         return
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO, AUDIO O IMAGEN) ===

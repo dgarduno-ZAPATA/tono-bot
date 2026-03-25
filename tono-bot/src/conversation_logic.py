@@ -16,6 +16,7 @@ from src.conversation_fsm import (
     classify_intent, Intent,
     extract_entities_for_fsm, diff_slots, SlotChange,
     validate_legacy_value,
+    _format_offer_amount as _format_offer_legacy,
 )
 from src.llm_writer import build_writer_prompt, try_deterministic_response
 
@@ -297,35 +298,33 @@ REGLAS OBLIGATORIAS:
 - Si el cliente pregunta "¿dónde es?" o "¿de dónde son?": Da la ubicación ANTES de seguir con la cita.
 - Si dice "háblame", "llámame", "márcame": Responde "Con gusto, ¿a qué número y en qué horario te marco?" NO agendes cita, él quiere llamada.
 
-14) LEAD (JSON):
-- SOLO genera JSON si hay: NOMBRE + MODELO + CITA CONFIRMADA.
-- USA los datos REALES del cliente, NUNCA uses datos de ejemplo ni inventados.
-```json
+14) FORMATO DE RESPUESTA (OBLIGATORIO — SIEMPRE):
+Tu respuesta SIEMPRE debe ser un objeto JSON válido con EXACTAMENTE esta estructura:
 {{
-  "lead_event": {{
+  "reply": "Tu mensaje al cliente aquí (máximo 2 oraciones, sin emojis, en español)",
+  "lead_event": null,
+  "campaign_data": null
+}}
+
+- "reply": REQUERIDO. Tu mensaje al cliente. Máximo 2 oraciones. Sin emojis. En español.
+- "lead_event": OPCIONAL. Incluye SOLO si hay NOMBRE + MODELO + CITA reales y confirmados:
+  {{
     "nombre": "[nombre real del cliente]",
     "interes": "[modelo del inventario]",
     "cita": "[fecha/hora real de la cita]",
-    "pago": "[Contado o Financiamiento]"
+    "pago": "[Contado o Financiamiento o Por definir]"
   }}
-}}
-```
-
-14b) DATOS DE CAMPAÑA (JSON):
-- Si hay CAMPAÑA ACTIVA y el cliente proporcionó TODOS los datos que pide la campaña, genera:
-```json
-{{
-  "campaign_data": {{
+- "campaign_data": OPCIONAL. Incluye SOLO si hay CAMPAÑA ACTIVA y el cliente dio TODOS los datos requeridos:
+  {{
     "resumen": "[Dato1]: [valor real] | [Dato2]: [valor real] | ..."
   }}
-}}
-```
-- Ejemplo de formato: "Propuesta: $700,000 | Nombre: María López | Tel: 3312345678 | Email: maria@empresa.com | Ciudad: Guadalajara | Plazo: 3 meses"
-- IMPORTANTE: USA SOLO datos REALES que el cliente proporcionó. NUNCA inventes datos ni uses ejemplos.
-- Si el cliente NO ha dado un dato requerido, NO generes el JSON. Espera a tenerlos TODOS.
-- Este JSON es INDEPENDIENTE del lead_event (no necesita cita confirmada).
-- Solo genera cuando tengas TODOS los datos solicitados por la campaña.
-- El "resumen" debe listar cada dato con su etiqueta, separados por " | ".
+  Ejemplo: "Propuesta: $700,000 | Nombre: María López | Tel: 3312345678 | Email: maria@empresa.com | Ciudad: Guadalajara | Plazo: 3 meses"
+
+REGLAS CRÍTICAS DE FORMATO:
+- NUNCA escribas texto fuera del JSON. Solo el objeto JSON, nada más.
+- Si no aplica lead_event o campaign_data, usa null (no omitas las llaves).
+- NUNCA inventes datos ni uses ejemplos en lead_event o campaign_data. Solo datos reales del cliente.
+- Si le falta algún dato requerido al lead_event o campaign_data, usa null y espera a tenerlos todos.
 
 15) TOMA A CUENTA / TRADE-IN:
 - Si el cliente pregunta si reciben su vehículo actual a cuenta, en intercambio, o como enganche:
@@ -1910,8 +1909,13 @@ async def _llm_try_provider(
     max_tokens: int,
     label: str,
     max_retries: int = 2,
+    response_format: Optional[dict] = None,
 ) -> Optional[Any]:
     """Intenta un proveedor LLM con retries cortos. Retorna respuesta o None."""
+    extra_kwargs = {}
+    if response_format:
+        extra_kwargs["response_format"] = response_format
+
     for _attempt in range(max_retries):
         try:
             resp = await llm_client.chat.completions.create(
@@ -1919,6 +1923,7 @@ async def _llm_try_provider(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                **extra_kwargs,
             )
             return resp
         except (APITimeoutError, RateLimitError, APIConnectionError) as e:
@@ -1946,10 +1951,18 @@ async def _llm_try_provider(
     return None
 
 
-async def _llm_call_with_fallback(messages: list, temperature: float = 0.3, max_tokens: int = 350):
+async def _llm_call_with_fallback(
+    messages: list,
+    temperature: float = 0.3,
+    max_tokens: int = 350,
+    response_format: Optional[dict] = None,
+):
     """
     Intenta el proveedor primario (configurable via LLM_PRIMARY) con retries cortos,
     luego cae al secundario. Reduce latencia vs 3 retries largos.
+
+    response_format: optional dict passed to the API (e.g. {"type": "json_object"}).
+                     Both OpenAI and Gemini OpenAI-compat endpoint support this.
     """
     if LLM_PRIMARY == "openai":
         providers = [
@@ -1968,7 +1981,7 @@ async def _llm_call_with_fallback(messages: list, temperature: float = 0.3, max_
     # --- Intento primario (2 retries, backoff corto: 1s, 2s) ---
     resp = await _llm_try_provider(
         primary_client, primary_model, messages, temperature, max_tokens,
-        label=primary_label, max_retries=2,
+        label=primary_label, max_retries=2, response_format=response_format,
     )
     if resp is not None:
         return resp
@@ -1977,13 +1990,90 @@ async def _llm_call_with_fallback(messages: list, temperature: float = 0.3, max_
     logger.warning(f"🔄 {primary_label} falló. Usando fallback {fallback_label} ({fallback_model})...")
     resp = await _llm_try_provider(
         fallback_client, fallback_model, messages, temperature, max_tokens,
-        label=f"Fallback-{fallback_label}", max_retries=2,
+        label=f"Fallback-{fallback_label}", max_retries=2, response_format=response_format,
     )
     if resp is not None:
         logger.info(f"✅ Fallback {fallback_label} ({fallback_model}) exitoso.")
         return resp
 
     raise RuntimeError(f"Ambos proveedores LLM fallaron ({primary_label} + {fallback_label})")
+
+
+# ============================================================
+# STRUCTURED LLM RESPONSE PARSER
+# ============================================================
+
+def _parse_structured_reply(raw: str) -> Tuple[str, Optional[dict], Optional[dict]]:
+    """Parse a legacy-path LLM response that should be a JSON object.
+
+    Expected schema (enforced via response_format=json_object):
+      {
+        "reply":         "<text to show the user>",
+        "lead_event":    { ... } | null,
+        "campaign_data": { "resumen": "..." } | null
+      }
+
+    Falls back gracefully when the model ignores the JSON instruction and
+    returns plain text with embedded ```json blocks (old format).
+
+    Returns:
+        (reply_text, lead_event_dict_or_None, campaign_data_dict_or_None)
+    """
+    raw = (raw or "").strip()
+
+    # --- Happy path: well-formed JSON object ---
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            reply = str(payload.get("reply") or "").strip()
+            lead_event = payload.get("lead_event") or None
+            campaign_data = payload.get("campaign_data") or None
+            if reply:
+                logger.debug("✅ Structured JSON reply parsed successfully")
+                return reply, lead_event, campaign_data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # --- Fallback: plain text with optional ```json blocks (legacy format) ---
+    logger.warning("⚠️ LLM ignored JSON mode — falling back to regex extraction")
+    lead_event: Optional[dict] = None
+    campaign_data: Optional[dict] = None
+
+    reply_text = raw
+
+    # Extract embedded ```json … ``` blocks
+    json_matches = list(re.finditer(
+        r"```json\s*(\{.*?\})\s*```", raw, flags=re.DOTALL | re.IGNORECASE
+    ))
+    if not json_matches:
+        json_matches = list(re.finditer(
+            r"(?:^|\n)\s*json\s*\n\s*(\{.*?\})\s*(?:\n|$)",
+            raw, flags=re.DOTALL | re.IGNORECASE,
+        ))
+
+    for m in json_matches:
+        try:
+            block = json.loads(m.group(1))
+            if isinstance(block, dict):
+                if isinstance(block.get("lead_event"), dict):
+                    lead_event = block["lead_event"]
+                if isinstance(block.get("campaign_data"), dict):
+                    campaign_data = block["campaign_data"]
+        except Exception:
+            pass
+        reply_text = reply_text.replace(m.group(0), "")
+
+    # Strip remaining leaked JSON artifacts
+    reply_text = re.sub(
+        r'(?:^|\n)\s*json\s*\n\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}\s*',
+        '', reply_text, flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+    reply_text = re.sub(
+        r'\{\s*"(?:campaign_data|lead_event)"\s*:\s*\{[^}]*\}\s*\}',
+        '', reply_text, flags=re.DOTALL,
+    ).strip()
+
+    return reply_text.strip(), lead_event, campaign_data
 
 
 # ============================================================
@@ -2424,20 +2514,21 @@ async def handle_message(
                     logger.info(f"🏙️ Ciudad detectada (multi-línea): {saved_city}")
                     break
 
-    # Extract offer amount for campaigns (e.g., "te doy 670 mil" → "$670,000")
+    # Extract offer amount for campaigns (e.g., "te doy 670 mil" → "$670,000",
+    # "1.5 millones" → "$1,500,000").
+    # Re-uses the FSM extractor to keep logic in one place.
     extracted_offer = None
     _offer_pat = re.search(
-        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|propuesta|oferta|monto)\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)?'
-        r'|\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)\b',
+        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|propuesta|oferta|monto)'
+        r'\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?'
+        r'|\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\b',
         user_message, re.IGNORECASE
     )
     if _offer_pat:
-        _raw = (_offer_pat.group(1) or _offer_pat.group(2) or "").replace(",", "").replace(".", "")
-        if _raw.isdigit():
-            _val = int(_raw)
-            if _val < 10000:  # "670" → $670,000
-                _val *= 1000
-            extracted_offer = f"${_val:,}"
+        _num = _offer_pat.group(1) or _offer_pat.group(3) or ""
+        _suf = _offer_pat.group(2) or _offer_pat.group(4) or ""
+        extracted_offer = _format_offer_legacy(_num, _suf)
+        if extracted_offer:
             logger.info(f"💰 Oferta detectada: {extracted_offer}")
     elif history:
         _last_bot_offer = ""
@@ -2447,19 +2538,19 @@ async def handle_message(
                 break
         if any(_k in _last_bot_offer for _k in ("propuesta", "oferta", "monto", "cuánto sería", "cuanto sería")):
             _contextual_offer = re.fullmatch(
-                r'(?:que\s+)?(?:(?:son|es)\s+)?\$?\s*(\d[\d,\.\s]{0,9})\s*(?:pesos?)?\s*',
+                r'(?:que\s+)?(?:(?:son|es)\s+)?\$?\s*(\d[\d,\.\s]{0,9})'
+                r'(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\s*',
                 user_message.strip(),
                 re.IGNORECASE,
             )
             if _contextual_offer:
-                _raw = re.sub(r"[^\d]", "", _contextual_offer.group(1))
-                if _raw.isdigit():
-                    _val = int(_raw)
-                    if _val < 10000:
-                        _val *= 1000
-                    if 100000 <= _val <= 100000000:
-                        extracted_offer = f"${_val:,}"
-                        logger.info(f"💰 Oferta detectada por contexto: {extracted_offer}")
+                _co = _format_offer_legacy(
+                    _contextual_offer.group(1),
+                    _contextual_offer.group(2) or "",
+                )
+                if _co:
+                    extracted_offer = _co
+                    logger.info(f"💰 Oferta detectada por contexto: {extracted_offer}")
 
     # Build dict of freshly extracted data for FSM
     _new_extracted_data: Dict[str, str] = {}
@@ -2475,6 +2566,63 @@ async def handle_message(
         _new_extracted_data["payment"] = extracted_payment
     if extracted_appt:
         _new_extracted_data["appointment"] = extracted_appt
+
+    # ============================================================
+    # UNIVERSAL FSM: Run for ALL conversations (decisions only)
+    # The FSM determines lead qualification, funnel stage, intent,
+    # and slot changes deterministically. The legacy LLM path only
+    # generates text — it never drives business decisions.
+    # ============================================================
+    _fsm_action: Optional[Action] = None
+    _fsm_new_state: Optional[ConversationState] = None
+    _fsm_slots: Optional[Slots] = None
+    _fsm_meta: Dict[str, Any] = {}
+    _merged_new_data: Dict[str, str] = dict(_new_extracted_data)  # fallback if FSM fails
+    _fsm_has_campaign = bool(_matched_campaign and getattr(_matched_campaign, 'instructions', None))
+    try:
+        _fsm_extracted = extract_entities_for_fsm(user_message, history, context)
+
+        # Merge legacy-extracted data with FSM extraction (FSM takes priority)
+        _merged_new_data: Dict[str, str] = {}
+        for k, v in _new_extracted_data.items():
+            if v:
+                _merged_new_data[k] = v
+        for k, v in _fsm_extracted.items():
+            if v:
+                _merged_new_data[k] = v
+
+        # Populate context slots so FSM can read them
+        _slot_ctx_map = {
+            "name": "user_name", "phone": "user_phone", "email": "user_email",
+            "city": "user_city", "interest": "last_interest",
+            "appointment": "last_appointment", "payment": "last_payment",
+            "offer_amount": "offer_amount",
+        }
+        for _sk, _sv in {
+            "name": saved_name, "phone": saved_phone, "email": saved_email,
+            "city": saved_city, "interest": last_interest,
+            "appointment": last_appointment, "payment": last_payment,
+            "offer_amount": extracted_offer,
+        }.items():
+            if _sv:
+                context[_slot_ctx_map[_sk]] = _sv
+
+        _campaign_type_fsm = (context.get("tracking_data") or {}).get("campaign_type", "A")
+        _fsm_action, _fsm_new_state, _fsm_slots, _fsm_meta = process_fsm(
+            user_message=user_message,
+            context=context,
+            new_data=_merged_new_data,
+            has_campaign=_fsm_has_campaign,
+            turn_count=turn_count,
+            campaign_type=_campaign_type_fsm,
+            form_url=getattr(_matched_campaign, 'form_url', '') if _matched_campaign else "",
+        )
+        logger.info(
+            f"🔀 FSM universal: action={_fsm_action.value}, state={_fsm_new_state.value}, "
+            f"intent={_fsm_meta.get('intent', '?')}, flow={_fsm_meta.get('primary_flow', '?')}"
+        )
+    except Exception as _fsm_err:
+        logger.error(f"⚠️ FSM universal falló (legacy continúa sin FSM): {_fsm_err}")
 
     # Time and date
     now_dt, current_time_str = get_mexico_time()
@@ -2570,25 +2718,22 @@ async def handle_message(
             logger.error(f"⚠️ Error en keyword campaign matching: {e}")
 
     # ============================================================
-    # FSM PATH: Campaign conversations use state machine
+    # FSM PATH: Campaign conversations use full FSM + LLM writer
+    # (FSM already ran universally above; this handles text gen)
     # ============================================================
     _use_fsm = _has_campaign_instructions and not _is_organic_campaign_match and tracking_id
     if _use_fsm:
         try:
-            # Use FSM's own encapsulated extraction instead of legacy
-            _fsm_extracted = extract_entities_for_fsm(user_message, history, context)
-
-            # Merge with data already in context — legacy values pass through
-            # validation guard to prevent dirty data from entering FSM slots
+            # Reuse the FSM-extracted data from the universal run
             _fsm_slots_data = {
-                "name": _fsm_extracted.get("name") or validate_legacy_value("name", saved_name),
-                "phone": _fsm_extracted.get("phone") or validate_legacy_value("phone", saved_phone),
-                "email": _fsm_extracted.get("email") or saved_email,
-                "city": _fsm_extracted.get("city") or validate_legacy_value("city", saved_city),
+                "name": (_fsm_slots.name if _fsm_slots else None) or validate_legacy_value("name", saved_name),
+                "phone": (_fsm_slots.phone if _fsm_slots else None) or validate_legacy_value("phone", saved_phone),
+                "email": (_fsm_slots.email if _fsm_slots else None) or saved_email,
+                "city": (_fsm_slots.city if _fsm_slots else None) or validate_legacy_value("city", saved_city),
                 "interest": last_interest,
-                "appointment": _fsm_extracted.get("appointment") or validate_legacy_value("appointment", last_appointment),
-                "payment": _fsm_extracted.get("payment") or validate_legacy_value("payment", last_payment),
-                "offer_amount": _fsm_extracted.get("offer_amount") or extracted_offer,
+                "appointment": (_fsm_slots.appointment if _fsm_slots else None) or validate_legacy_value("appointment", last_appointment),
+                "payment": (_fsm_slots.payment if _fsm_slots else None) or validate_legacy_value("payment", last_payment),
+                "offer_amount": (_fsm_slots.offer_amount if _fsm_slots else None) or extracted_offer,
             }
 
             fsm_result = await _handle_message_fsm(
@@ -2597,14 +2742,14 @@ async def handle_message(
                 history=history,
                 turn_count=turn_count,
                 slots_data=_fsm_slots_data,
-                new_data=_fsm_extracted,  # Only freshly extracted data
+                new_data=_merged_new_data if _fsm_action is not None else _new_extracted_data,
                 campaign=_matched_campaign,
                 inventory_service=inventory_service,
             )
             if fsm_result:
                 return fsm_result
         except Exception as e:
-            logger.error(f"⚠️ FSM falló, cayendo a lógica legacy: {e}")
+            logger.error(f"⚠️ FSM campaign path falló, cayendo a lógica legacy: {e}")
 
     if (_has_campaign_instructions or _is_special_campaign_no_instructions) and not _is_organic_campaign_match:
         # Campaign has specific instructions OR it's a special campaign type (SU/LQ/PR/EV)
@@ -2829,23 +2974,42 @@ async def handle_message(
             + " | ".join(_collected_items) + " ***\n"
         )
 
+    # Context block assembly — ORDER MATTERS for LLM attention.
+    #
+    # Rule: the model pays most attention to content near the END of a long
+    # prompt ("recency bias").  We exploit this with a deliberate layout:
+    #
+    #   1. Static metadata (turn, time, detected data)   ← low attention OK
+    #   2. Origin / campaign context                     ← medium
+    #   3. Conversation history                          ← medium
+    #   4. Critical collected-data reminder              ← high
+    #   5. Inventory / financing                         ← HIGHEST — right before
+    #                                                       the user message
+    #
+    # This avoids the "lost in the middle" failure mode where inventory buried
+    # between tracking context and history gets ignored by the model.
     context_block = (
+        # ── 1. Static metadata ──
         f"TURNO: {turn_count} {'(PRIMER MENSAJE - puedes saludar)' if turn_count == 1 else '(NO saludes, ve directo al punto)'}\n"
         f"MOMENTO ACTUAL: {current_time_str}\n"
         f"CLIENTE DETECTADO: {saved_name or '(Desconocido)'}\n"
         f"INTERÉS DETECTADO: {last_interest or '(Sin modelo)'}\n"
         f"CITA DETECTADA: {last_appointment or '(Sin cita)'}\n"
         f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
+        # ── 2. Origin / campaign ──
         f"{tracking_context}"
         f"{ad_context_section}"
         f"{campaigns_section}"
-        f"{inventory_section}"
-        f"{financing_section}"
+        # ── 3. Conversation history ──
         f"HISTORIAL DE CHAT:\n{history[-3000:]}\n"
-        f"\n*** SECCIÓN CRÍTICA — LEE ESTO ÚLTIMO ***\n"
+        # ── 4. Critical reminder (collected data + anti-repetition) ──
+        f"\n*** SECCIÓN CRÍTICA — LEE ESTO ANTES DE RESPONDER ***\n"
         f"{_collected_section}"
         f"{last_bot_section}"
         f"{name_gate_reminder}"
+        # ── 5. Inventory / financing — LAST, closest to the user message ──
+        f"{inventory_section}"
+        f"{financing_section}"
     )
 
     messages = [
@@ -2858,85 +3022,42 @@ async def handle_message(
     campaign_data_payload: Optional[Dict[str, Any]] = None
     reply_clean = "Hubo un error técnico."
 
+    # Placeholder markers used in prompt examples — reject if found in extracted data
+    _PLACEHOLDER_MARKERS = [
+        "x@y.com", "5551234567", "821,000", "Juan Perez",
+        "juan@correo.com", "Nayarit", "[nombre real", "[modelo del",
+        "[fecha/hora", "[Contado o",
+    ]
+
     try:
-        resp = await _llm_call_with_fallback(messages)
+        # JSON mode: forces the model to always return a valid JSON object.
+        # _parse_structured_reply() extracts reply/lead_event/campaign_data and
+        # falls back to regex parsing if the model ignores the format instruction.
+        resp = await _llm_call_with_fallback(
+            messages,
+            max_tokens=450,
+            response_format={"type": "json_object"},
+        )
 
         raw_reply = resp.choices[0].message.content or ""
-        reply_clean = raw_reply
+        reply_clean, _lead_candidate, _campaign_candidate = _parse_structured_reply(raw_reply)
 
         # Update interest using user+bot text
-        inferred_interest = _extract_interest_from_messages(user_message, raw_reply, inventory_service)
+        inferred_interest = _extract_interest_from_messages(user_message, reply_clean, inventory_service)
         if inferred_interest:
             last_interest = inferred_interest
 
-        # Extract ALL JSON blocks from the model (inside ```json ... ```)
-        # Use finditer to catch multiple blocks (e.g. lead_event + campaign_data separately)
-        json_matches = list(re.finditer(r"```json\s*(\{.*?\})\s*```", raw_reply, flags=re.DOTALL | re.IGNORECASE))
-
-        # Fallback: catch JSON blocks without proper backticks (e.g. "json\n{...}")
-        if not json_matches:
-            json_matches = list(re.finditer(
-                r"(?:^|\n)\s*json\s*\n\s*(\{.*?\})\s*(?:\n|$)",
-                raw_reply, flags=re.DOTALL | re.IGNORECASE,
-            ))
-
-        if json_matches:
-            for json_match in json_matches:
-                try:
-                    payload = json.loads(json_match.group(1))
-                    candidate = payload.get("lead_event") if isinstance(payload, dict) else None
-
-                    if isinstance(candidate, dict):
-                        # Inject what we already know
-                        if not str(candidate.get("nombre", "")).strip() and saved_name:
-                            candidate["nombre"] = saved_name
-                        if not str(candidate.get("interes", "")).strip() and last_interest:
-                            candidate["interes"] = last_interest
-                        if not str(candidate.get("cita", "")).strip() and last_appointment:
-                            candidate["cita"] = last_appointment
-                        if not str(candidate.get("pago", "")).strip() and last_payment:
-                            candidate["pago"] = last_payment
-
-                        if _lead_is_valid(candidate):
-                            lead_info = candidate
-                            logger.info(f"✅ Lead extraído del JSON de OpenAI: {candidate}")
-                        else:
-                            logger.warning(f"Lead JSON discarded (incomplete): {candidate}")
-
-                    # Extract campaign_data if present (independent of lead_event)
-                    cd = payload.get("campaign_data") if isinstance(payload, dict) else None
-                    if isinstance(cd, dict) and cd.get("resumen"):
-                        # Validate: reject if it contains placeholder/example data from prompt
-                        _resumen = cd["resumen"]
-                        _placeholder_markers = [
-                            "x@y.com", "5551234567", "821,000", "Juan Perez",
-                            "juan@correo.com", "Nayarit",
-                        ]
-                        _has_placeholder = any(p.lower() in _resumen.lower() for p in _placeholder_markers)
-                        if _has_placeholder:
-                            logger.warning(f"⚠️ Campaign data RECHAZADO (contiene datos placeholder): {_resumen}")
-                        else:
-                            campaign_data_payload = cd
-                            logger.info(f"📋 Campaign data extraído: {_resumen}")
-                except Exception as e:
-                    logger.error(f"Error parseando JSON de lead: {e}")
-
-            # Hide ALL matched JSON blocks from user-facing message
-            reply_clean = raw_reply
-            for json_match in json_matches:
-                reply_clean = reply_clean.replace(json_match.group(0), "")
-            reply_clean = reply_clean.strip()
-
-        # Final safety net: strip any remaining JSON-like blocks that GPT may have leaked
-        # Catches patterns like: json\n{ ... } or bare { "campaign_data": ... }
-        reply_clean = re.sub(
-            r'(?:^|\n)\s*json\s*\n\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}\s*',
-            '', reply_clean, flags=re.DOTALL | re.IGNORECASE,
-        ).strip()
-        reply_clean = re.sub(
-            r'\{\s*"(?:campaign_data|lead_event)"\s*:\s*\{[^}]*\}\s*\}',
-            '', reply_clean, flags=re.DOTALL,
-        ).strip()
+        # ============================================================
+        # ARCHITECTURE: LLM only writes text — business decisions
+        # (lead_event, campaign_data) are IGNORED from LLM output.
+        # The FSM (running universally above) makes these decisions
+        # deterministically. This prevents LLM hallucinations from
+        # creating false leads or incorrect funnel stages.
+        # ============================================================
+        if _lead_candidate:
+            logger.info(f"🚫 LLM lead_event IGNORADO (FSM decide): {_lead_candidate}")
+        if _campaign_candidate:
+            logger.info(f"🚫 LLM campaign_data IGNORADO (FSM decide): {_campaign_candidate}")
 
     except Exception as e:
         logger.error(f"OpenAI error: {e}")
@@ -2981,8 +3102,13 @@ async def handle_message(
                 )},
             ]
             try:
-                _retry_resp = await _llm_call_with_fallback(messages + _anti_repeat)
-                _retry_reply = (_retry_resp.choices[0].message.content or "").strip()
+                _retry_resp = await _llm_call_with_fallback(
+                    messages + _anti_repeat,
+                    max_tokens=450,
+                    response_format={"type": "json_object"},
+                )
+                _raw_retry = (_retry_resp.choices[0].message.content or "").strip()
+                _retry_reply, _, _ = _parse_structured_reply(_raw_retry)
                 _retry_reply = re.sub(
                     r"^(Adrian|Asesor|Bot)\s*:\s*", "", _retry_reply.strip(), flags=re.IGNORECASE,
                 ).strip()
@@ -3072,62 +3198,74 @@ async def handle_message(
     reply_clean = _strip_markdown_links(reply_clean)
 
     # ============================================================
-    # MONDAY FAILSAFE (MEJORADO - AGRESIVO)
+    # FSM-DRIVEN LEAD QUALIFICATION (replaces LLM-based failsafe)
     # ============================================================
-    if lead_info is None:
-        candidate = {
-            "nombre": saved_name,
-            "interes": last_interest,
-            "cita": last_appointment,
-            "pago": last_payment or "Por definir",
-        }
+    # The FSM determines lead qualification deterministically based
+    # on slots filled (name + interest + appointment). No LLM involved.
+    if _fsm_action is not None:
+        # FSM ran — use deterministic lead qualification
+        if _fsm_action in (Action.CONFIRM_LEAD, Action.CONFIRM_REGISTRATION) and _fsm_slots:
+            _fsm_lead = {
+                "nombre": _fsm_slots.name or saved_name,
+                "interes": _fsm_slots.interest or last_interest,
+                "cita": _fsm_slots.appointment or last_appointment,
+                "pago": _fsm_slots.payment or last_payment or "Por definir",
+            }
+            if _lead_is_valid(_fsm_lead):
+                lead_info = _fsm_lead
+                logger.info(f"✅ FSM LEAD: Calificado determinísticamente — {_fsm_lead}")
+        elif _fsm_slots and not _fsm_slots.missing_for_lead():
+            # FSM didn't trigger CONFIRM_LEAD this turn, but all slots are filled
+            _fsm_lead = {
+                "nombre": _fsm_slots.name or saved_name,
+                "interes": _fsm_slots.interest or last_interest,
+                "cita": _fsm_slots.appointment or last_appointment,
+                "pago": _fsm_slots.payment or last_payment or "Por definir",
+            }
+            if _lead_is_valid(_fsm_lead):
+                lead_info = _fsm_lead
+                logger.info(f"✅ FSM LEAD (slots completos): {_fsm_lead}")
+    else:
+        # FSM failed — fallback to legacy slot-based check
+        if saved_name and last_interest and last_appointment:
+            _legacy_lead = {
+                "nombre": saved_name,
+                "interes": last_interest,
+                "cita": last_appointment,
+                "pago": last_payment or "Por definir",
+            }
+            if _lead_is_valid(_legacy_lead):
+                lead_info = _legacy_lead
+                logger.info(f"✅ FALLBACK LEAD (FSM no disponible): {_legacy_lead}")
 
-        # CAMBIO 1: Validar ANTES de esperar confirmación
-        if _lead_is_valid(candidate):
-            lead_info = candidate
-            logger.info(f"✅ FAILSAFE: Lead válido encontrado sin JSON de OpenAI - {candidate}")
-        
-        # CAMBIO 2: Si hay nombre + interés + cita, Y el mensaje es corto (posible confirmación)
-        elif saved_name and last_interest and last_appointment:
-            # Verificar si el mensaje es una confirmación o respuesta corta
-            if _message_confirms_appointment(user_message) or len(user_message.strip()) <= 15:
-                # Forzar registro aunque falte algo
-                candidate["pago"] = candidate.get("pago") or "Por definir"
-                if _lead_is_valid(candidate):
-                    lead_info = candidate
-                    logger.info(f"✅ FAILSAFE AGRESIVO: Mensaje corto '{user_message}' después de cita confirmada - {candidate}")
+    if lead_info:
+        logger.info(f"🎯 LEAD SERÁ ENVIADO A MONDAY: {lead_info}")
 
-    # Log para debugging de leads
-    if saved_name and last_interest and last_appointment:
-        if lead_info:
-            logger.info(f"🎯 LEAD SERÁ ENVIADO A MONDAY: {lead_info}")
+    # ============================================================
+    # FSM-DRIVEN FUNNEL STAGE (replaces legacy heuristic)
+    # ============================================================
+    if _fsm_action is not None:
+        # FSM ran successfully — use its deterministic output
+        is_disinterest = bool(_fsm_meta.get("is_disinterest"))
+        if is_disinterest:
+            funnel_stage = "Sin Interes"
+        elif _fsm_new_state == ConversationState.QUALIFIED:
+            funnel_stage = "Cita Programada"
+        elif _fsm_slots and _fsm_slots.interest:
+            funnel_stage = "Intención"
         else:
-            logger.warning(
-                f"⚠️ LEAD NO GENERADO aunque hay datos: "
-                f"nombre={saved_name}, interes={last_interest}, cita={last_appointment}, "
-                f"mensaje_usuario='{user_message}'"
-            )
-
-    # ============================================================
-    # FUNNEL STAGE CALCULATION (V2)
-    # ============================================================
-    # V2 Labels: 1er Contacto → Intención → Cotización → Cita Programada
-    # "Sin Interes" can override any stage
-    funnel_stage = "1er Contacto"  # Default: primer contacto (V2: merges Mensaje+Enganche)
-
-    if last_interest:
-        funnel_stage = "Intención"  # Modelo específico mencionado
-
-    # Cotización: se marca cuando se envía PDF (ver pdf_info más abajo)
-    # Se maneja después de la detección de PDF
-
-    if last_appointment:
-        funnel_stage = "Cita Programada"  # V2: renamed from "Cita agendada"
-
-    # V2: Sin Interes overrides everything
-    is_disinterest = _detect_disinterest(user_message)
-    if is_disinterest:
-        funnel_stage = "Sin Interes"
+            funnel_stage = "1er Contacto"
+    else:
+        # FSM failed — fallback to legacy heuristic (should be rare)
+        logger.warning("⚠️ FSM no disponible, usando heurística legacy para funnel stage")
+        is_disinterest = _detect_disinterest(user_message)
+        funnel_stage = "1er Contacto"
+        if last_interest:
+            funnel_stage = "Intención"
+        if last_appointment:
+            funnel_stage = "Cita Programada"
+        if is_disinterest:
+            funnel_stage = "Sin Interes"
 
     # Agregar etapa al contexto para tracking
     new_context["funnel_stage"] = funnel_stage
@@ -3168,12 +3306,15 @@ async def handle_message(
         "funnel_stage": funnel_stage,
         "is_disinterest": is_disinterest,
         "funnel_data": {
-            "nombre": saved_name or None,
-            "interes": last_interest or None,
-            "cita": last_appointment or None,
-            "pago": last_payment or None,
+            "nombre": (_fsm_slots.name if _fsm_slots else None) or saved_name or None,
+            "interes": (_fsm_slots.interest if _fsm_slots else None) or last_interest or None,
+            "cita": (_fsm_slots.appointment if _fsm_slots else None) or last_appointment or None,
+            "pago": (_fsm_slots.payment if _fsm_slots else None) or last_payment or None,
             "turn_count": turn_count,
         },
         "pdf_info": pdf_info,
         "campaign_data": campaign_data_payload,
+        "slot_changes": _fsm_meta.get("slot_changes", []),
+        "fsm_action": _fsm_action.value if _fsm_action else None,
+        "fsm_state": _fsm_new_state.value if _fsm_new_state else None,
     }
