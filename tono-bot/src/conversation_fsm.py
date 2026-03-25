@@ -900,12 +900,9 @@ def decide_action(
         if intent in (Intent.ASK_QUESTION, Intent.ASK_PRICE, Intent.ASK_FINANCING,
                        Intent.ASK_LOCATION, Intent.ASK_APPOINTMENT, Intent.TRUST_CONCERN):
             meta_extra: Dict[str, Any] = {"is_trust_concern": True} if intent == Intent.TRUST_CONCERN else {}
-            if form_url:
-                # With a form, mention the link after answering instead of asking for the next slot
-                meta_extra["form_url"] = form_url
-            elif intent != Intent.TRUST_CONCERN:
-                # Sandwich: after answering, naturally ask for next missing slot
-                # (except trust concerns — give the client space to settle doubts first)
+            # Do NOT re-send form_url — it was already shown in PRESENT_CAMPAIGN.
+            # Use sandwich instead: answer the question, then naturally ask for next missing slot.
+            if intent != Intent.TRUST_CONCERN:
                 _missing = _get_campaign_missing(slots, campaign_type)
                 if _missing:
                     meta_extra["sandwich_next"] = _missing[0]
