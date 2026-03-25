@@ -887,9 +887,11 @@ def decide_action(
 
     # ---- CAMPAIGN_ENTRY state ----
     if state == ConversationState.CAMPAIGN_ENTRY:
-        if intent in (Intent.ASK_PHOTOS, Intent.ASK_PDF):
-            action = Action.SEND_PHOTOS if intent == Intent.ASK_PHOTOS else Action.SEND_PDF
-            return _ret(action, ConversationState.CAMPAIGN_ENTRY)
+        if intent == Intent.ASK_PHOTOS:
+            # Send photos AND suggest scheduling a visit to see the unit in person
+            return _ret(Action.SEND_PHOTOS, ConversationState.CAMPAIGN_ENTRY, {"suggest_visit": True})
+        if intent == Intent.ASK_PDF:
+            return _ret(Action.SEND_PDF, ConversationState.CAMPAIGN_ENTRY)
 
         if intent == Intent.ASK_INVENTORY:
             return _ret(Action.SHOW_INVENTORY, ConversationState.CATALOG_BROWSING, {"is_side_question": True})
@@ -897,8 +899,12 @@ def decide_action(
         if intent == Intent.MODEL_SWITCH:
             return _ret(Action.ACKNOWLEDGE_SWITCH, ConversationState.INTEREST_DISCOVERY)
 
+        # Appointment: actually schedule it, don't just answer as a side question
+        if intent == Intent.ASK_APPOINTMENT:
+            return _ret(Action.ASK_APPOINTMENT, ConversationState.APPOINTMENT_SCHEDULING)
+
         if intent in (Intent.ASK_QUESTION, Intent.ASK_PRICE, Intent.ASK_FINANCING,
-                       Intent.ASK_LOCATION, Intent.ASK_APPOINTMENT, Intent.TRUST_CONCERN):
+                       Intent.ASK_LOCATION, Intent.TRUST_CONCERN):
             meta_extra: Dict[str, Any] = {"is_trust_concern": True} if intent == Intent.TRUST_CONCERN else {}
             # Do NOT re-send form_url — it was already shown in PRESENT_CAMPAIGN.
             # Use sandwich instead: answer the question, then naturally ask for next missing slot.
