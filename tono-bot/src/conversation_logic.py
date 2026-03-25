@@ -1715,7 +1715,8 @@ def _pick_media_urls(
         context["photo_model"] = target_model_name
 
     # 7) Determinar si quiere "otra" (1 foto) o "fotos" (grupo)
-    wants_next = any(k in msg for k in ["otra", "mas", "más", "siguiente"])
+    # "otra"/"siguiente" → modo carrusel (1 foto); "mas fotos" → batch
+    wants_next = any(k in msg for k in ["otra", "siguiente"])
     selected_urls: List[str] = []
 
     if wants_next:
@@ -2106,7 +2107,7 @@ async def _handle_message_fsm(
                 pass  # Keep first attempt
 
     # Post-LLM: ensure form URL is always present when required
-    _form_url = meta.get("form_url") or (campaign.form_url if campaign else "")
+    _form_url = meta.get("form_url")  # Only use explicitly-passed form_url (not campaign default) to avoid repeating link
     if _form_url and reply_clean and _form_url not in reply_clean:
         if action not in (Action.SEND_FORM, Action.CONFIRM_REGISTRATION, Action.SEND_PHOTOS, Action.SEND_PDF):
             reply_clean = reply_clean + f"\nPara registrar tu propuesta: {_form_url}"
