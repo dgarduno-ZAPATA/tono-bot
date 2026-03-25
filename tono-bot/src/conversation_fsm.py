@@ -574,22 +574,40 @@ def _extract_appointment(text: str) -> Optional[str]:
     return None
 
 
-def _format_offer_amount(raw: str) -> Optional[str]:
-    """Normalize a numeric offer string into MXN display format."""
-    digits = re.sub(r"[^\d]", "", raw or "")
-    if not digits.isdigit():
-        return None
+def _format_offer_amount(raw: str, suffix: str = "") -> Optional[str]:
+    """Normalize a numeric offer string into MXN display format.
 
-    val = int(digits)
-    if val <= 0:
-        return None
+    Args:
+        raw:    The numeric portion captured by the regex (may contain dots/commas).
+        suffix: Optional unit word captured alongside the number (e.g. "mil", "millones").
+                When suffix contains "millón"/"millones"/"mm" the number is treated as
+                millions of pesos, so "1.5 millones" → $1,500,000 instead of $1,500.
+    """
+    suffix_lc = (suffix or "").lower().strip()
 
-    # In these campaign chats, short amounts like "700" mean $700,000.
-    if val < 10000:
-        val *= 1000
+    # Detect millions suffix BEFORE stripping the decimal point.
+    is_millions = bool(re.search(r"millon(es)?|millón(es)?|\bmm\b", suffix_lc))
+
+    if is_millions:
+        # Keep the decimal for float multiplication (e.g. "1.5" → 1.5 * 1_000_000)
+        clean = (raw or "").replace(",", "").strip()
+        try:
+            val = int(float(clean) * 1_000_000)
+        except (ValueError, OverflowError):
+            return None
+    else:
+        digits = re.sub(r"[^\d]", "", raw or "")
+        if not digits or not digits.isdigit():
+            return None
+        val = int(digits)
+        if val <= 0:
+            return None
+        # "mil" / "k" suffix OR bare short numbers (e.g. "700" → $700,000)
+        if suffix_lc in ("mil", "k") or val < 10000:
+            val *= 1000
 
     # Guard against phone numbers or absurdly large accidental values.
-    if val < 100000 or val > 100000000:
+    if val < 100000 or val > 100_000_000:
         return None
 
     return f"${val:,}"
@@ -599,20 +617,24 @@ def _extract_offer(text: str, history: str = "") -> Optional[str]:
     """Extract offer amount from message.
 
     Supports:
-    - Explicit phrases: "te doy 670 mil", "propuesta de 688000"
+    - Explicit phrases: "te doy 670 mil", "propuesta de 1.5 millones"
     - Contextual bare numbers after the bot asks for the offer: "688000", "700"
     """
     msg = (text or "").strip()
     if not msg:
         return None
 
+    # Primary pattern: captures numeric part (group 1 or 2) and optional suffix (group 3 or 4)
     m = re.search(
-        r'(?:(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|(?:quiero|puedo|voy\s+a)\s+dar|propuesta|oferta|monto)\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)?)'
-        r'|\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)\b',
+        r'(?:(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|(?:quiero|puedo|voy\s+a)\s+dar|propuesta|oferta|monto)'
+        r'\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?)'
+        r'|\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\b',
         msg, re.IGNORECASE
     )
     if m:
-        formatted = _format_offer_amount(m.group(1) or m.group(2) or "")
+        num = m.group(1) or m.group(3) or ""
+        suf = m.group(2) or m.group(4) or ""
+        formatted = _format_offer_amount(num, suf)
         if formatted:
             return formatted
 
@@ -628,12 +650,16 @@ def _extract_offer(text: str, history: str = "") -> Optional[str]:
     bot_asked_offer = any(k in last_bot for k in offer_asking)
     if bot_asked_offer:
         contextual_amount = re.search(
-            r'(?:^|(?:que\s+)?(?:(?:son|es|sería[n]?)\s+)?)\$?\s*(\d[\d,\.\s]{0,9})\s*(?:pesos?)?',
+            r'(?:^|(?:que\s+)?(?:(?:son|es|sería[n]?)\s+)?)\$?\s*(\d[\d,\.\s]{0,9})'
+            r'(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\s*',
             msg,
             re.IGNORECASE,
         )
         if contextual_amount:
-            return _format_offer_amount(contextual_amount.group(1))
+            return _format_offer_amount(
+                contextual_amount.group(1),
+                contextual_amount.group(2) or "",
+            )
 
     return None
 

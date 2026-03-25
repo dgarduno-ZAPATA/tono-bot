@@ -356,6 +356,14 @@ def resolve_appointment_to_iso(appointment_text: str) -> dict:
         elif "mañana" in text and "por la" in text:
             target_time = "10:00:00"
 
+    # Hard gate: dealership is closed on Sundays — shift to Monday.
+    if target_date and target_date.weekday() == 6:
+        target_date = target_date + timedelta(days=1)
+        logger.warning(
+            f"📅 Cita en domingo detectada ('{appointment_text}') — "
+            f"desplazada automáticamente al lunes {target_date.isoformat()}"
+        )
+
     result = {}
     if target_date:
         result["date"] = target_date.isoformat()

@@ -16,6 +16,7 @@ from src.conversation_fsm import (
     classify_intent, Intent,
     extract_entities_for_fsm, diff_slots, SlotChange,
     validate_legacy_value,
+    _format_offer_amount as _format_offer_legacy,
 )
 from src.llm_writer import build_writer_prompt, try_deterministic_response
 
@@ -207,8 +208,9 @@ REGLAS OBLIGATORIAS:
 - OBJETIVO: Informar con naturalidad, no generar alarma. Sonar útil y orientado a facilitar.
 
 3) PREGUNTA "¿ES IA?" o "¿ME RESPONDE UN BOT?":
-- Responde: "Te atiendo por el canal digital de Tractos y Max. Si prefieres, te marco y lo vemos por llamada."
-- NO digas "soy IA", "soy bot", "soy asistente virtual".
+- Responde con honestidad: "Soy Adrian, el asistente virtual de Tractos y Max. Si prefieres hablar con un asesor humano, con gusto te conecto."
+- Si el cliente insiste, confirma que eres un asistente automatizado y ofrece conectarlo con un asesor humano.
+- NUNCA niegues ser un sistema automatizado cuando el cliente lo pregunta directamente.
 
 4) CANDADO DE MODELO (CRÍTICO):
 - Si ya se detectó un modelo en la conversación, NO cambies a otro modelo sin que el cliente lo pida explícitamente.
@@ -2423,20 +2425,21 @@ async def handle_message(
                     logger.info(f"🏙️ Ciudad detectada (multi-línea): {saved_city}")
                     break
 
-    # Extract offer amount for campaigns (e.g., "te doy 670 mil" → "$670,000")
+    # Extract offer amount for campaigns (e.g., "te doy 670 mil" → "$670,000",
+    # "1.5 millones" → "$1,500,000").
+    # Re-uses the FSM extractor to keep logic in one place.
     extracted_offer = None
     _offer_pat = re.search(
-        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|propuesta|oferta|monto)\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)?'
-        r'|\$?\s*(\d[\d,\.]*)\s*(?:mil|k|pesos?)\b',
+        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|propuesta|oferta|monto)'
+        r'\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?'
+        r'|\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\b',
         user_message, re.IGNORECASE
     )
     if _offer_pat:
-        _raw = (_offer_pat.group(1) or _offer_pat.group(2) or "").replace(",", "").replace(".", "")
-        if _raw.isdigit():
-            _val = int(_raw)
-            if _val < 10000:  # "670" → $670,000
-                _val *= 1000
-            extracted_offer = f"${_val:,}"
+        _num = _offer_pat.group(1) or _offer_pat.group(3) or ""
+        _suf = _offer_pat.group(2) or _offer_pat.group(4) or ""
+        extracted_offer = _format_offer_legacy(_num, _suf)
+        if extracted_offer:
             logger.info(f"💰 Oferta detectada: {extracted_offer}")
     elif history:
         _last_bot_offer = ""
@@ -2446,19 +2449,19 @@ async def handle_message(
                 break
         if any(_k in _last_bot_offer for _k in ("propuesta", "oferta", "monto", "cuánto sería", "cuanto sería")):
             _contextual_offer = re.fullmatch(
-                r'(?:que\s+)?(?:(?:son|es)\s+)?\$?\s*(\d[\d,\.\s]{0,9})\s*(?:pesos?)?\s*',
+                r'(?:que\s+)?(?:(?:son|es)\s+)?\$?\s*(\d[\d,\.\s]{0,9})'
+                r'(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\s*',
                 user_message.strip(),
                 re.IGNORECASE,
             )
             if _contextual_offer:
-                _raw = re.sub(r"[^\d]", "", _contextual_offer.group(1))
-                if _raw.isdigit():
-                    _val = int(_raw)
-                    if _val < 10000:
-                        _val *= 1000
-                    if 100000 <= _val <= 100000000:
-                        extracted_offer = f"${_val:,}"
-                        logger.info(f"💰 Oferta detectada por contexto: {extracted_offer}")
+                _co = _format_offer_legacy(
+                    _contextual_offer.group(1),
+                    _contextual_offer.group(2) or "",
+                )
+                if _co:
+                    extracted_offer = _co
+                    logger.info(f"💰 Oferta detectada por contexto: {extracted_offer}")
 
     # Build dict of freshly extracted data for FSM
     _new_extracted_data: Dict[str, str] = {}

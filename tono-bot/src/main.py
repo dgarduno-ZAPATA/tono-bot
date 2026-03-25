@@ -48,8 +48,9 @@ class Settings(BaseSettings):
     CAMPAIGNS_REFRESH_SECONDS: int = 300
     INVENTORY_REFRESH_SECONDS: int = 300
 
-    # Logging del payload (evita logs gigantes)
-    LOG_WEBHOOK_PAYLOAD: bool = True
+    # Logging del payload — desactivado por defecto en producción para proteger PII.
+    # Activa con LOG_WEBHOOK_PAYLOAD=true solo en desarrollo/debugging.
+    LOG_WEBHOOK_PAYLOAD: bool = False
     LOG_WEBHOOK_PAYLOAD_MAX_CHARS: int = 6000
 
     # Handoff
@@ -515,18 +516,42 @@ async def _ensure_inventory_loaded(bot_state: GlobalState) -> None:
 def _safe_log_payload(prefix: str, obj: Any) -> None:
     """
     Log controlado CON SANITIZACIÓN.
+
+    Redacta:
+    - API keys, passwords, tokens (credenciales)
+    - Números de teléfono / remoteJid (PII)
+    - Contenido de mensajes del cliente (PII)
+    - CTWA / referral IDs y conversion data (PII de atribución)
     """
     if not settings.LOG_WEBHOOK_PAYLOAD:
         return
     try:
         raw = json.dumps(obj, ensure_ascii=False)
-        
-        # 🔒 SANITIZAR información sensible
+
+        # 🔒 Credenciales
         raw = raw.replace(settings.EVOLUTION_API_KEY, "***REDACTED***")
         raw = re.sub(r'"apikey":\s*"[^"]*"', '"apikey": "***"', raw)
         raw = re.sub(r'"password":\s*"[^"]*"', '"password": "***"', raw)
         raw = re.sub(r'"token":\s*"[^"]*"', '"token": "***"', raw)
-        
+
+        # 🔒 PII — teléfonos / JIDs
+        raw = re.sub(r'"remoteJid":\s*"[^"]*"', '"remoteJid": "***"', raw)
+        raw = re.sub(r'"participant":\s*"[^"]*@[^"]*"', '"participant": "***"', raw)
+        raw = re.sub(r'"owner":\s*"[^"]*@[^"]*"', '"owner": "***"', raw)
+        raw = re.sub(r'"sender":\s*"[^"]*"', '"sender": "***"', raw)
+        raw = re.sub(r'"phoneNumber":\s*"[^"]*"', '"phoneNumber": "***"', raw)
+
+        # 🔒 PII — contenido de mensajes
+        raw = re.sub(r'"conversation":\s*"[^"]*"', '"conversation": "***"', raw)
+        raw = re.sub(r'"caption":\s*"[^"]*"', '"caption": "***"', raw)
+        raw = re.sub(r'"text":\s*\{[^}]*\}', '"text": "***"', raw)
+
+        # 🔒 PII — datos de atribución/referral
+        raw = re.sub(r'"ctwa_clid":\s*"[^"]*"', '"ctwa_clid": "***"', raw)
+        raw = re.sub(r'"source_id":\s*"[^"]*"', '"source_id": "***"', raw)
+        raw = re.sub(r'"conversionData":\s*"[^"]*"', '"conversionData": "***"', raw)
+        raw = re.sub(r'"conversionSource":\s*"[^"]*"', '"conversionSource": "***"', raw)
+
         if len(raw) > settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS:
             raw = raw[: settings.LOG_WEBHOOK_PAYLOAD_MAX_CHARS] + " ...[TRUNCATED]"
         logger.info(f"{prefix}{raw}")
