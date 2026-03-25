@@ -220,6 +220,13 @@ async def lifespan(app: FastAPI):
         await _store.init()
         bot_state.store = _store
         logger.info("✅ MemoryStore inicializado.")
+        # Purge expired sessions at startup (non-blocking, best-effort)
+        try:
+            _purged = await _store.purge_expired()
+            if _purged > 0:
+                logger.info(f"🗑️ Startup purge: {_purged} sesiones expiradas eliminadas.")
+        except Exception as _pe:
+            logger.warning(f"⚠️ Startup purge falló (no crítico): {_pe}")
     except Exception as e:
         bot_state.store = None
         logger.error(f"⚠️ Error iniciando MemoryStore: {e}")

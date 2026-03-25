@@ -2830,23 +2830,42 @@ async def handle_message(
             + " | ".join(_collected_items) + " ***\n"
         )
 
+    # Context block assembly — ORDER MATTERS for LLM attention.
+    #
+    # Rule: the model pays most attention to content near the END of a long
+    # prompt ("recency bias").  We exploit this with a deliberate layout:
+    #
+    #   1. Static metadata (turn, time, detected data)   ← low attention OK
+    #   2. Origin / campaign context                     ← medium
+    #   3. Conversation history                          ← medium
+    #   4. Critical collected-data reminder              ← high
+    #   5. Inventory / financing                         ← HIGHEST — right before
+    #                                                       the user message
+    #
+    # This avoids the "lost in the middle" failure mode where inventory buried
+    # between tracking context and history gets ignored by the model.
     context_block = (
+        # ── 1. Static metadata ──
         f"TURNO: {turn_count} {'(PRIMER MENSAJE - puedes saludar)' if turn_count == 1 else '(NO saludes, ve directo al punto)'}\n"
         f"MOMENTO ACTUAL: {current_time_str}\n"
         f"CLIENTE DETECTADO: {saved_name or '(Desconocido)'}\n"
         f"INTERÉS DETECTADO: {last_interest or '(Sin modelo)'}\n"
         f"CITA DETECTADA: {last_appointment or '(Sin cita)'}\n"
         f"PAGO DETECTADO: {last_payment or '(Por definir)'}\n"
+        # ── 2. Origin / campaign ──
         f"{tracking_context}"
         f"{ad_context_section}"
         f"{campaigns_section}"
-        f"{inventory_section}"
-        f"{financing_section}"
+        # ── 3. Conversation history ──
         f"HISTORIAL DE CHAT:\n{history[-3000:]}\n"
-        f"\n*** SECCIÓN CRÍTICA — LEE ESTO ÚLTIMO ***\n"
+        # ── 4. Critical reminder (collected data + anti-repetition) ──
+        f"\n*** SECCIÓN CRÍTICA — LEE ESTO ANTES DE RESPONDER ***\n"
         f"{_collected_section}"
         f"{last_bot_section}"
         f"{name_gate_reminder}"
+        # ── 5. Inventory / financing — LAST, closest to the user message ──
+        f"{inventory_section}"
+        f"{financing_section}"
     )
 
     messages = [
