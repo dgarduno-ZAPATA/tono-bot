@@ -1279,15 +1279,11 @@ def _normalize_spanish(text: str) -> str:
         (r"\bla cascadia\b", "cascadia"),
         (r"\bel cascadia\b", "cascadia"),
         # Kenworth T800
-        (r"\bla kenworth\b", "kenworth t800"),
-        (r"\bel kenworth\b", "kenworth t800"),
-        (r"\bla t800\b", "kenworth t800"),
-        (r"\bel t800\b", "kenworth t800"),
+        (r"\bkenworth\b", "kenworth t800"),
+        (r"\bt800\b", "kenworth t800"),
         # International Prostar
-        (r"\bla international\b", "international prostar"),
-        (r"\bel international\b", "international prostar"),
-        (r"\bla prostar\b", "international prostar"),
-        (r"\bel prostar\b", "international prostar"),
+        (r"\bprostar\b", "international prostar"),
+        (r"\binternational\b", "international prostar"),
     ]
 
     for pattern, replacement in alias_map:
@@ -1401,9 +1397,13 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
             continue
 
         modelo_norm = _normalize_spanish(modelo)
+        marca = _safe_get(item, ["Marca", "marca"]).strip()
+        marca_norm = _normalize_spanish(marca)
+        # Combinar marca + modelo para que "kenworth" o "international" matcheen
+        combined_norm = f"{marca_norm} {modelo_norm}"
         anio = _safe_get(item, ["Anio", "Año", "anio"], default="").strip()
         # Permitir tokens de 2 caracteres para detectar G9, E5, G7, etc.
-        tokens = [t for t in modelo_norm.split() if len(t) >= 2 and t not in _noise]
+        tokens = [t for t in combined_norm.split() if len(t) >= 2 and t not in _noise]
         if not tokens:
             continue
 
