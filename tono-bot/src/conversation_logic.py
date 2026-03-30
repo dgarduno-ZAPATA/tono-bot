@@ -1248,6 +1248,13 @@ def _normalize_spanish(text: str) -> str:
     t = re.sub(r"\bcascadía\b", "cascadia", t)
     t = re.sub(r"\bcaskadia\b", "cascadia", t)
 
+    # Plural → singular para nombres de modelos (cliente escribe "cascadias", "tunlands", etc.)
+    t = re.sub(r"\bcascadias\b", "cascadia", t)
+    t = re.sub(r"\btunlands\b", "tunland", t)
+    t = re.sub(r"\bkenworths\b", "kenworth", t)
+    t = re.sub(r"\bprostars\b", "prostar", t)
+    t = re.sub(r"\bmilers\b", "miler", t)
+
     # Aliases naturales → nombre de modelo para matching
     # Pickups / Tunland
     alias_map = [
@@ -3116,8 +3123,9 @@ async def handle_message(
         raw_reply = resp.choices[0].message.content or ""
         reply_clean, _lead_candidate, _campaign_candidate = _parse_structured_reply(raw_reply)
 
-        # Update interest using user+bot text
-        inferred_interest = _extract_interest_from_messages(user_message, reply_clean, inventory_service)
+        # Update interest from user message only — bot reply must NOT influence this
+        # (reply already mentions last_interest vehicle, which would reinforce stale data)
+        inferred_interest = _extract_interest_from_messages(user_message, "", inventory_service)
         if inferred_interest:
             last_interest = inferred_interest
 
@@ -3206,8 +3214,12 @@ async def handle_message(
                     if not saved_city: _missing.append("ciudad")
                     if _missing:
                         reply_clean = f"Gracias por tu información. Solo me falta: {', '.join(_missing)}."
-                    else:
+                    elif _fsm_action in (Action.CONFIRM_LEAD, Action.CONFIRM_REGISTRATION):
+                        # Only close lead if FSM explicitly confirmed the lead this turn
                         reply_clean = "Perfecto, ya tengo tus datos registrados. Un asesor se pone en contacto contigo en breve."
+                    else:
+                        # Inquiry mode — don't fabricate a lead-close, ask what else they need
+                        reply_clean = f"Disculpa, ¿puedo ayudarte con algo más sobre {'la ' + last_interest if last_interest else 'nuestras unidades'}?"
             except Exception as _dup_err:
                 logger.error(f"❌ DEDUP re-gen error: {_dup_err}")
 
@@ -3388,7 +3400,11 @@ async def handle_message(
         },
         "pdf_info": pdf_info,
         "campaign_data": campaign_data_payload,
-        "slot_changes": _fsm_meta.get("slot_changes", []),
+        "slot_changes": [
+            {"slot": c.slot, "old": c.old_value, "new": c.new_value}
+            if hasattr(c, "slot") else c
+            for c in (_fsm_meta.get("slot_changes") or [])
+        ],
         "fsm_action": _fsm_action.value if _fsm_action else None,
         "fsm_state": _fsm_new_state.value if _fsm_new_state else None,
     }
