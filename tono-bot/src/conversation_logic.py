@@ -2397,19 +2397,20 @@ async def handle_message(
     except (ValueError, TypeError):
         turn_count = 1
 
-    # Model-switch detection: if client has a campaign/tracking but asks for a different model,
-    # respect their wish and deactivate the campaign context for this conversation
+    # Model-switch detection: if client already has an interest but asks for a different model,
+    # respect their wish and update interest before sending to LLM
     tracking_id = (context.get("tracking_id") or "").strip()
-    if tracking_id and last_interest and turn_count > 1:
+    if last_interest:
         _switch_target = _detect_model_switch(user_message, last_interest, inventory_service)
         if _switch_target:
-            logger.info(f"🔄 Campaña desactivada por cambio de modelo: {last_interest} → {_switch_target}")
+            logger.info(f"🔄 Cambio de modelo: {last_interest} → {_switch_target}")
             last_interest = _switch_target
-            # Clear campaign context so tracking_context won't inject campaign instructions
-            # but preserve tracking_id for CRM attribution
-            context.pop("tracking_data", None)
-            context.pop("organic_campaign_tid", None)
             context["last_interest"] = _switch_target
+            if tracking_id:
+                # Clear campaign context so tracking_context won't inject campaign instructions
+                # but preserve tracking_id for CRM attribution
+                context.pop("tracking_data", None)
+                context.pop("organic_campaign_tid", None)
 
     # Extract from user input
     # For multi-line messages (user sends all data at once), try each line individually
