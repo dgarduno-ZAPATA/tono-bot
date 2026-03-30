@@ -948,6 +948,15 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                         logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - nombre={current_name} - {lead_data.get('interes')}")
                         monday_item_id = await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
 
+                        # Notify team when appointment is confirmed
+                        if is_stage_change and funnel_stage == "Cita Programada":
+                            asyncio.create_task(_notify_appointment_to_team(
+                                bot_state, remote_jid,
+                                cita=funnel_data.get("cita") or "",
+                                interes=funnel_data.get("interes") or "",
+                                nombre=current_name,
+                            ))
+
                         # V3: Connect lead to Anuncio board item if tracking ID exists
                         if monday_item_id and tracking_id:
                             try:
@@ -1702,6 +1711,30 @@ async def _notify_handoff_to_team(bot_state: GlobalState, client_jid: str) -> No
             logger.info(f"📣 Handoff notificado a {number} (chat={clean_client})")
         except Exception as e:
             logger.warning(f"⚠️ No se pudo notificar handoff a {number}: {e}")
+
+
+async def _notify_appointment_to_team(bot_state: GlobalState, client_jid: str, cita: str, interes: str, nombre: str) -> None:
+    """Send an appointment alert to every number in TEAM_NUMBERS."""
+    team = _parse_team_numbers()
+    if not team:
+        return
+
+    clean_client = _clean_phone_or_jid(client_jid)
+    nombre_str = f" ({nombre})" if nombre else ""
+
+    alert = (
+        "📅 *CITA PROGRAMADA*\n\n"
+        f"Cliente{nombre_str}: wa.me/{clean_client}\n"
+        f"Vehículo: {interes or 'N/A'}\n"
+        f"Cita: {cita or 'N/A'}"
+    )
+
+    for number in team:
+        try:
+            await send_evolution_message(bot_state, number, alert)
+            logger.info(f"📣 Cita notificada a {number} (chat={clean_client})")
+        except Exception as e:
+            logger.warning(f"⚠️ No se pudo notificar cita a {number}: {e}")
 
 
 # === 10. PROCESADOR CENTRAL ===
