@@ -220,6 +220,7 @@ _CITY_NOISE = {
     "pickup", "camioneta", "camion", "tracto", "van", "g7", "g9", "e5",
     "anuncio", "anuncion", "foto", "fotos", "modelo", "unidad",
     "freightliner", "tractocamion", "volteo", "truck", "trailer",
+    "kenworth", "international", "prostar", "t800",
     "camiones", "tractos", "camionetas", "tractocamiones",
     "te", "doy", "bien", "tienes", "mas", "quiero", "este", "ese",
     "mil", "pesos", "si", "no", "precio", "oferta", "propuesta",

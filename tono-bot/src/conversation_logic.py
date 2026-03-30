@@ -527,7 +527,7 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
         return {"tipo": pdf_type, "sin_datos": True}
 
     # Normalizar el interés para buscar (strip marcas conocidas)
-    _brand_strip = ["foton", "freightliner"]
+    _brand_strip = ["foton", "freightliner", "kenworth", "international"]
     interest_norm = last_interest.lower()
     for _b in _brand_strip:
         interest_norm = interest_norm.replace(_b, "")
@@ -550,7 +550,7 @@ def _detect_pdf_request(user_message: str, last_interest: str, context: Dict[str
         all_tokens = key_tokens.union(nombre_tokens)
 
         # Verificar si hay coincidencia (solo tokens de 2+ caracteres, excluyendo marcas)
-        _brand_noise = {"foton", "freightliner"}
+        _brand_noise = {"foton", "freightliner", "kenworth", "international"}
         score = 0
         matched_tokens = []
         for token in all_tokens:
@@ -827,7 +827,7 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
         return ""
 
     interest_norm = _normalize_spanish(last_interest)
-    interest_tokens = [t for t in interest_norm.split() if len(t) >= 2 and t not in {"foton", "freightliner", "camion", "camión"}]
+    interest_tokens = [t for t in interest_norm.split() if len(t) >= 2 and t not in {"foton", "freightliner", "kenworth", "international", "camion", "camión"}]
 
     # Detect year tokens (e.g. "2023", "2024") in the interest string
     year_tokens = [t for t in interest_tokens if re.fullmatch(r"20\d{2}", t)]
@@ -963,7 +963,7 @@ def _extract_location_link(
 
     interest_norm = _normalize_spanish(last_interest)
     interest_tokens = [t for t in interest_norm.split() if len(t) >= 2
-                       and t not in {"foton", "freightliner", "camion", "camión"}]
+                       and t not in {"foton", "freightliner", "kenworth", "international", "camion", "camión"}]
     if not interest_tokens:
         return None
 
@@ -1022,7 +1022,7 @@ def _detect_vehicle_ubicacion(
 
     interest_norm = _normalize_spanish(last_interest)
     interest_tokens = [t for t in interest_norm.split() if len(t) >= 2
-                       and t not in {"foton", "freightliner", "camion", "camión"}]
+                       and t not in {"foton", "freightliner", "kenworth", "international", "camion", "camión"}]
     if not interest_tokens:
         return None
 
@@ -1332,7 +1332,7 @@ def _detect_model_switch(user_message: str, current_interest: str, inventory_ser
 
     # Check if the new interest is genuinely different from current
     # Compare significant tokens (strip brand names that appear in both)
-    _brand_noise = {"foton", "freightliner"}
+    _brand_noise = {"foton", "freightliner", "kenworth", "international"}
     current_tokens = set(current_norm.split()) - _brand_noise
     new_tokens = set(new_norm.split()) - _brand_noise
 
@@ -1638,7 +1638,7 @@ def _pick_media_urls(
     if last_interest:
         interest_norm = _normalize_spanish(last_interest)
         # Extraer tokens relevantes, excluyendo palabras comunes que causan falsos positivos
-        _noise = {"foton", "freightliner", "camion", "camión", "esta", "este", "estos", "estas", "estan", "están",
+        _noise = {"foton", "freightliner", "kenworth", "international", "camion", "camión", "esta", "este", "estos", "estas", "estan", "están",
                   "gris", "azul", "rojo", "negro", "blanco", "plata", "at", "mt", "diesel"}
         interest_tokens = [p for p in interest_norm.split() if len(p) >= 2 and p not in _noise]
 
@@ -1663,7 +1663,7 @@ def _pick_media_urls(
         # Palabras comunes en español que NO deben usarse como tokens de matching
         # "esta" es el peor: aparece en casi cualquier mensaje y matchea con EST-A
         noise_words = {
-            "foton", "freightliner", "camion", "camión",
+            "foton", "freightliner", "kenworth", "international", "camion", "camión",
             # "esta/estan" = palabras comunes español, NO confundir con modelo EST-A
             "esta", "estan", "están",
             # Colores (aparecen en nombre de modelo pero no sirven para identificarlo)
@@ -2456,6 +2456,7 @@ async def handle_message(
         "pickup", "camioneta", "camion", "tracto", "van", "g7", "g9", "e5",
         "anuncio", "anuncion", "foto", "fotos", "modelo", "unidad",
         "freightliner", "tractocamion", "volteo", "truck", "trailer",
+        "kenworth", "international", "prostar", "t800",
         # Plurals
         "camiones", "tractos", "camionetas", "tractocamiones",
         # Common non-city words that slip through
