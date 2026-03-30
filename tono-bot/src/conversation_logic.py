@@ -2412,11 +2412,13 @@ async def handle_message(
             logger.info(f"🔄 Cambio de modelo: {last_interest} → {_switch_target}")
             last_interest = _switch_target
             context["last_interest"] = _switch_target
-            if tracking_id:
-                # Clear campaign context so tracking_context won't inject campaign instructions
-                # but preserve tracking_id for CRM attribution
-                context.pop("tracking_data", None)
-                context.pop("organic_campaign_tid", None)
+            # Clear ALL unit-specific context to avoid stale data from previous model bleeding in
+            context.pop("tracking_data", None)
+            context.pop("organic_campaign_tid", None)
+            context.pop("interest_ubicacion", None)
+            context.pop("interest_ubicacion_source", None)
+            context.pop("photo_model", None)
+            context["photo_index"] = 0
 
     # Extract from user input
     # For multi-line messages (user sends all data at once), try each line individually
