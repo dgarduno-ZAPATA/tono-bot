@@ -199,7 +199,7 @@ def resolve_vehicle_to_dropdown(interest: str) -> str:
         return ""
 
     # Strip known brand names and noise
-    _brand_noise = ["foton", "freightliner"]
+    _brand_noise = ["foton", "freightliner", "kenworth", "international"]
     interest_lower = interest.lower()
     for brand in _brand_noise:
         interest_lower = interest_lower.replace(brand, "")
