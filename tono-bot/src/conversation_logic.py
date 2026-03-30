@@ -2571,6 +2571,7 @@ async def handle_message(
     # and slot changes deterministically. The legacy LLM path only
     # generates text — it never drives business decisions.
     # ============================================================
+    _matched_campaign = None  # Initialized early; resolved later in campaign matching
     _fsm_action: Optional[Action] = None
     _fsm_new_state: Optional[ConversationState] = None
     _fsm_slots: Optional[Slots] = None
@@ -2661,7 +2662,14 @@ async def handle_message(
                 tracking_data = context.get("tracking_data") or {}
                 model_code = tracking_data.get("model_code", "")
                 camp_type = tracking_data.get("campaign_type", "")
-                if model_code:
+                # Re-extract from tracking_id if tracking_data is missing/incomplete
+                if (not model_code or not camp_type) and tracking_id:
+                    from src.monday_service import extract_tracking_id as _reparse
+                    _reparsed = _reparse(tracking_id)
+                    if _reparsed:
+                        model_code = model_code or _reparsed.get("model_code", "")
+                        camp_type = camp_type or _reparsed.get("campaign_type", "")
+                if model_code and camp_type:
                     _matched_campaign = campaign_service.find_campaign_by_model_code(model_code, camp_type)
                     if _matched_campaign:
                         logger.info(
@@ -2933,15 +2941,10 @@ async def handle_message(
     if _has_campaign_instructions and _matched_campaign:
         # Ya inyectada en tracking_context (tracking ID o keyword match) → omitir bloque genérico
         pass
-    elif tracking_id and campaign_service:
-        # Client has tracking ID but no matched campaign — try generic block
-        try:
-            await campaign_service.ensure_loaded()
-            campaigns_section = campaign_service.build_campaigns_prompt_block()
-            if campaigns_section:
-                campaigns_section += "\n"
-        except Exception as e:
-            logger.error(f"⚠️ Error cargando campañas para prompt: {e}")
+    # NOTE: Do NOT inject generic campaigns block for tracking ID clients without a matched campaign.
+    # Doing so leaks instructions/form URLs from other campaigns (e.g. CA-SU1 link sent to CA-A1 clients)
+    # because GPT sees both "client arrived via Cascadia ad" AND "active CA-SU1 campaign for Cascadia"
+    # and incorrectly applies the special campaign. tracking_context already handles the fallback messaging.
 
     # Extraer últimos 2 mensajes del bot del historial para anti-repetición
     last_bot_msgs = []

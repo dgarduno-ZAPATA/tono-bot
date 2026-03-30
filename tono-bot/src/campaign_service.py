@@ -217,22 +217,24 @@ class CampaignService:
 
         Ejemplo: model_code="CA", campaign_type="SU" matchea campaña con tracking_id="CA-SU1".
         Evita que un anuncio regular (CA-A) active una campaña especial (CA-SU).
+
+        IMPORTANT: campaign_type is REQUIRED for a match. If empty, returns None to prevent
+        cross-campaign contamination (e.g. CA-A1 client matching CA-SU1 campaign).
         """
         if not model_code:
             return None
         prefix = model_code.strip().upper()
         ctype = campaign_type.strip().upper() if campaign_type else ""
+        if not ctype:
+            # Without campaign_type we can't safely match — returning None prevents
+            # a CA-A client from accidentally getting CA-SU1 campaign instructions.
+            return None
         for c in self.get_active_campaigns():
             if c.tracking_id:
                 tid = c.tracking_id.upper()
-                if ctype:
-                    # Debe coincidir el modelo Y el tipo de campaña (ej: "CA-SU")
-                    if tid.startswith(f"{prefix}-{ctype}"):
-                        return c
-                else:
-                    # Comportamiento legacy (solo modelo) si no se pasa el tipo
-                    if tid.startswith(prefix + "-"):
-                        return c
+                # Debe coincidir el modelo Y el tipo de campaña (ej: "CA-SU")
+                if tid.startswith(f"{prefix}-{ctype}"):
+                    return c
         return None
 
     def find_campaign_by_keywords(self, message: str) -> Optional[Campaign]:
