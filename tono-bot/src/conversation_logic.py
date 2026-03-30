@@ -336,7 +336,7 @@ REGLAS CRÍTICAS DE FORMATO:
 16) PROHIBIDO:
 - Emojis
 - Explicaciones largas
-- INVENTAR VEHÍCULOS: NUNCA menciones marcas o modelos que NO estén en INVENTARIO DISPONIBLE (ej: JAC, Nissan, Toyota, Hino, International, Kenworth, etc. a menos que aparezcan en el inventario)
+- INVENTAR VEHÍCULOS: NUNCA menciones marcas o modelos que NO estén en INVENTARIO DISPONIBLE (ej: JAC, Nissan, Toyota, Hino, etc. a menos que aparezcan en el inventario)
 - Inventar información, precios, especificaciones o datos que no estén en el inventario
 - Calcular financiamiento para unidades que dicen "No" en campo Financiamiento
 - Pedir nombre antes de dar el tuyo
@@ -1278,6 +1278,16 @@ def _normalize_spanish(text: str) -> str:
         # Cascadia
         (r"\bla cascadia\b", "cascadia"),
         (r"\bel cascadia\b", "cascadia"),
+        # Kenworth T800
+        (r"\bla kenworth\b", "kenworth t800"),
+        (r"\bel kenworth\b", "kenworth t800"),
+        (r"\bla t800\b", "kenworth t800"),
+        (r"\bel t800\b", "kenworth t800"),
+        # International Prostar
+        (r"\bla international\b", "international prostar"),
+        (r"\bel international\b", "international prostar"),
+        (r"\bla prostar\b", "international prostar"),
+        (r"\bel prostar\b", "international prostar"),
     ]
 
     for pattern, replacement in alias_map:
