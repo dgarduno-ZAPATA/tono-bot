@@ -2419,6 +2419,9 @@ async def handle_message(
             context.pop("interest_ubicacion_source", None)
             context.pop("photo_model", None)
             context["photo_index"] = 0
+            # Clear campaign-specific slots that could bleed across models
+            context.pop("offer_amount", None)
+            context.pop("timeline", None)
 
     # Extract from user input
     # For multi-line messages (user sends all data at once), try each line individually
@@ -2675,32 +2678,53 @@ async def handle_message(
     if tracking_id and campaign_service:
         try:
             await campaign_service.ensure_loaded()
-            # 1. Match exacto por tracking ID (CA-SU1 == CA-SU1)
-            _matched_campaign = campaign_service.find_campaign_by_tracking_id(tracking_id)
-            if not _matched_campaign:
-                # 2. Fallback: match por prefijo de modelo Y tipo de campaña (CA-SU2 → encuentra CA-SU1)
-                tracking_data = context.get("tracking_data") or {}
-                model_code = tracking_data.get("model_code", "")
-                camp_type = tracking_data.get("campaign_type", "")
-                # Require BOTH model_code AND camp_type for a safe prefix match.
-                # If tracking_data is absent (model switch cleared it, or old session),
-                # do NOT re-extract from tracking_id — that would re-activate a campaign
-                # that was intentionally deactivated via model switch.
-                if model_code and camp_type:
-                    _matched_campaign = campaign_service.find_campaign_by_model_code(model_code, camp_type)
-                    if _matched_campaign:
-                        logger.info(
-                            f"🏷️ Campaña matcheada por modelo: {tracking_id} → "
-                            f"{_matched_campaign.tracking_id} ({_matched_campaign.name})"
-                        )
-            if _matched_campaign and _matched_campaign.instructions:
-                _has_campaign_instructions = True
-            elif not _matched_campaign:
-                active_count = len(campaign_service.get_active_campaigns())
-                logger.warning(
-                    f"⚠️ Tracking {tracking_id} sin campaña matcheada "
-                    f"({active_count} campañas activas, csv_url={'Sí' if campaign_service.csv_url else 'No'})"
+            # Cross-validate: if tracking_id model doesn't match last_interest, skip campaign
+            from src.monday_service import MODEL_CODE_MAP, extract_tracking_id as _ext_tid_track
+            _tid_track_info = _ext_tid_track(tracking_id)
+            _tid_track_vehicle = MODEL_CODE_MAP.get(
+                _tid_track_info.get("model_code", "") if _tid_track_info else "", ""
+            )
+            _interest_norm_t = _normalize_spanish(last_interest or "").lower()
+            _tid_vehicle_norm = _normalize_spanish(_tid_track_vehicle).lower() if _tid_track_vehicle else ""
+            _tracking_matches_interest = (
+                not _tid_vehicle_norm
+                or not _interest_norm_t
+                or _tid_vehicle_norm in _interest_norm_t
+                or _interest_norm_t in _tid_vehicle_norm
+            )
+
+            if not _tracking_matches_interest:
+                logger.info(
+                    f"🧹 tracking_id '{tracking_id}' no matchea interés '{last_interest}' "
+                    f"(campaña={_tid_track_vehicle}) — campaña desactivada"
                 )
+            else:
+                # 1. Match exacto por tracking ID (CA-SU1 == CA-SU1)
+                _matched_campaign = campaign_service.find_campaign_by_tracking_id(tracking_id)
+                if not _matched_campaign:
+                    # 2. Fallback: match por prefijo de modelo Y tipo de campaña (CA-SU2 → encuentra CA-SU1)
+                    tracking_data = context.get("tracking_data") or {}
+                    model_code = tracking_data.get("model_code", "")
+                    camp_type = tracking_data.get("campaign_type", "")
+                    # Require BOTH model_code AND camp_type for a safe prefix match.
+                    # If tracking_data is absent (model switch cleared it, or old session),
+                    # do NOT re-extract from tracking_id — that would re-activate a campaign
+                    # that was intentionally deactivated via model switch.
+                    if model_code and camp_type:
+                        _matched_campaign = campaign_service.find_campaign_by_model_code(model_code, camp_type)
+                        if _matched_campaign:
+                            logger.info(
+                                f"🏷️ Campaña matcheada por modelo: {tracking_id} → "
+                                f"{_matched_campaign.tracking_id} ({_matched_campaign.name})"
+                            )
+                if _matched_campaign and _matched_campaign.instructions:
+                    _has_campaign_instructions = True
+                elif not _matched_campaign:
+                    active_count = len(campaign_service.get_active_campaigns())
+                    logger.warning(
+                        f"⚠️ Tracking {tracking_id} sin campaña matcheada "
+                        f"({active_count} campañas activas, csv_url={'Sí' if campaign_service.csv_url else 'No'})"
+                    )
         except Exception:
             pass
     elif tracking_id and not campaign_service:
@@ -2747,16 +2771,28 @@ async def handle_message(
                 if search_text:
                     _kw_campaign = campaign_service.find_campaign_by_keywords(search_text)
                     if _kw_campaign and _kw_campaign.instructions:
-                        _matched_campaign = _kw_campaign
-                        _has_campaign_instructions = True
-                        _is_organic_campaign_match = True
-                        # Persist the organic match so it carries across turns
-                        context["organic_campaign_tid"] = _kw_campaign.tracking_id
-                        logger.info(
-                            f"🔑 Campaña matcheada por keywords (orgánico): "
-                            f"{_kw_campaign.tracking_id} ({_kw_campaign.name}) "
-                            f"— texto: {search_text[:80]}"
+                        # Cross-validate keyword match: campaign model must match last_interest
+                        _kw_tid_info = _ext_tid(_kw_campaign.tracking_id)
+                        _kw_vehicle = MODEL_CODE_MAP.get(
+                            _kw_tid_info.get("model_code", "") if _kw_tid_info else "", ""
                         )
+                        _kw_vehicle_norm = _normalize_spanish(_kw_vehicle).lower() if _kw_vehicle else ""
+                        if _kw_vehicle_norm and _interest_norm and _kw_vehicle_norm not in _interest_norm and _interest_norm not in _kw_vehicle_norm:
+                            logger.info(
+                                f"🧹 Keyword campaign '{_kw_campaign.tracking_id}' descartada: "
+                                f"campaña='{_kw_vehicle}' no matchea interés='{last_interest}'"
+                            )
+                        else:
+                            _matched_campaign = _kw_campaign
+                            _has_campaign_instructions = True
+                            _is_organic_campaign_match = True
+                            # Persist the organic match so it carries across turns
+                            context["organic_campaign_tid"] = _kw_campaign.tracking_id
+                            logger.info(
+                                f"🔑 Campaña matcheada por keywords (orgánico): "
+                                f"{_kw_campaign.tracking_id} ({_kw_campaign.name}) "
+                                f"— texto: {search_text[:80]}"
+                            )
         except Exception as e:
             logger.error(f"⚠️ Error en keyword campaign matching: {e}")
 
