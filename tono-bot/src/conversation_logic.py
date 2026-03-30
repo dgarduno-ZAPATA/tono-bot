@@ -2718,11 +2718,29 @@ async def handle_message(
             # Check previously persisted organic campaign match
             _organic_tid = context.get("organic_campaign_tid")
             if _organic_tid:
-                _kw_campaign = campaign_service.find_campaign_by_tracking_id(_organic_tid)
-                if _kw_campaign and _kw_campaign.instructions:
-                    _matched_campaign = _kw_campaign
-                    _has_campaign_instructions = True
-                    _is_organic_campaign_match = True
+                # Cross-validate: campaign model must match current last_interest.
+                # If user switched from Cascadia to Kenworth T800 but organic_campaign_tid
+                # still points to a Cascadia campaign, discard the stale match.
+                from src.monday_service import MODEL_CODE_MAP, extract_tracking_id as _ext_tid
+                _tid_info = _ext_tid(_organic_tid)
+                _campaign_vehicle = MODEL_CODE_MAP.get(
+                    _tid_info.get("model_code", "") if _tid_info else "", ""
+                )
+                _interest_norm = _normalize_spanish(last_interest or "").lower()
+                _campaign_norm = _normalize_spanish(_campaign_vehicle).lower() if _campaign_vehicle else ""
+                if _campaign_norm and _interest_norm and _campaign_norm not in _interest_norm and _interest_norm not in _campaign_norm:
+                    logger.info(
+                        f"🧹 organic_campaign_tid '{_organic_tid}' descartado: "
+                        f"campaña='{_campaign_vehicle}' no matchea interés='{last_interest}'"
+                    )
+                    context.pop("organic_campaign_tid", None)
+                    _organic_tid = None
+                else:
+                    _kw_campaign = campaign_service.find_campaign_by_tracking_id(_organic_tid)
+                    if _kw_campaign and _kw_campaign.instructions:
+                        _matched_campaign = _kw_campaign
+                        _has_campaign_instructions = True
+                        _is_organic_campaign_match = True
             # If no persisted match, try keywords in current message + last_interest
             if not _matched_campaign:
                 search_text = f"{user_message or ''} {last_interest or ''}".strip()
