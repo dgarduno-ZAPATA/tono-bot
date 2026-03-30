@@ -2933,15 +2933,10 @@ async def handle_message(
     if _has_campaign_instructions and _matched_campaign:
         # Ya inyectada en tracking_context (tracking ID o keyword match) → omitir bloque genérico
         pass
-    elif tracking_id and campaign_service:
-        # Client has tracking ID but no matched campaign — try generic block
-        try:
-            await campaign_service.ensure_loaded()
-            campaigns_section = campaign_service.build_campaigns_prompt_block()
-            if campaigns_section:
-                campaigns_section += "\n"
-        except Exception as e:
-            logger.error(f"⚠️ Error cargando campañas para prompt: {e}")
+    # NOTE: Do NOT inject generic campaigns block for tracking ID clients without a matched campaign.
+    # Doing so leaks instructions/form URLs from other campaigns (e.g. CA-SU1 link sent to CA-A1 clients)
+    # because GPT sees both "client arrived via Cascadia ad" AND "active CA-SU1 campaign for Cascadia"
+    # and incorrectly applies the special campaign. tracking_context already handles the fallback messaging.
 
     # Extraer últimos 2 mensajes del bot del historial para anti-repetición
     last_bot_msgs = []
