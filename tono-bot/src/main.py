@@ -717,21 +717,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
             if combined_message.lower() == "/silencio":
                 bot_state.silenced_users[remote_jid] = True
                 await send_evolution_message(bot_state, remote_jid, "Bot desactivado. Un asesor humano te atenderá en breve.")
-                if settings.OWNER_PHONE:
-                    clean_client = remote_jid.split("@")[0]
-                    alerta = f"*HANDOFF ACTIVADO*\n\nEl chat con wa.me/{clean_client} ha sido pausado."
-                    await send_evolution_message(bot_state, settings.OWNER_PHONE, alerta)
-                # Also notify the team (permanent silence — no reactivation time)
-                team = _parse_team_numbers()
-                clean_client = _clean_phone_or_jid(remote_jid)
-                for _tn in team:
-                    try:
-                        await send_evolution_message(
-                            bot_state, _tn,
-                            f"🤝 *HANDOFF MANUAL (/silencio)*\n\nChat: wa.me/{clean_client}\nBot desactivado indefinidamente.\nUsa /activar en el chat para reactivarlo."
-                        )
-                    except Exception:
-                        pass
+                # Handoff team/owner notifications disabled — only appointment notifications are sent
                 return
 
             if combined_message.lower() == "/activar":
@@ -1802,8 +1788,7 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         # 3. Si NO es del bot Y NO es automático → Es un HUMANO → SILENCIAR
         logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} - silenciando bot por {settings.AUTO_REACTIVATE_MINUTES} min")
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
-        # Notify the support team so they know the bot is silent and the chat needs attention
-        asyncio.create_task(_notify_handoff_to_team(bot_state, remote_jid))
+        # Handoff team notification disabled — only appointment notifications are sent
         return
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO, AUDIO O IMAGEN) ===
