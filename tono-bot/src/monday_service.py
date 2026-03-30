@@ -42,6 +42,8 @@ VEHICLE_DROPDOWN_MAP = {
     "Tunland G7": ["g7", "tunland g7"],
     "Tunland G9": ["g9", "tunland g9"],
     "Cascadia": ["cascadia", "freightliner"],
+    "Kenworth T800": ["kenworth", "t800", "t 800", "kenworth t800"],
+    "International Prostar": ["international", "prostar", "international prostar"],
 }
 
 
@@ -59,6 +61,8 @@ MODEL_CODE_MAP = {
     "E11": "ESTA 6x4 11.8",
     "EX":  "ESTA 6x4 X13",
     "CA":  "Cascadia",
+    "KT8": "Kenworth T800",
+    "IPR": "International Prostar",
 }
 
 # Campaign type codes for tracking IDs

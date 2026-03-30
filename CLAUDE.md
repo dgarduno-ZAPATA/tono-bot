@@ -178,7 +178,7 @@ The bot automatically tracks leads through a 10-stage sales funnel in Monday.com
 | Ad Name | Text | `text_mm0wtpwb` | Future (Meta Marketing API batch enrichment from Ad ID) |
 
 ### Vehicle Dropdown Labels
-`Tunland E5`, `ESTA 6x4 11.8`, `ESTA 6x4 X13`, `Miler`, `Toano Panel`, `Tunland G7`, `Tunland G9`, `Cascadia`
+`Tunland E5`, `ESTA 6x4 11.8`, `ESTA 6x4 X13`, `Miler`, `Toano Panel`, `Tunland G7`, `Tunland G9`, `Cascadia`, `Kenworth T800`, `International Prostar`
 
 ### Payment Status Labels
 `De Contado`, `Financiamiento`, `Por definir`
@@ -216,6 +216,8 @@ Since Baileys/Evolution API does NOT provide Meta Ads metadata reliably, the bot
 | `E11` | ESTA 6x4 11.8 |
 | `EX` | ESTA 6x4 X13 |
 | `CA` | Cascadia |
+| `KT8` | Kenworth T800 |
+| `IPR` | International Prostar |
 
 ### Campaign Type Codes
 | Code | Type | Description |
