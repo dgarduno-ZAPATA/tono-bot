@@ -1279,15 +1279,11 @@ def _normalize_spanish(text: str) -> str:
         (r"\bla cascadia\b", "cascadia"),
         (r"\bel cascadia\b", "cascadia"),
         # Kenworth T800
-        (r"\bla kenworth\b", "kenworth t800"),
-        (r"\bel kenworth\b", "kenworth t800"),
-        (r"\bla t800\b", "kenworth t800"),
-        (r"\bel t800\b", "kenworth t800"),
+        (r"\bkenworth\b", "kenworth t800"),
+        (r"\bt800\b", "kenworth t800"),
         # International Prostar
-        (r"\bla international\b", "international prostar"),
-        (r"\bel international\b", "international prostar"),
-        (r"\bla prostar\b", "international prostar"),
-        (r"\bel prostar\b", "international prostar"),
+        (r"\bprostar\b", "international prostar"),
+        (r"\binternational\b", "international prostar"),
     ]
 
     for pattern, replacement in alias_map:
@@ -1401,9 +1397,13 @@ def _extract_interest_from_messages(user_message: str, reply: str, inventory_ser
             continue
 
         modelo_norm = _normalize_spanish(modelo)
+        marca = _safe_get(item, ["Marca", "marca"]).strip()
+        marca_norm = _normalize_spanish(marca)
+        # Combinar marca + modelo para que "kenworth" o "international" matcheen
+        combined_norm = f"{marca_norm} {modelo_norm}"
         anio = _safe_get(item, ["Anio", "Año", "anio"], default="").strip()
         # Permitir tokens de 2 caracteres para detectar G9, E5, G7, etc.
-        tokens = [t for t in modelo_norm.split() if len(t) >= 2 and t not in _noise]
+        tokens = [t for t in combined_norm.split() if len(t) >= 2 and t not in _noise]
         if not tokens:
             continue
 
@@ -2397,19 +2397,20 @@ async def handle_message(
     except (ValueError, TypeError):
         turn_count = 1
 
-    # Model-switch detection: if client has a campaign/tracking but asks for a different model,
-    # respect their wish and deactivate the campaign context for this conversation
+    # Model-switch detection: if client already has an interest but asks for a different model,
+    # respect their wish and update interest before sending to LLM
     tracking_id = (context.get("tracking_id") or "").strip()
-    if tracking_id and last_interest and turn_count > 1:
+    if last_interest:
         _switch_target = _detect_model_switch(user_message, last_interest, inventory_service)
         if _switch_target:
-            logger.info(f"🔄 Campaña desactivada por cambio de modelo: {last_interest} → {_switch_target}")
+            logger.info(f"🔄 Cambio de modelo: {last_interest} → {_switch_target}")
             last_interest = _switch_target
-            # Clear campaign context so tracking_context won't inject campaign instructions
-            # but preserve tracking_id for CRM attribution
-            context.pop("tracking_data", None)
-            context.pop("organic_campaign_tid", None)
             context["last_interest"] = _switch_target
+            if tracking_id:
+                # Clear campaign context so tracking_context won't inject campaign instructions
+                # but preserve tracking_id for CRM attribution
+                context.pop("tracking_data", None)
+                context.pop("organic_campaign_tid", None)
 
     # Extract from user input
     # For multi-line messages (user sends all data at once), try each line individually
