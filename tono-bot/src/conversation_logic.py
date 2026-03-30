@@ -2662,13 +2662,10 @@ async def handle_message(
                 tracking_data = context.get("tracking_data") or {}
                 model_code = tracking_data.get("model_code", "")
                 camp_type = tracking_data.get("campaign_type", "")
-                # Re-extract from tracking_id if tracking_data is missing/incomplete
-                if (not model_code or not camp_type) and tracking_id:
-                    from src.monday_service import extract_tracking_id as _reparse
-                    _reparsed = _reparse(tracking_id)
-                    if _reparsed:
-                        model_code = model_code or _reparsed.get("model_code", "")
-                        camp_type = camp_type or _reparsed.get("campaign_type", "")
+                # Require BOTH model_code AND camp_type for a safe prefix match.
+                # If tracking_data is absent (model switch cleared it, or old session),
+                # do NOT re-extract from tracking_id — that would re-activate a campaign
+                # that was intentionally deactivated via model switch.
                 if model_code and camp_type:
                     _matched_campaign = campaign_service.find_campaign_by_model_code(model_code, camp_type)
                     if _matched_campaign:
