@@ -2331,11 +2331,24 @@ async def _handle_message_fsm(
     # PDF detection
     _bases_url = campaign.bases_pdf_url if campaign else None
     pdf_info = _detect_pdf_request(user_message, slots.interest or "", new_context, bases_pdf_url=_bases_url)
-    if pdf_info and pdf_info.get("pdf_url"):
-        reply_clean = pdf_info.get("mensaje", reply_clean)
-        if funnel_stage in ("1er Contacto", "Intención"):
-            funnel_stage = "Cotización"
-            new_context["funnel_stage"] = funnel_stage
+    if pdf_info:
+        if pdf_info.get("pdf_url"):
+            reply_clean = pdf_info.get("mensaje", reply_clean)
+            if funnel_stage in ("1er Contacto", "Intención"):
+                funnel_stage = "Cotización"
+                new_context["funnel_stage"] = funnel_stage
+        elif pdf_info.get("sin_pdf"):
+            # Model found but no PDF available — override LLM reply so it doesn't say "te mando PDF"
+            modelo = pdf_info.get("modelo", "")
+            tipo = pdf_info.get("tipo", "ficha")
+            doc = "la ficha técnica" if tipo == "ficha" else "la corrida de financiamiento"
+            reply_clean = (
+                f"Por el momento no tengo {doc} de {modelo} en PDF, "
+                "pero un asesor te la puede compartir directamente."
+            )
+        elif pdf_info.get("sin_modelo"):
+            # No model detected — override LLM reply so it doesn't say "te mando PDF"
+            reply_clean = "¿De cuál unidad te interesa la ficha? Con gusto te la comparto."
 
     # Extract slot changes from FSM metadata for Monday sync
     slot_changes = meta.get("slot_changes", [])
@@ -3383,11 +3396,19 @@ async def handle_message(
             new_context["last_pdf_request_type"] = pdf_info.get("tipo")
 
         if pdf_info.get("sin_modelo"):
-            # No hay modelo detectado, el bot debe preguntar
+            # No hay modelo detectado — corregir reply para que no diga "te mando PDF"
             logger.info(f"📄 PDF solicitado ({pdf_info.get('tipo')}) pero sin modelo detectado")
+            reply_clean = "¿De cuál unidad te interesa la ficha? Con gusto te la comparto."
         elif pdf_info.get("sin_pdf"):
-            # No tenemos el PDF de ese modelo
-            logger.info(f"📄 PDF solicitado ({pdf_info.get('tipo')}) pero no disponible para {pdf_info.get('modelo')}")
+            # No tenemos el PDF — corregir reply para que no diga "te mando PDF"
+            modelo = pdf_info.get("modelo", "")
+            tipo = pdf_info.get("tipo", "ficha")
+            doc = "la ficha técnica" if tipo == "ficha" else "la corrida de financiamiento"
+            logger.info(f"📄 PDF solicitado ({tipo}) pero no disponible para {modelo}")
+            reply_clean = (
+                f"Por el momento no tengo {doc} de {modelo} en PDF, "
+                "pero un asesor te la puede compartir directamente."
+            )
         elif pdf_info.get("pdf_url"):
             # Tenemos el PDF, lo vamos a enviar
             logger.info(f"📄 PDF detectado: {pdf_info.get('tipo')} - {pdf_info.get('modelo')} - {pdf_info.get('filename')}")
