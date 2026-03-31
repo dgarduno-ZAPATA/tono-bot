@@ -1658,36 +1658,45 @@ async def notify_owner(bot_state: GlobalState, user_number_or_jid: str, user_mes
 
 
 # === 9.5 NOTIFICACIÓN DE HANDOFF AL EQUIPO ===
+def _normalize_phone_10(number: str) -> str:
+    """Strip Mexico country prefixes (521 or 52) to get the 10-digit local number."""
+    if len(number) == 13 and number.startswith("521"):
+        return number[3:]
+    if len(number) == 12 and number.startswith("52"):
+        return number[2:]
+    return number
+
+
 def _parse_team_numbers() -> List[str]:
     """Return deduplicated list of clean phone numbers from TEAM_NUMBERS setting.
 
-    Normalizes each number to digits-only and deduplicates so that variants
-    like '4422262154', '524422262154', '5214422262154' all collapse to a single
-    entry (the longest/most-complete form wins via a simple seen-suffix check).
-    Logs the final resolved list at startup so it's easy to verify in Render logs.
+    Normalizes each number by stripping Mexico prefix (521/52) to a 10-digit
+    local form for deduplication, then keeps the canonical 521XXXXXXXXXX version.
+    Logs the final resolved list so it's easy to verify in /health or Render logs.
     """
     raw = (settings.TEAM_NUMBERS or "").strip()
     if not raw:
         return []
 
     digits_list = [re.sub(r"\D", "", n) for n in raw.split(",") if n.strip()]
-    digits_list = [d for d in digits_list if d]  # drop empty after cleaning
+    digits_list = [d for d in digits_list if len(d) >= 10]
 
-    # Deduplicate: two numbers are the same if one is a suffix of the other.
-    # Keep the longest (most complete) variant.
-    unique: List[str] = []
+    # Deduplicate by 10-digit local form; prefer the 521XXXXXXXXXX canonical format
+    seen: dict = {}  # local10 → best full number
     for number in digits_list:
-        is_dup = False
-        for existing in unique:
-            if existing.endswith(number) or number.endswith(existing):
-                # Replace with the longer (more qualified) one
+        local10 = _normalize_phone_10(number)
+        existing = seen.get(local10)
+        if existing is None:
+            seen[local10] = number
+        else:
+            # Keep whichever is the canonical 13-digit 521 form; else longest
+            if number.startswith("521") and len(number) == 13:
+                seen[local10] = number
+            elif not (existing.startswith("521") and len(existing) == 13):
                 if len(number) > len(existing):
-                    unique[unique.index(existing)] = number
-                is_dup = True
-                break
-        if not is_dup:
-            unique.append(number)
+                    seen[local10] = number
 
+    unique = list(seen.values())
     logger.info(f"📋 TEAM_NUMBERS resueltos ({len(unique)} únicos): {unique}")
     return unique
 
