@@ -1914,6 +1914,7 @@ async def health(request: Request):
         "bot_messages_tracked": len(bot_state.bot_sent_message_ids),
         "pending_message_queues": len(bot_state.pending_messages),
         "handoff_enabled": bool(settings.TEAM_NUMBERS.strip()),
+        "team_numbers": _parse_team_numbers(),
         "auto_reactivate_minutes": settings.AUTO_REACTIVATE_MINUTES,
         "message_accumulation_seconds": settings.MESSAGE_ACCUMULATION_SECONDS,
     }
