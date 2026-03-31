@@ -1011,6 +1011,23 @@ def decide_action(
                     "sandwich_next": "name",
                 })
 
+        # If a campaign is active, redirect to campaign slot collection (email, city, timeline,
+        # offer_amount) instead of lead slots (appointment).  The state was likely written as
+        # COLLECTING_DATA by the pre-campaign universal FSM run; recover by jumping to
+        # CAMPAIGN_ENTRY so the proper campaign flow takes over.
+        if has_campaign:
+            missing = _get_campaign_missing(slots, campaign_type)
+            if not missing:
+                return _ret(Action.CONFIRM_REGISTRATION, ConversationState.QUALIFIED)
+            if intent == Intent.PROVIDE_DATA and new_data:
+                return _ret(Action.ACKNOWLEDGE_AND_ASK_NEXT, ConversationState.CAMPAIGN_ENTRY, {
+                    "next_slot": missing[0],
+                    "acknowledged_data": new_data,
+                })
+            return _ret(_SLOT_TO_ACTION.get(missing[0], Action.ASK_NAME), ConversationState.CAMPAIGN_ENTRY, {
+                "next_slot": missing[0],
+            })
+
         if not slots.missing_for_lead():
             return _ret(Action.CONFIRM_LEAD, ConversationState.QUALIFIED)
 
@@ -1241,6 +1258,14 @@ def process_fsm(
 
     # Resolve current state
     state = resolve_state(context, slots, has_campaign, turn_count)
+
+    # Fix: the universal FSM (which runs before campaign detection) may have already
+    # advanced the state from GREETING → INTEREST_DISCOVERY and written it to context.
+    # When the campaign-aware FSM runs seconds later it reads that overwritten state,
+    # causing PRESENT_CAMPAIGN to be skipped entirely.  Override back to GREETING on
+    # the first turn so the campaign flow always gets to present its offer.
+    if has_campaign and turn_count <= 1 and state != ConversationState.GREETING:
+        state = ConversationState.GREETING
 
     # Classify intent (now context-aware + multi-message aware)
     last_action_str = context.get("last_action")
