@@ -1302,6 +1302,22 @@ def process_fsm(
         )
 
     # Decide action
+    # --- Form link de-duplication ---
+    # Once the form URL has been sent (PRESENT_CAMPAIGN or SEND_FORM), don't include
+    # it again on every subsequent message — it looks desperate and robotic.
+    # Only re-send if the client explicitly asks for it (mentions "link", "formulario", etc.)
+    _form_link_sent = bool(context.get("form_link_sent", False))
+    _form_request_words = {
+        "link", "formulario", "forma", "registro", "registrar",
+        "manda", "mándame", "mandame", "envía", "envia", "enviame",
+        "de nuevo", "otra vez", "no me llegó", "no me llego",
+    }
+    _msg_lower = user_message.lower()
+    if _form_link_sent and any(w in _msg_lower for w in _form_request_words):
+        _form_link_sent = False  # Client is explicitly asking for it again — re-send once
+
+    effective_form_url = form_url if not _form_link_sent else ""
+
     action, new_state, meta = decide_action(
         state=state,
         slots=slots,
@@ -1310,8 +1326,12 @@ def process_fsm(
         has_campaign=has_campaign,
         turn_count=turn_count,
         campaign_type=campaign_type,
-        form_url=form_url,
+        form_url=effective_form_url,
     )
+
+    # Mark the form link as sent so it won't be repeated automatically
+    if effective_form_url and action in (Action.PRESENT_CAMPAIGN, Action.SEND_FORM):
+        context["form_link_sent"] = True
 
     # Store intent in meta so conversation_logic can use it
     meta["intent"] = intent.value
