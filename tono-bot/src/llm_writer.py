@@ -156,10 +156,13 @@ _ACTION_PROMPTS: Dict[Action, str] = {
     ),
 
     Action.SEND_FORM: (
-        "ACCIÓN: Dirige al cliente al formulario de registro para dejar su propuesta.\n"
+        "ACCIÓN: Dirige al cliente al formulario de registro de la campaña.\n"
         "Link del formulario: {form_url}\n"
-        "Sé breve y natural: 'Para registrar tu propuesta, completa el formulario aquí: {form_url}'\n"
-        "No pidas datos por chat."
+        "Explica brevemente que en el formulario registran todo (nombre, teléfono, propuesta)\n"
+        "y que un asesor los contacta después de revisar. Sé natural y vendedor, no robótico.\n"
+        "Si el cliente ya dio algún dato (nombre, ciudad, etc.), reconócelo primero antes de mandarlo al form.\n"
+        "Ejemplo: 'Gracias [nombre]. Para que quede todo registrado formalmente —nombre, teléfono y propuesta—\n"
+        "llena el formulario aquí: {form_url}. Un asesor te contacta en cuanto lo revise.'"
     ),
 }
 
@@ -257,14 +260,24 @@ def build_writer_prompt(
     if meta.get("form_url") and action == Action.PRESENT_CAMPAIGN:
         parts.append(
             f"\nOBLIGATORIO — LINK DE REGISTRO (incluir siempre):\n"
-            f"Esta campaña registra propuestas vía formulario externo. "
-            f"Presenta la dinámica brevemente (1 oración) y cierra TU MENSAJE con esta línea exacta:\n"
-            f"Para registrar tu propuesta: {meta['form_url']}\n"
-            f"NO hagas preguntas de seguimiento. El link es todo lo que necesitan."
+            f"Esta campaña registra propuestas vía formulario. Preséntala así:\n"
+            f"1. Una oración natural presentando la dinámica/oferta (usa INSTRUCCIONES DE CAMPAÑA).\n"
+            f"2. Explica que el formulario es donde registran TODO: nombre, teléfono y propuesta,\n"
+            f"   y que un asesor los contacta en cuanto lo revisen.\n"
+            f"3. Cierra con el link: {meta['form_url']}\n"
+            f"Sé vendedor y natural, no robótico. NO hagas preguntas de seguimiento."
         )
 
     # Form-based campaign: when answering a side question, remind client of form at the end
-    if meta.get("form_url") and action == Action.ANSWER_QUESTION and meta.get("is_side_question"):
+    if meta.get("sandwich_form_url") and action == Action.ANSWER_QUESTION:
+        parts.append(
+            f"\nIMPORTANTE — RESPUESTA + RECORDATORIO DEL FORMULARIO:\n"
+            f"Responde la pregunta del cliente PRIMERO (máx. 1 oración) de forma natural y vendedora.\n"
+            f"Luego, en la MISMA respuesta, recuérdale de forma natural que en el formulario\n"
+            f"registra todo (nombre, teléfono, propuesta) y un asesor lo contacta:\n"
+            f"{meta['sandwich_form_url']}"
+        )
+    elif meta.get("form_url") and action == Action.ANSWER_QUESTION and meta.get("is_side_question"):
         parts.append(
             f"\nOBLIGATORIO — INCLUYE ESTA LÍNEA AL FINAL DE TU RESPUESTA (textual):\n"
             f"Para registrar tu propuesta: {meta['form_url']}"
@@ -427,12 +440,18 @@ def try_deterministic_response(
             return None  # All ACK variants are duplicates → let LLM generate fresh
         return response
 
-    # SEND_FORM: deterministic — always include the actual URL
+    # SEND_FORM: deterministic only when the client hasn't given any data yet.
+    # If they provided data (name, city, offer, etc.), let the LLM acknowledge it
+    # warmly before redirecting to the form — avoids a cold, robotic response.
     if action == Action.SEND_FORM:
         form_url = (meta or {}).get("form_url", "")
-        if form_url:
-            return f"Para registrar tu propuesta, completa el formulario aquí: {form_url}"
-        return None  # No URL available — fall back to LLM
+        if not form_url:
+            return None  # No URL — fall back to LLM
+        ack_data = (meta or {}).get("acknowledged_data") or {}
+        has_ack = any(v for v in ack_data.values() if v)
+        if has_ack:
+            return None  # Client gave data → let LLM acknowledge + redirect naturally
+        return f"Para registrar tu propuesta, completa el formulario aquí: {form_url}"
 
     # CONFIRM_REGISTRATION: deterministic
     if action == Action.CONFIRM_REGISTRATION:

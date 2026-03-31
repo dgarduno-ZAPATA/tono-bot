@@ -933,12 +933,14 @@ def decide_action(
         if intent in (Intent.ASK_QUESTION, Intent.ASK_PRICE, Intent.ASK_FINANCING,
                        Intent.ASK_LOCATION, Intent.TRUST_CONCERN):
             meta_extra: Dict[str, Any] = {"is_trust_concern": True} if intent == Intent.TRUST_CONCERN else {}
-            # Do NOT re-send form_url — it was already shown in PRESENT_CAMPAIGN.
-            # Use sandwich instead: answer the question, then naturally ask for next missing slot.
             if intent != Intent.TRUST_CONCERN:
-                _missing = _get_campaign_missing(slots, campaign_type)
-                if _missing:
-                    meta_extra["sandwich_next"] = _missing[0]
+                if form_url:
+                    # With form: answer the question, then remind of the form link at the end
+                    meta_extra["sandwich_form_url"] = form_url
+                else:
+                    _missing = _get_campaign_missing(slots, campaign_type)
+                    if _missing:
+                        meta_extra["sandwich_next"] = _missing[0]
             return _ret(Action.ANSWER_QUESTION, ConversationState.CAMPAIGN_ENTRY,
                         {"is_side_question": True, **meta_extra})
 
@@ -946,8 +948,15 @@ def decide_action(
         if intent == Intent.DENY:
             return _ret(Action.SOFT_DENY, ConversationState.CAMPAIGN_ENTRY)
 
-        # --- Form-based registration: skip all slot collection ---
+        # --- Form-based registration ---
         if form_url:
+            if intent in (Intent.PROVIDE_DATA, Intent.MAKE_OFFER, Intent.CONFIRM):
+                # Client is giving data manually — acknowledge warmly and redirect to form
+                return _ret(Action.SEND_FORM, ConversationState.CAMPAIGN_ENTRY, {
+                    "form_url": form_url,
+                    "acknowledged_data": new_data,
+                })
+            # Any other intent (generic message, greeting, etc.) → remind of form
             return _ret(Action.SEND_FORM, ConversationState.CAMPAIGN_ENTRY, {"form_url": form_url})
 
         # Check if data was provided or offer made
@@ -1010,6 +1019,23 @@ def decide_action(
                     "is_side_question": True,
                     "sandwich_next": "name",
                 })
+
+        # If a campaign is active, redirect to campaign slot collection (email, city, timeline,
+        # offer_amount) instead of lead slots (appointment).  The state was likely written as
+        # COLLECTING_DATA by the pre-campaign universal FSM run; recover by jumping to
+        # CAMPAIGN_ENTRY so the proper campaign flow takes over.
+        if has_campaign:
+            missing = _get_campaign_missing(slots, campaign_type)
+            if not missing:
+                return _ret(Action.CONFIRM_REGISTRATION, ConversationState.QUALIFIED)
+            if intent == Intent.PROVIDE_DATA and new_data:
+                return _ret(Action.ACKNOWLEDGE_AND_ASK_NEXT, ConversationState.CAMPAIGN_ENTRY, {
+                    "next_slot": missing[0],
+                    "acknowledged_data": new_data,
+                })
+            return _ret(_SLOT_TO_ACTION.get(missing[0], Action.ASK_NAME), ConversationState.CAMPAIGN_ENTRY, {
+                "next_slot": missing[0],
+            })
 
         if not slots.missing_for_lead():
             return _ret(Action.CONFIRM_LEAD, ConversationState.QUALIFIED)
@@ -1242,6 +1268,14 @@ def process_fsm(
     # Resolve current state
     state = resolve_state(context, slots, has_campaign, turn_count)
 
+    # Fix: the universal FSM (which runs before campaign detection) may have already
+    # advanced the state from GREETING → INTEREST_DISCOVERY and written it to context.
+    # When the campaign-aware FSM runs seconds later it reads that overwritten state,
+    # causing PRESENT_CAMPAIGN to be skipped entirely.  Override back to GREETING on
+    # the first turn so the campaign flow always gets to present its offer.
+    if has_campaign and turn_count <= 1 and state != ConversationState.GREETING:
+        state = ConversationState.GREETING
+
     # Classify intent (now context-aware + multi-message aware)
     last_action_str = context.get("last_action")
     last_action = None
@@ -1268,6 +1302,22 @@ def process_fsm(
         )
 
     # Decide action
+    # --- Form link de-duplication ---
+    # Once the form URL has been sent (PRESENT_CAMPAIGN or SEND_FORM), don't include
+    # it again on every subsequent message — it looks desperate and robotic.
+    # Only re-send if the client explicitly asks for it (mentions "link", "formulario", etc.)
+    _form_link_sent = bool(context.get("form_link_sent", False))
+    _form_request_words = {
+        "link", "formulario", "forma", "registro", "registrar",
+        "manda", "mándame", "mandame", "envía", "envia", "enviame",
+        "de nuevo", "otra vez", "no me llegó", "no me llego",
+    }
+    _msg_lower = user_message.lower()
+    if _form_link_sent and any(w in _msg_lower for w in _form_request_words):
+        _form_link_sent = False  # Client is explicitly asking for it again — re-send once
+
+    effective_form_url = form_url if not _form_link_sent else ""
+
     action, new_state, meta = decide_action(
         state=state,
         slots=slots,
@@ -1276,8 +1326,12 @@ def process_fsm(
         has_campaign=has_campaign,
         turn_count=turn_count,
         campaign_type=campaign_type,
-        form_url=form_url,
+        form_url=effective_form_url,
     )
+
+    # Mark the form link as sent so it won't be repeated automatically
+    if effective_form_url and action in (Action.PRESENT_CAMPAIGN, Action.SEND_FORM):
+        context["form_link_sent"] = True
 
     # Store intent in meta so conversation_logic can use it
     meta["intent"] = intent.value
