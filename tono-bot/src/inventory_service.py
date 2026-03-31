@@ -98,6 +98,7 @@ class InventoryService:
                 "Dormitorio": row.get("Dormitorio", ""),
                 "Traccion": row.get("Traccion", row.get("Tracción", row.get("traccion", ""))),
                 "condicion": row.get("condicion", row.get("Condicion", row.get("Condición", ""))),
+                "Kilometraje": row.get("Kilometraje", row.get("kilometraje", row.get("KM", row.get("km", "")))),
             }
             normalized.append(item)
 
