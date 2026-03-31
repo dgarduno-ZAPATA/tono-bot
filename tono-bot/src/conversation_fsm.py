@@ -933,12 +933,14 @@ def decide_action(
         if intent in (Intent.ASK_QUESTION, Intent.ASK_PRICE, Intent.ASK_FINANCING,
                        Intent.ASK_LOCATION, Intent.TRUST_CONCERN):
             meta_extra: Dict[str, Any] = {"is_trust_concern": True} if intent == Intent.TRUST_CONCERN else {}
-            # Do NOT re-send form_url — it was already shown in PRESENT_CAMPAIGN.
-            # Use sandwich instead: answer the question, then naturally ask for next missing slot.
             if intent != Intent.TRUST_CONCERN:
-                _missing = _get_campaign_missing(slots, campaign_type)
-                if _missing:
-                    meta_extra["sandwich_next"] = _missing[0]
+                if form_url:
+                    # With form: answer the question, then remind of the form link at the end
+                    meta_extra["sandwich_form_url"] = form_url
+                else:
+                    _missing = _get_campaign_missing(slots, campaign_type)
+                    if _missing:
+                        meta_extra["sandwich_next"] = _missing[0]
             return _ret(Action.ANSWER_QUESTION, ConversationState.CAMPAIGN_ENTRY,
                         {"is_side_question": True, **meta_extra})
 
@@ -946,8 +948,15 @@ def decide_action(
         if intent == Intent.DENY:
             return _ret(Action.SOFT_DENY, ConversationState.CAMPAIGN_ENTRY)
 
-        # --- Form-based registration: skip all slot collection ---
+        # --- Form-based registration ---
         if form_url:
+            if intent in (Intent.PROVIDE_DATA, Intent.MAKE_OFFER, Intent.CONFIRM):
+                # Client is giving data manually — acknowledge warmly and redirect to form
+                return _ret(Action.SEND_FORM, ConversationState.CAMPAIGN_ENTRY, {
+                    "form_url": form_url,
+                    "acknowledged_data": new_data,
+                })
+            # Any other intent (generic message, greeting, etc.) → remind of form
             return _ret(Action.SEND_FORM, ConversationState.CAMPAIGN_ENTRY, {"form_url": form_url})
 
         # Check if data was provided or offer made
