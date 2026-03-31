@@ -1659,11 +1659,37 @@ async def notify_owner(bot_state: GlobalState, user_number_or_jid: str, user_mes
 
 # === 9.5 NOTIFICACIÓN DE HANDOFF AL EQUIPO ===
 def _parse_team_numbers() -> List[str]:
-    """Return list of clean phone numbers from TEAM_NUMBERS setting."""
+    """Return deduplicated list of clean phone numbers from TEAM_NUMBERS setting.
+
+    Normalizes each number to digits-only and deduplicates so that variants
+    like '4422262154', '524422262154', '5214422262154' all collapse to a single
+    entry (the longest/most-complete form wins via a simple seen-suffix check).
+    Logs the final resolved list at startup so it's easy to verify in Render logs.
+    """
     raw = (settings.TEAM_NUMBERS or "").strip()
     if not raw:
         return []
-    return [n.strip() for n in raw.split(",") if n.strip()]
+
+    digits_list = [re.sub(r"\D", "", n) for n in raw.split(",") if n.strip()]
+    digits_list = [d for d in digits_list if d]  # drop empty after cleaning
+
+    # Deduplicate: two numbers are the same if one is a suffix of the other.
+    # Keep the longest (most complete) variant.
+    unique: List[str] = []
+    for number in digits_list:
+        is_dup = False
+        for existing in unique:
+            if existing.endswith(number) or number.endswith(existing):
+                # Replace with the longer (more qualified) one
+                if len(number) > len(existing):
+                    unique[unique.index(existing)] = number
+                is_dup = True
+                break
+        if not is_dup:
+            unique.append(number)
+
+    logger.info(f"📋 TEAM_NUMBERS resueltos ({len(unique)} únicos): {unique}")
+    return unique
 
 
 async def _notify_handoff_to_team(bot_state: GlobalState, client_jid: str) -> None:
