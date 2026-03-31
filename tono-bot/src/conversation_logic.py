@@ -715,6 +715,7 @@ def _build_inventory_text(inventory_service) -> str:
         colores = _safe_get(item, ["Colores", "colores"], default="")
 
         condicion = _safe_get(item, ["condicion", "Condicion", "Condición"])
+        kilometraje = _safe_get(item, ["Kilometraje", "kilometraje", "KM", "km"])
 
         price_str = _format_price(precio, moneda, iva)
         label = f"{marca} {modelo}".strip() if marca else modelo
@@ -724,6 +725,13 @@ def _build_inventory_text(inventory_service) -> str:
             info += " [DEMO]"
         elif condicion and condicion.strip().lower() == "seminuevo":
             info += " [SEMINUEVO]"
+
+        if kilometraje:
+            try:
+                km_int = int(float(str(kilometraje).replace(",", "").strip()))
+                info += f" | {km_int:,} km"
+            except (ValueError, TypeError):
+                info += f" | {kilometraje} km"
 
         try:
             cant = int(cantidad)
@@ -858,6 +866,7 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
         iva = _safe_get(item, ["iva_incluido"], default="")
         marca = _safe_get(item, ["Marca", "marca"])
         condicion = _safe_get(item, ["condicion", "Condicion", "Condición"])
+        kilometraje = _safe_get(item, ["Kilometraje", "kilometraje", "KM", "km"])
         price_str = _format_price(precio, moneda, iva)
         label = f"{marca} {modelo}".strip() if marca else modelo
         info = f"Modelo de interés: {label} {anio}: {price_str}"
@@ -866,6 +875,13 @@ def _build_focused_inventory_text(inventory_service, last_interest: str) -> str:
             info += " [DEMO]"
         elif condicion and condicion.strip().lower() == "seminuevo":
             info += " [SEMINUEVO]"
+
+        if kilometraje:
+            try:
+                km_int = int(float(str(kilometraje).replace(",", "").strip()))
+                info += f" | {km_int:,} km"
+            except (ValueError, TypeError):
+                info += f" | {kilometraje} km"
 
         # Tipo de uso: CARGA vs PASAJEROS
         modelo_lower = modelo.lower()
