@@ -941,6 +941,10 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                                 cita=funnel_data.get("cita") or "",
                                 interes=funnel_data.get("interes") or "",
                                 nombre=current_name,
+                                ciudad=result_context.get("user_city") or context.get("user_city") or "",
+                                campaign_tid=tracking_id,
+                                monday_item_id=monday_item_id,
+                                history=result_context.get("history") or context.get("history") or "",
                             ))
 
                         # V3: Connect lead to Anuncio board item if tracking ID exists
@@ -1701,29 +1705,85 @@ def _parse_team_numbers() -> List[str]:
     return unique
 
 
-async def _notify_handoff_to_team(bot_state: GlobalState, client_jid: str) -> None:
-    """Send a handoff alert to every number in TEAM_NUMBERS.
+def _build_team_alert(
+    title: str,
+    client_jid: str,
+    nombre: str = "",
+    interes: str = "",
+    ciudad: str = "",
+    cita: str = "",
+    campaign_tid: str = "",
+    monday_item_id: Optional[str] = None,
+    history: str = "",
+) -> str:
+    """Build the rich notification message sent to TEAM_NUMBERS."""
+    tz = pytz.timezone("America/Mexico_City")
+    now_str = datetime.now(tz).strftime("%d/%m/%Y %I:%M %p")
+    clean_client = _clean_phone_or_jid(client_jid)
 
-    Called when a human agent message is detected on the business WhatsApp,
-    so the team knows the bot is silenced and which chat needs attention.
-    """
+    lines = [f"*{title}*", f"📅 {now_str}"]
+
+    if nombre:
+        lines.append(f"👤 {nombre}")
+    lines.append(f"📞 wa.me/{clean_client}")
+    if ciudad:
+        lines.append(f"📍 {ciudad}")
+    if interes:
+        lines.append(f"🚛 {interes}")
+    if cita:
+        lines.append(f"🗓️ Cita: {cita}")
+    if campaign_tid:
+        lines.append(f"📋 Campaña: {campaign_tid}")
+
+    # Monday link
+    board_id = getattr(settings, "MONDAY_BOARD_ID", "") or ""
+    if board_id and monday_item_id:
+        lines.append(f"🔗 Monday: https://view.monday.com/board/{board_id}/pulses/{monday_item_id}")
+
+    # Last 5 exchanges from history (format: "C: ...\nA: ...")
+    if history:
+        raw_lines = [l.strip() for l in history.strip().split("\n") if l.strip()]
+        # Take last 10 lines (≈5 exchanges) and format them
+        snippet_lines = raw_lines[-10:]
+        if snippet_lines:
+            conv = []
+            for l in snippet_lines:
+                if l.startswith("C:"):
+                    conv.append(f"  Cliente: {l[2:].strip()}")
+                elif l.startswith("A:"):
+                    conv.append(f"  Bot: {l[2:].strip()}")
+            if conv:
+                lines.append("💬 Conversación:")
+                lines.extend(conv)
+
+    return "\n".join(lines)
+
+
+async def _notify_handoff_to_team(
+    bot_state: GlobalState,
+    client_jid: str,
+    nombre: str = "",
+    interes: str = "",
+    ciudad: str = "",
+    campaign_tid: str = "",
+    monday_item_id: Optional[str] = None,
+    history: str = "",
+) -> None:
+    """Send a handoff alert to every number in TEAM_NUMBERS."""
     team = _parse_team_numbers()
     if not team:
         return
 
     clean_client = _clean_phone_or_jid(client_jid)
-    reactivate_min = settings.AUTO_REACTIVATE_MINUTES
-
-    tz = pytz.timezone("America/Mexico_City")
-    reactivate_at = datetime.now(tz) + timedelta(minutes=reactivate_min)
-    reactivate_str = reactivate_at.strftime("%H:%M")
-
-    alert = (
-        "🤝 *ASESOR TOMÓ CONTROL*\n\n"
-        f"Chat: wa.me/{clean_client}\n"
-        f"Bot silenciado por {reactivate_min} min.\n"
-        f"Reactivación automática: {reactivate_str} (CDMX)\n\n"
-        "_(El bot no responderá en ese chat hasta entonces)_"
+    alert = _build_team_alert(
+        title="🤝 HANDOFF — Asesor tomó control",
+        client_jid=client_jid,
+        nombre=nombre,
+        interes=interes,
+        ciudad=ciudad,
+        campaign_tid=campaign_tid,
+        monday_item_id=monday_item_id,
+        history=history,
     )
 
     for number in team:
@@ -1734,20 +1794,33 @@ async def _notify_handoff_to_team(bot_state: GlobalState, client_jid: str) -> No
             logger.warning(f"⚠️ No se pudo notificar handoff a {number}: {e}")
 
 
-async def _notify_appointment_to_team(bot_state: GlobalState, client_jid: str, cita: str, interes: str, nombre: str) -> None:
+async def _notify_appointment_to_team(
+    bot_state: GlobalState,
+    client_jid: str,
+    cita: str = "",
+    interes: str = "",
+    nombre: str = "",
+    ciudad: str = "",
+    campaign_tid: str = "",
+    monday_item_id: Optional[str] = None,
+    history: str = "",
+) -> None:
     """Send an appointment alert to every number in TEAM_NUMBERS."""
     team = _parse_team_numbers()
     if not team:
         return
 
     clean_client = _clean_phone_or_jid(client_jid)
-    nombre_str = f" ({nombre})" if nombre else ""
-
-    alert = (
-        "📅 *CITA PROGRAMADA*\n\n"
-        f"Cliente{nombre_str}: wa.me/{clean_client}\n"
-        f"Vehículo: {interes or 'N/A'}\n"
-        f"Cita: {cita or 'N/A'}"
+    alert = _build_team_alert(
+        title="📅 CITA PROGRAMADA",
+        client_jid=client_jid,
+        nombre=nombre,
+        interes=interes,
+        ciudad=ciudad,
+        cita=cita,
+        campaign_tid=campaign_tid,
+        monday_item_id=monday_item_id,
+        history=history,
     )
 
     for number in team:
