@@ -35,6 +35,7 @@ from src.conversation_logic import (
 )
 from src.memory_store import MemoryStore
 from src.monday_service import monday_service, extract_tracking_id, strip_tracking_id
+from src.brand_config import get_inventory_path
 
 
 # === 1. CONFIGURACIÓN ROBUSTA (Pydantic) ===
@@ -183,11 +184,8 @@ async def lifespan(app: FastAPI):
     )
 
     # B) Inventario
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    INVENTORY_PATH = os.path.join(BASE_DIR, "data", "inventory.csv")
-
     bot_state.inventory = InventoryService(
-        INVENTORY_PATH,
+        get_inventory_path(),
         sheet_csv_url=settings.SHEET_CSV_URL,
         refresh_seconds=settings.INVENTORY_REFRESH_SECONDS,
     )

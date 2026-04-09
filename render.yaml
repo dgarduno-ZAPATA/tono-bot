@@ -17,7 +17,7 @@ services:
     plan: starter          # Siempre encendido, persistent disk, 0.5 CPU
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerContext: ./tono-bot
+    dockerContext: .
     repo: https://github.com/dgarduno-ZAPATA/tono-bot
     branch: main
     region: oregon

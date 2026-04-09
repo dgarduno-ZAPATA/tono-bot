@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 
 import pytz
 
+from src.brand_config import get_dropdown_map, get_tracking_codes, get_campaign_types
+
 logger = logging.getLogger(__name__)
 
 # Meses en español para nombres de grupos en Monday
@@ -31,48 +33,11 @@ STAGE_HIERARCHY = {
 TERMINAL_STAGES = {"Venta Cerrada", "Venta Caida", "Sin Interes"}
 
 # ============================================================
-# V2: VEHICLE SYNONYMS → Monday dropdown labels
-# ============================================================
-VEHICLE_DROPDOWN_MAP = {
-    "Tunland E5": ["e5", "tunland", "tunland e5"],
-    "ESTA 6x4 11.8": ["esta 11.8", "6x4 11.8", "esta"],
-    "ESTA 6x4 X13": ["esta x13", "6x4 x13"],
-    "Miler": ["miler", "miller"],
-    "Toano Panel": ["toano", "panel", "toano panel"],
-    "Tunland G7": ["g7", "tunland g7"],
-    "Tunland G9": ["g9", "tunland g9"],
-    "Cascadia": ["cascadia", "freightliner"],
-    "Kenworth T800": ["kenworth", "t800", "t 800", "kenworth t800"],
-    "International Prostar": ["international", "prostar", "international prostar"],
-}
-
-
-# ============================================================
 # V3: TRACKING ID → Internal ad attribution (Baileys workaround)
 # ============================================================
 # Format: <MODEL_CODE>-<CAMPAIGN_TYPE><NUMBER>
 # Examples: TG9-A1 (Tunland G9 Ad 1), CA-SU1 (Cascadia Mejor Precio 1)
-MODEL_CODE_MAP = {
-    "TG7": "Tunland G7",
-    "TG9": "Tunland G9",
-    "TE5": "Tunland E5",
-    "ML":  "Miler",
-    "TP":  "Toano Panel",
-    "E11": "ESTA 6x4 11.8",
-    "EX":  "ESTA 6x4 X13",
-    "CA":  "Cascadia",
-    "KT8": "Kenworth T800",
-    "IPR": "International Prostar",
-}
-
-# Campaign type codes for tracking IDs
-CAMPAIGN_TYPE_MAP = {
-    "A":  "Anuncio",            # Regular ad (default)
-    "SU": "Mejor Precio",       # Mejor Propuesta / Precio especial
-    "LQ": "Liquidación",        # Liquidación / Precio especial
-    "PR": "Promoción",          # Promoción especial
-    "EV": "Evento",             # Evento / Open House
-}
+# Maps loaded from brand/vehicles.yaml via get_tracking_codes() / get_campaign_types()
 
 TRACKING_ID_PATTERN = re.compile(
     r'\b([A-Z][A-Z0-9]{1,3})[-_](A|SU|LQ|PR|EV)(\d{1,3})\b', re.IGNORECASE
@@ -96,12 +61,12 @@ def extract_tracking_id(text: str) -> dict | None:
     model_code = m.group(1).upper()
     campaign_type = m.group(2).upper()
     ad_number = int(m.group(3))
-    vehicle_label = MODEL_CODE_MAP.get(model_code)
+    vehicle_label = get_tracking_codes().get(model_code)
 
     if not vehicle_label:
         return None
 
-    campaign_type_label = CAMPAIGN_TYPE_MAP.get(campaign_type, "Anuncio")
+    campaign_type_label = get_campaign_types().get(campaign_type, "Anuncio")
     tracking_id = f"{model_code}-{campaign_type}{ad_number}"
     return {
         "tracking_id": tracking_id,
@@ -190,7 +155,7 @@ def resolve_vehicle_to_dropdown(interest: str) -> str:
     Dado un interés detectado por el bot (ej. 'Tunland G9 2025'),
     devuelve el label EXACTO del dropdown de Monday (ej. 'Tunland G9').
 
-    1. Primero intenta match contra VEHICLE_DROPDOWN_MAP (aliases conocidos).
+    1. Primero intenta match contra dropdown_map de brand/vehicles.yaml (aliases conocidos).
     2. Si no hay match, genera un label dinámico limpiando marcas y años.
        Esto permite que vehículos nuevos en inventario se registren en Monday
        sin necesidad de actualizar el código.
@@ -209,7 +174,7 @@ def resolve_vehicle_to_dropdown(interest: str) -> str:
     best_label = ""
     best_score = 0
 
-    for label, synonyms in VEHICLE_DROPDOWN_MAP.items():
+    for label, synonyms in get_dropdown_map().items():
         score = 0
         for syn in synonyms:
             if syn in interest_lower:
