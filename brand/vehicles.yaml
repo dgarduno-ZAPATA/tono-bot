@@ -1,0 +1,65 @@
+# =========================================================================
+# Catálogo de vehículos — Tractos y Max
+# =========================================================================
+
+dropdown_map:
+  "Tunland E5":
+    - "e5"
+    - "tunland"
+    - "tunland e5"
+  "Tunland G7":
+    - "g7"
+    - "tunland g7"
+  "Tunland G9":
+    - "g9"
+    - "tunland g9"
+  "Miler":
+    - "miler"
+    - "miller"
+  "Toano Panel":
+    - "toano"
+    - "panel"
+    - "toano panel"
+  "ESTA 6x4 11.8":
+    - "esta 11.8"
+    - "6x4 11.8"
+    - "esta"
+  "ESTA 6x4 X13":
+    - "esta x13"
+    - "6x4 x13"
+  "Cascadia":
+    - "cascadia"
+    - "freightliner"
+  "Kenworth T800":
+    - "kenworth"
+    - "t800"
+    - "t 800"
+    - "kenworth t800"
+  "International Prostar":
+    - "international"
+    - "prostar"
+    - "international prostar"
+
+tracking_codes:
+  TG7: "Tunland G7"
+  TG9: "Tunland G9"
+  TE5: "Tunland E5"
+  ML:  "Miler"
+  TP:  "Toano Panel"
+  E11: "ESTA 6x4 11.8"
+  EX:  "ESTA 6x4 X13"
+  CA:  "Cascadia"
+  KT8: "Kenworth T800"
+  IPR: "International Prostar"
+
+campaign_types:
+  A:  "Anuncio"
+  SU: "Mejor Precio"
+  LQ: "Liquidación"
+  PR: "Promoción"
+  EV: "Evento"
+
+payment_labels:
+  cash: "De Contado"
+  credit: "Financiamiento"
+  undefined: "Por definir"

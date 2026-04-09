@@ -14,6 +14,7 @@ openai==1.59.7
 # Data
 pandas==2.2.3
 pytz==2024.2
+PyYAML==6.0.2
 
 # ✅ Necesario para: from pydantic_settings import BaseSettings
 pydantic==2.9.2

@@ -109,36 +109,21 @@ class MemoryStore:
         ).execute()
 
     async def purge_expired(self) -> int:
-        """Delete sessions whose TTL has passed.
+        """Delete sessions not updated within the TTL window.
 
-        Scans all rows and removes those whose ``_session_expires_at`` is in the
-        past.  Returns the number of rows deleted, or -1 on error.
-
-        This is a soft-scan approach (no extra DB column required).  For large
-        deployments (>50 k sessions) consider adding a proper ``expires_at``
-        timestamptz column with a Postgres index instead.
+        Filters by ``updated_at`` directly in Supabase — does NOT load
+        context_json into memory, so it's safe to call on large tables.
+        Returns the number of rows deleted, or -1 on error.
         """
-        now = datetime.now(timezone.utc)
-        deleted = 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=self._ttl_days)).isoformat()
         try:
-            resp = self._client.table("sessions").select("phone, context_json").execute()
-            for row in (resp.data or []):
-                ctx = row.get("context_json") or {}
-                if isinstance(ctx, str):
-                    try:
-                        ctx = json.loads(ctx)
-                    except Exception:
-                        ctx = {}
-                exp_str = ctx.get(_EXPIRES_KEY)
-                if not exp_str:
-                    continue
-                try:
-                    exp_dt = datetime.fromisoformat(exp_str)
-                    if now > exp_dt:
-                        self._client.table("sessions").delete().eq("phone", row["phone"]).execute()
-                        deleted += 1
-                except Exception:
-                    continue
+            resp = (
+                self._client.table("sessions")
+                .delete()
+                .lt("updated_at", cutoff)
+                .execute()
+            )
+            deleted = len(resp.data) if resp.data else 0
         except Exception as e:
             logger.error(f"⚠️ purge_expired falló: {e}")
             return -1

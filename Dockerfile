@@ -4,16 +4,19 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # 2. Dependencias (capa cacheada)
-COPY requirements.txt .
+COPY tono-bot/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 3. Código de la aplicación
-COPY . .
+# tono-bot/ → /app/  (src/, data/ quedan en /app/src/, etc.)
+# brand/    → /brand/ (brand_config.py hace 3 niveles arriba desde /app/src/)
+COPY tono-bot/ .
+COPY brand/ /brand/
 
 # 4. Usuario non-root (seguridad: si el contenedor es comprometido, no tiene privilegios de admin)
 RUN adduser --disabled-password --no-create-home appuser \
     && mkdir -p /app/db \
-    && chown -R appuser:appuser /app
+    && chown -R appuser:appuser /app /brand
 USER appuser
 
 # 5. Python config

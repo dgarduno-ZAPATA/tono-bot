@@ -1,0 +1,17 @@
+.env
+.env.*
+tono-bot/.env
+tono-bot/.env.*
+*.db
+tono-bot/db/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git
+.gitignore
+README.md
+CLAUDE.md
+tono-bot/docs/
+tono-bot/*.md
+.venv/
+tono-bot/.venv/

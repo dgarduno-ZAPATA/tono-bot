@@ -1,0 +1,48 @@
+# =========================================================================
+# Brand configuration — Tractos y Max
+# Este archivo define TODO lo que cambia entre marcas.
+# Para crear un bot para otra marca, clona el repo y edita este archivo.
+# =========================================================================
+
+brand:
+  name: "Tractos y Max"
+  slug: "tractosymax"
+  legal_name: "Tractos y Max"
+
+bot:
+  persona_name: "Adrian Jimenez"
+  persona_title: "asesor"
+  language: "es"
+  max_sentences: 2
+  use_emojis: false
+  philosophy: "destrabar"
+
+business:
+  office_label: "Tlalnepantla, Edo Mex"
+  office_full_address: "Camiones del Valle Tlalnepantla"
+  office_maps_url: "https://maps.app.goo.gl/v9KigGY3QVAxqwV17"
+  timezone: "America/Mexico_City"
+  hours_weekdays: "Lunes a Viernes 9:00 a 18:00"
+  hours_saturday: "Sábados 9:00 a 14:00"
+  hours_sunday: "cerrado"
+  closed_days: ["sunday"]
+
+whatsapp:
+  instance_name: "Maximo Cervantes 2"
+
+crm:
+  type: "monday"
+
+behavior:
+  message_accumulation_seconds: 8.0
+  auto_reactivate_minutes: 60
+  human_detection_window_seconds: 3
+  inventory_refresh_seconds: 300
+  campaigns_refresh_seconds: 300
+
+llm:
+  primary_provider: "gemini"
+  primary_model: "gemini-2.5-flash-lite"
+  fallback_model: "gpt-4o-mini"
+  max_tokens: 450
+  temperature: 0.3
