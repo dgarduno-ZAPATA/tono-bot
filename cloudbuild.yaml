@@ -1,0 +1,39 @@
+steps:
+  # 1. Construir la imagen Docker
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'northamerica-south1-docker.pkg.dev/tono-bot-tym-prod/tono-bot-images/tono-bot:$COMMIT_SHA', '.']
+
+  # 2. Subir la imagen a Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'northamerica-south1-docker.pkg.dev/tono-bot-tym-prod/tono-bot-images/tono-bot:$COMMIT_SHA']
+
+  # 3. Deploy a Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'tono-bot'
+      - '--image'
+      - 'northamerica-south1-docker.pkg.dev/tono-bot-tym-prod/tono-bot-images/tono-bot:$COMMIT_SHA'
+      - '--region'
+      - 'northamerica-south1'
+      - '--allow-unauthenticated'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '3'
+      - '--concurrency'
+      - '1'
+      - '--cpu'
+      - '1'
+      - '--memory'
+      - '512Mi'
+      - '--timeout'
+      - '300'
+      - '--add-cloudsql-instances'
+      - 'tono-bot-tym-prod:northamerica-south1:tono-bot-db'
+      - '--set-env-vars'
+      - 'DB_HOST=/cloudsql/tono-bot-tym-prod:northamerica-south1:tono-bot-db,DB_USER=tonobot_app,DB_NAME=tonobot,DB_PORT=5432,SESSION_TTL_DAYS=45'
+      - '--set-secrets'
+      - 'DB_PASSWORD=db-password:latest,OPENAI_API_KEY=openai-api-key:latest,GEMINI_API_KEY=gemini-api-key:latest,EVOLUTION_API_KEY=evolution-api-key:latest,MONDAY_API_KEY=monday-api-key:latest,MONDAY_BOARD_ID=monday-board-id:latest,MONDAY_ADS_BOARD_ID=monday-ads-board-id:latest,OWNER_PHONE=owner-phone:latest,TEAM_NUMBERS=team-numbers:latest,SHEET_CSV_URL=sheet-csv-url:latest,CAMPAIGNS_CSV_URL=campaigns-csv-url:latest'
