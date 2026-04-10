@@ -55,7 +55,7 @@
 | Server | Uvicorn 0.30.6 |
 | Runtime | Python 3.11 |
 | HTTP Client | httpx 0.27.2 (async) |
-| Database | Supabase (PostgreSQL) via supabase-py 2.13.0 |
+| Database | Cloud SQL PostgreSQL 15 via asyncpg 0.30.0 |
 | AI (Primary) | Google Gemini via OpenAI SDK (gemini-2.5-flash-lite) |
 | AI (Fallback) | OpenAI API (gpt-4o-mini) |
 | AI (Audio) | OpenAI Whisper API |
@@ -77,8 +77,12 @@ EVOLUTION_API_URL        # Evolution API endpoint
 EVOLUTION_API_KEY        # Evolution API authentication
 OPENAI_API_KEY           # OpenAI API key (fallback LLM + Whisper)
 GEMINI_API_KEY           # Google Gemini API key (primary LLM)
-SUPABASE_URL             # Supabase project URL (https://xxxx.supabase.co)
-SUPABASE_KEY             # Supabase anon/service_role key
+DB_HOST                  # Cloud SQL host or Unix socket (/cloudsql/PROJECT:REGION:INSTANCE on Cloud Run)
+DB_PORT                  # PostgreSQL port (default: 5432)
+DB_NAME                  # Database name (default: tonobot)
+DB_USER                  # Database user (default: tonobot_app)
+DB_PASSWORD              # Database password
+SESSION_TTL_DAYS         # Session expiry in days (default: 45)
 ```
 
 ### Optional (with defaults)
@@ -412,9 +416,10 @@ curl http://localhost:8080/health
 - Semantic formatting for GPT context
 
 ### memory_store.py (Persistence)
-- Supabase (PostgreSQL) wrapper via supabase-py
+- Cloud SQL PostgreSQL wrapper via asyncpg (connection pool)
 - Phone-keyed session storage
 - Upsert logic for state + context JSONB
+- Real `expires_at TIMESTAMPTZ` column for TTL (previously stored as `_session_expires_at` inside context_json)
 
 ### monday_service.py (CRM - V2)
 - GraphQL mutations for lead creation/update
