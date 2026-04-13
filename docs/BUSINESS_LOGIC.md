@@ -273,7 +273,7 @@ contado, cash, crédito, financiamiento, mensualidades, no quiero crédito.
 **Acción ejecutada:**
 - Envío inicial: lote de 3 fotos exteriores del modelo solicitado.
 - Bajo demanda: envíos individuales posteriores.
-- Control de navegación: se mantiene un índice (conceptualmente photo_index) almacenado en SQLite para saber cuál es la "siguiente foto" por usuario y por modelo.
+- Control de navegación: se mantiene un índice (conceptualmente photo_index) almacenado en Cloud SQL PostgreSQL para saber cuál es la "siguiente foto" por usuario y por modelo.
 
 ---
 

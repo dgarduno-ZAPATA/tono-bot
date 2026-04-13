@@ -10,7 +10,7 @@ Tono-Bot usa una arquitectura Dual LLM con Gemini como proveedor primario y Open
 - **Modelo**: `gemini-2.5-flash-lite` (configurable con `OPENAI_MODEL`)
 - **SDK**: OpenAI SDK con `base_url=https://generativelanguage.googleapis.com/v1beta/openai/`
 - **API Key**: `GEMINI_API_KEY`
-- **Transporte**: IPv4 forzado (`local_address="0.0.0.0"`) para evitar fallos de IPv6 en Render
+- **Transporte**: IPv4 forzado (`local_address="0.0.0.0"`) para evitar fallos de IPv6 en entornos de contenedores cloud
 
 ### OpenAI (Fallback)
 - **Modelo**: `gpt-4o-mini` (configurable con `OPENAI_FALLBACK_MODEL`)
