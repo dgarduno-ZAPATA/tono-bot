@@ -12,7 +12,7 @@
 - Audio message transcription (Whisper API)
 - Image analysis via Vision API (Gemini/OpenAI)
 - Human handoff detection
-- Conversation memory with Supabase (PostgreSQL) persistence
+- Conversation memory with Cloud SQL PostgreSQL persistence
 - Photo carousel for vehicles
 - PDF sending (fichas técnicas + corridas financieras) from financing.json
 - Message accumulation (debouncing) for rapid messages
@@ -22,7 +22,7 @@
 
 ```
 /home/user/tono-bot/
-├── Dockerfile                      # Root Docker config (used by Render)
+├── Dockerfile                      # Root Docker config for deployment
 ├── CLAUDE.md                       # This file
 ├── .env.example                    # Environment variables template
 ├── docs/
@@ -33,14 +33,12 @@
 │   ├── AI_ARCHITECTURE.md          # AI architecture & concurrency
 │   └── RUNBOOK.md                  # Troubleshooting & operations
 └── tono-bot/                       # Main application directory
-    ├── .dockerignore               # Excludes .env, .db, .git from Docker builds
-    ├── Dockerfile                  # Alternative Docker config
     ├── requirements.txt            # Python dependencies
     ├── src/
     │   ├── main.py                 # FastAPI entry point, webhooks, debouncing, vision (~1520 lines)
     │   ├── conversation_logic.py   # Dual LLM handler, prompts, PDF detection (~1960 lines)
     │   ├── inventory_service.py    # Vehicle inventory from CSV/Google Sheets (~110 lines)
-    │   ├── memory_store.py         # Supabase session persistence (~80 lines)
+    │   ├── memory_store.py         # Cloud SQL session persistence (~80 lines)
     │   └── monday_service.py       # Monday.com CRM integration, funnel V2 (~800 lines)
     └── data/
         ├── inventory.csv           # Vehicle catalog (8 models)
@@ -200,7 +198,7 @@ The bot automatically tracks leads through a 10-stage sales funnel in Monday.com
 - **Board**: "Leads Tractos y Max" (ID: `18396811838`)
 - **Estado column** (STATUS, ID: `status`): Labels listed in funnel table above
 - **Groups**: Auto-created by month (e.g., "FEBRERO 2026")
-- Set all `MONDAY_*` env vars in Render (see Environment Variables section)
+- Set all `MONDAY_*` env vars in the deployment environment (see Environment Variables section)
 
 ## Ad Attribution System (V3 - Tracking ID)
 
@@ -270,7 +268,6 @@ Separate board for cataloging active ads:
 - **OpenAI** (fallback): Native OpenAI SDK
 - **AUTO-SWITCH at startup**: Smoke test (DNS + TCP + HTTPS + API call) against Gemini; if unreachable, OpenAI becomes primary automatically
 - **Per-request fallback** (`_llm_call_with_fallback()`): 2 quick retries per provider (1s, 2s backoff), then switches to secondary
-- **IPv4 forced** on Render (Gemini sometimes fails with IPv6)
 
 ### 2. Message Accumulation (Debouncing)
 - Groups rapid messages from same client into single LLM call (`MESSAGE_ACCUMULATION_SECONDS=8.0`)
@@ -283,7 +280,7 @@ Separate board for cataloging active ads:
 ### 3. Async Everything
 All I/O operations use async/await:
 - `httpx.AsyncClient` for HTTP requests
-- `aiosqlite` for database operations
+- `asyncpg` for database operations
 - `AsyncOpenAI` for both Gemini and OpenAI calls
 - Background task processing for webhook responses
 
@@ -291,7 +288,7 @@ All I/O operations use async/await:
 `GlobalState` class in `main.py` manages runtime state:
 - HTTP client connection
 - Inventory service instance
-- SQLite memory store
+- Cloud SQL memory store
 - Deduplication sets (BoundedOrderedSet with FIFO eviction)
 - User silencing for human handoff
 - Pending messages and accumulation timers
@@ -322,18 +319,12 @@ Automatic detection of leads arriving from Facebook/Instagram ads:
 - **Cloud API mode**: Extracts `referral` object with `source_url`, `source_id`, `ctwa_clid`, `headline`, etc.
 - Referral extraction runs **before** the `fromMe` filter (Baileys sends `conversionSource` on outgoing `fromMe=true` messages)
 - Referral data captured on first message and persisted in session context (`referral_source`, `referral_data`)
-- Stored in `GlobalState.pending_referrals` until persisted to SQLite
+- Stored in `GlobalState.pending_referrals` until persisted to Cloud SQL
 - Source label auto-populated in Monday.com "Origen Lead" column
 - Referral details included in Monday.com lead creation notes and owner alerts
 - Known Baileys limitation: `remoteJid` may arrive in `@lid` format (Evolution API issue #2267)
 - Known Baileys limitation: `source_id` (Ad ID) is NOT available — only Cloud API provides it via `referral.source_id`
 - Campaign Name, Ad Set Name, Ad Name require Meta Marketing API batch enrichment (future feature)
-
-### 10. Error Monitoring (Sentry)
-- **Opt-in**: Only active if `SENTRY_DSN` env var is set (empty = disabled, zero impact)
-- **FastAPI integration**: Auto-captures unhandled exceptions with full stack traces
-- **Trace sampling**: 10% of requests sampled for performance monitoring
-- **Init**: Conditional at startup in `main.py`, before any request processing
 
 ### 9. Human Detection
 Multi-layer heuristics to detect when a human agent takes over:
@@ -341,6 +332,12 @@ Multi-layer heuristics to detect when a human agent takes over:
 - Specific human phrases
 - Typing patterns and timestamps
 - Message ID tracking
+
+### 10. Error Monitoring (Sentry)
+- **Opt-in**: Only active if `SENTRY_DSN` env var is set (empty = disabled, zero impact)
+- **FastAPI integration**: Auto-captures unhandled exceptions with full stack traces
+- **Trace sampling**: 10% of requests sampled for performance monitoring
+- **Init**: Conditional at startup in `main.py`, before any request processing
 
 ## Code Conventions
 
@@ -461,11 +458,11 @@ No formal test suite currently. Manual testing via:
 
 ## Deployment
 
-Deployed on **Render** PaaS:
+Deployed on **Google Cloud Run** (project: tono-bot-tym-prod, region: northamerica-south1):
 - Port: 8080
 - Dockerfile at repo root
-- Environment variables configured in Render dashboard
-- Session data persisted in Supabase (PostgreSQL, external)
+- Environment variables configured in the Cloud Run service
+- Session data persisted in Cloud SQL PostgreSQL 15 (instance: tono-bot-db, database: tonobot)
 - **Docker hardening**:
   - Non-root user (`appuser`) — limits blast radius if container is compromised
   - `HEALTHCHECK` against `/health` (30s interval, 5s timeout, 10s start period)
@@ -475,7 +472,7 @@ Deployed on **Render** PaaS:
 
 Based on commit history:
 - Conversation quality (semantic summaries, anti-repetition)
-- Async migration (httpx, aiosqlite, AsyncOpenAI)
+- Async architecture improvements (httpx, asyncpg, AsyncOpenAI)
 - Token optimization for GPT context
 - Infrastructure reliability (retry logic, error handling)
 - Dependency injection (no module-level globals)
