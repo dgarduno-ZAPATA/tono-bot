@@ -912,6 +912,95 @@ def test_deterministic_forces_llm_for_appointment_ack():
     print("✅ ÁNGEL FIX 4: ACKNOWLEDGE_AND_ASK_NEXT with appointment ack → None (forces LLM)")
 
 
+# ═══════════════════════════════════════════════════════════════
+# CASE 34: Offer extractor — guard against vehicle model years
+# ═══════════════════════════════════════════════════════════════
+def test_offer_extractor_rejects_model_year():
+    """Vehicle model years (1990-2035) must NOT be captured as offer amounts.
+
+    Regression test for the 'Toano 2024' bug where the extractor interpreted
+    a model year as a $2,024,000 offer.
+    """
+    from src.conversation_fsm import _extract_offer, _format_offer_amount
+
+    # Direct unit test of the format guard
+    assert _format_offer_amount("2024", "") is None, \
+        "2024 should be rejected as model year"
+    assert _format_offer_amount("2023", "") is None, \
+        "2023 should be rejected as model year"
+    assert _format_offer_amount("2030", "") is None, \
+        "2030 should be rejected as model year"
+
+    # End-to-end via _extract_offer with realistic messages
+    assert _extract_offer("Quisiera mas detalles de esta Toano 2024", "") is None, \
+        "Toano 2024 must not be parsed as $2,024,000 offer"
+    assert _extract_offer("Hola, me interesa la Cascadia 2023", "") is None, \
+        "Cascadia 2023 must not be parsed as offer"
+    assert _extract_offer("modelo 2024, 350000 km, 6 cilindros", "") is None, \
+        "Spec-listing message must not be parsed as offer"
+
+    # But legitimate "2 millones" must still work
+    assert _extract_offer("ofrezco 2 millones", "") == "$2,000,000", \
+        "Legitimate '2 millones' must still be captured"
+    print("CASE 34: Offer extractor rejects model years (Toano 2024 bug) OK")
+
+
+# ═══════════════════════════════════════════════════════════════
+# CASE 35: Offer extractor — requires explicit signal
+# ═══════════════════════════════════════════════════════════════
+def test_offer_extractor_requires_explicit_signal():
+    """Bare numbers without offer keyword/symbol/millions must NOT match.
+
+    Prevents false positives like 'trae 450 mil km' or 'tiene 850 caballos'
+    from being interpreted as offers.
+    """
+    from src.conversation_fsm import _extract_offer
+
+    # Numbers that appear in vehicle specs, not as offers
+    assert _extract_offer("trae 450 mil km", "") is None, \
+        "'450 mil km' (kilometers) must not be captured as offer"
+    assert _extract_offer("tiene 850 caballos", "") is None, \
+        "'850 caballos' (horsepower) must not be captured as offer"
+    assert _extract_offer("hola buenas tardes", "") is None, \
+        "Greeting with no number must not match"
+
+    # Legitimate offers with explicit signals
+    assert _extract_offer("te doy 670 mil", "") == "$670,000", \
+        "Explicit 'te doy' keyword must work"
+    assert _extract_offer("ofrezco 2 millones", "") == "$2,000,000", \
+        "Explicit 'ofrezco' must work"
+    assert _extract_offer("mi propuesta es 1.5 millones", "") == "$1,500,000", \
+        "'propuesta' keyword must work"
+    assert _extract_offer("$850,000", "") == "$850,000", \
+        "Currency symbol must work"
+    assert _extract_offer("monto de 900000", "") == "$900,000", \
+        "'monto' keyword must work"
+    assert _extract_offer("quiero pagar 700 mil", "") == "$700,000", \
+        "'quiero pagar' (newly added keyword) must work"
+    assert _extract_offer("voy a dar 600 mil", "") == "$600,000", \
+        "'voy a dar' must work"
+    print("CASE 35: Offer extractor requires explicit signal OK")
+
+
+# ═══════════════════════════════════════════════════════════════
+# CASE 36: Offer extractor — contextual fallback still works
+# ═══════════════════════════════════════════════════════════════
+def test_offer_extractor_contextual_fallback_preserved():
+    """When the bot just asked for the offer, bare numbers must still be captured.
+
+    Regression test to ensure the tightened regex did not break the existing
+    contextual fallback that handles bare numeric replies after offer prompts.
+    """
+    from src.conversation_fsm import _extract_offer
+
+    history = "A: Cual es tu monto de tu propuesta?"
+    assert _extract_offer("688000", history) == "$688,000", \
+        "Bare number after offer prompt must still work"
+    assert _extract_offer("Que son 688000", history) == "$688,000", \
+        "'Que son N' after offer prompt must still work"
+    print("CASE 36: Contextual fallback for bare numbers preserved OK")
+
+
 # ============================================================
 # RUN ALL
 # ============================================================

@@ -603,6 +603,13 @@ def _format_offer_amount(raw: str, suffix: str = "") -> Optional[str]:
         val = int(digits)
         if val <= 0:
             return None
+
+        # GUARD: Reject values that look like vehicle model years (1990-2035)
+        # when there is no explicit "mil"/"k" suffix. This prevents "Toano 2024"
+        # from being interpreted as "$2,024,000".
+        if suffix_lc not in ("mil", "k") and 1990 <= val <= 2035:
+            return None
+
         # "mil" / "k" suffix OR bare short numbers (e.g. "700" → $700,000)
         if suffix_lc in ("mil", "k") or val < 10000:
             val *= 1000
@@ -625,16 +632,23 @@ def _extract_offer(text: str, history: str = "") -> Optional[str]:
     if not msg:
         return None
 
-    # Primary pattern: captures numeric part (group 1 or 2) and optional suffix (group 3 or 4)
+    # Primary pattern: requires explicit signal of an offer.
+    # Bare numbers without context are handled by the contextual fallback below
+    # (only when the bot just asked for the offer).
+    # Three alternatives, all requiring a clear cue:
+    #   1) Offer keyword + number + optional unit  ("te doy 670 mil")
+    #   2) Currency symbol $ + number + optional unit  ("$850,000")
+    #   3) Number + millions unit (no keyword needed) ("1.5 millones")
     m = re.search(
-        r'(?:(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|(?:quiero|puedo|voy\s+a)\s+dar|propuesta|oferta|monto)'
-        r'\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?)'
-        r'|\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\b',
+        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|(?:quiero|puedo|voy\s+a)\s+(?:dar|pagar)|propuesta|oferta|monto)'
+        r'\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?'
+        r'|\$\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?'
+        r'|\b(\d[\d,\.]*)\s*(millones?|millón(?:es)?|\bmm\b)',
         msg, re.IGNORECASE
     )
     if m:
-        num = m.group(1) or m.group(3) or ""
-        suf = m.group(2) or m.group(4) or ""
+        num = m.group(1) or m.group(3) or m.group(5) or ""
+        suf = m.group(2) or m.group(4) or m.group(6) or ""
         formatted = _format_offer_amount(num, suf)
         if formatted:
             return formatted

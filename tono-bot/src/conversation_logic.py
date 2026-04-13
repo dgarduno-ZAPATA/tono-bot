@@ -2287,15 +2287,18 @@ async def handle_message(
     # "1.5 millones" → "$1,500,000").
     # Re-uses the FSM extractor to keep logic in one place.
     extracted_offer = None
+    # Requires explicit signal: offer keyword OR currency symbol OR millions unit.
+    # Bare numbers without context handled by the contextual fallback below.
     _offer_pat = re.search(
-        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|propuesta|oferta|monto)'
+        r'(?:(?:te\s+)?(?:doy|ofrezco|propongo|pongo)|(?:quiero|puedo|voy\s+a)\s+(?:dar|pagar)|propuesta|oferta|monto)'
         r'\s*(?:de\s+)?\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?'
-        r'|\$?\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?\b',
+        r'|\$\s*(\d[\d,\.]*)(?:\s*(millones?|millón(?:es)?|mm|mil|k|pesos?))?'
+        r'|\b(\d[\d,\.]*)\s*(millones?|millón(?:es)?|\bmm\b)',
         user_message, re.IGNORECASE
     )
     if _offer_pat:
-        _num = _offer_pat.group(1) or _offer_pat.group(3) or ""
-        _suf = _offer_pat.group(2) or _offer_pat.group(4) or ""
+        _num = _offer_pat.group(1) or _offer_pat.group(3) or _offer_pat.group(5) or ""
+        _suf = _offer_pat.group(2) or _offer_pat.group(4) or _offer_pat.group(6) or ""
         extracted_offer = _format_offer_legacy(_num, _suf)
         if extracted_offer:
             logger.info(f"💰 Oferta detectada: {extracted_offer}")
