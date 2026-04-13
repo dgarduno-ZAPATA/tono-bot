@@ -1117,23 +1117,6 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                 except Exception as e:
                     logger.error(f"⚠️ Error guardando campaign data en Monday: {e}")
 
-            # Lead calificado - notificar
-            # Get referral source and tracking ID for alerts
-            result_ctx = result.get("context", context) or {}
-            alert_referral = result_ctx.get("referral_source") or context.get("referral_source") or ""
-            alert_tracking = result_ctx.get("tracking_id") or context.get("tracking_id") or ""
-
-            if lead_info:
-                try:
-                    lead_key = f"{remote_jid}|lead"
-                    if lead_key not in bot_state.processed_lead_ids:
-                        bot_state.processed_lead_ids.add(lead_key)
-                        await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=True, referral_source=alert_referral, tracking_id=alert_tracking)
-                except Exception as e:
-                    logger.error(f"❌ Error procesando LEAD calificado: {e}")
-            else:
-                await notify_owner(bot_state, remote_jid, combined_message, reply_text, is_lead=False, referral_source=alert_referral, tracking_id=alert_tracking)
-
 
 async def _schedule_accumulated_processing(bot_state: GlobalState, remote_jid: str):
     """
