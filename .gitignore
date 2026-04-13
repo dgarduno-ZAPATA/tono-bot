@@ -5,3 +5,17 @@ __pycache__/
 tono-bot/db/
 .venv/
 .env.local
+
+# Datos sensibles - dumps de sesiones (NUNCA commitear)
+sessions_export.csv
+sessions_export.json
+sessions_export.*
+
+# Scripts locales de migración one-time (no forman parte del repo)
+scripts/
+
+# Otros dumps potenciales
+*.dump
+*.sql.gz
+*_export.csv
+*_export.json
