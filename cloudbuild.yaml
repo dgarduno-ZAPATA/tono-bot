@@ -36,6 +36,6 @@ steps:
       - '--add-cloudsql-instances'
       - 'tono-bot-tym-prod:northamerica-south1:tono-bot-db'
       - '--set-env-vars'
-      - 'DB_HOST=/cloudsql/tono-bot-tym-prod:northamerica-south1:tono-bot-db,DB_USER=tonobot_app,DB_NAME=tonobot,DB_PORT=5432,SESSION_TTL_DAYS=45,EVOLUTION_API_URL=https://v2.zapata.com.mx,MONDAY_STAGE_COLUMN_ID=estado6,MONDAY_TRACKING_ID_COLUMN_ID=texto4,MONDAY_LEADS_CONNECT_ADS_COLUMN_ID=connect_boards'
+      - 'DB_HOST=/cloudsql/tono-bot-tym-prod:northamerica-south1:tono-bot-db,DB_USER=tonobot_app,DB_NAME=tonobot,DB_PORT=5432,SESSION_TTL_DAYS=45,EVOLUTION_API_URL=https://evolutionapi-evolution-api.jl4jzq.easypanel.host,EVO_INSTANCE=TractosYMaxPrueba8mil,MONDAY_STAGE_COLUMN_ID=estado6,MONDAY_TRACKING_ID_COLUMN_ID=texto4,MONDAY_LEADS_CONNECT_ADS_COLUMN_ID=connect_boards'
       - '--set-secrets'
       - 'DB_PASSWORD=db-password:latest,OPENAI_API_KEY=openai-api-key:latest,GEMINI_API_KEY=gemini-api-key:latest,EVOLUTION_API_KEY=evolution-api-key:latest,MONDAY_API_KEY=monday-api-key:latest,MONDAY_BOARD_ID=monday-board-id:latest,MONDAY_ADS_BOARD_ID=monday-ads-board-id:latest,OWNER_PHONE=owner-phone:latest,TEAM_NUMBERS=team-numbers:latest,SHEET_CSV_URL=sheet-csv-url:latest,CAMPAIGNS_CSV_URL=campaigns-csv-url:latest'
