@@ -804,9 +804,6 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                 result = await handle_message(combined_message, bot_state.inventory, state, context, campaign_service=bot_state.campaigns)
             except Exception as e:
                 logger.error(f"❌ Error IA: {e}")
-            finally:
-                _llm_ms = int((time.monotonic() - _llm_t0) * 1000)
-                logger.info(f"🤖 LLM | provider={LLM_PRIMARY} | {_llm_ms}ms | jid={remote_jid}")
                 result = {
                     "reply": "Dame un momento...",
                     "new_state": state,
@@ -814,6 +811,9 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                     "media_urls": [],
                     "lead_info": None
                 }
+            finally:
+                _llm_ms = int((time.monotonic() - _llm_t0) * 1000)
+                logger.info(f"🤖 LLM | provider={LLM_PRIMARY} | {_llm_ms}ms | jid={remote_jid}")
 
             reply_text = (result.get("reply") or "").strip()
             media_urls = result.get("media_urls") or []
