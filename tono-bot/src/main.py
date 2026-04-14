@@ -1879,7 +1879,6 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         # 3. Si NO es del bot Y NO es automático → Es un HUMANO → SILENCIAR
         logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} - silenciando bot por {settings.AUTO_REACTIVATE_MINUTES} min")
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
-        asyncio.create_task(_notify_handoff_to_team(bot_state, remote_jid))
         return
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO, AUDIO O IMAGEN) ===
