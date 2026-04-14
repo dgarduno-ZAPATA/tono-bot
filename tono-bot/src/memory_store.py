@@ -63,16 +63,21 @@ class MemoryStore:
         logger.info("✅ Cloud SQL MemoryStore connected.")
 
     async def get(self, phone: str) -> Optional[Dict[str, Any]]:
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT phone, state, context_json
-                FROM sessions
-                WHERE phone = $1 AND expires_at > NOW()
-                LIMIT 1
-                """,
-                phone,
-            )
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT phone, state, context_json
+                    FROM sessions
+                    WHERE phone = $1 AND expires_at > NOW()
+                    LIMIT 1
+                    """,
+                    phone,
+                )
+        except Exception as e:
+            logger.error(f"❌ SESSION GET failed | phone={phone} | error={e}")
+            return None
+
         if not row:
             return None
 
@@ -81,7 +86,8 @@ class MemoryStore:
         if isinstance(ctx, str):
             try:
                 ctx = json.loads(ctx)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"⚠️ SESSION ctx parse error | phone={phone} | error={e}")
                 ctx = {}
         elif ctx is None:
             ctx = {}
@@ -98,19 +104,22 @@ class MemoryStore:
         expires_at = now + timedelta(days=self._ttl_days)
         ctx_json = json.dumps(context, ensure_ascii=False)
 
-        async with self._pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO sessions (phone, state, context_json, expires_at, updated_at)
-                VALUES ($1, $2, $3::jsonb, $4, $5)
-                ON CONFLICT (phone) DO UPDATE SET
-                    state = EXCLUDED.state,
-                    context_json = EXCLUDED.context_json,
-                    expires_at = EXCLUDED.expires_at,
-                    updated_at = EXCLUDED.updated_at
-                """,
-                phone, state, ctx_json, expires_at, now,
-            )
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO sessions (phone, state, context_json, expires_at, updated_at)
+                    VALUES ($1, $2, $3::jsonb, $4, $5)
+                    ON CONFLICT (phone) DO UPDATE SET
+                        state = EXCLUDED.state,
+                        context_json = EXCLUDED.context_json,
+                        expires_at = EXCLUDED.expires_at,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    phone, state, ctx_json, expires_at, now,
+                )
+        except Exception as e:
+            logger.error(f"❌ SESSION UPSERT failed | phone={phone} | state={state} | error={e}")
 
     async def purge_expired(self) -> int:
         """Delete sessions whose ``expires_at`` has passed. Returns row count."""

@@ -91,11 +91,37 @@ if settings.SENTRY_DSN and settings.SENTRY_DSN.strip():
     except Exception as e:
         print(f"⚠️ Sentry init failed (invalid DSN?): {e} — continuing without Sentry")
 
-# Logs
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# ============================================================
+# LOGS — Google Cloud Logging (Cloud Run)
+# Cloud Run captura stdout. Si cada línea es JSON con los campos
+# "severity" y "message", Cloud Logging los parsea como registros
+# estructurados: filtros por severidad, búsqueda por campo, alertas.
+# ============================================================
+class _GCPFormatter(logging.Formatter):
+    """Emite un objeto JSON por línea compatible con Google Cloud Logging."""
+    _SEV = {
+        logging.DEBUG: "DEBUG", logging.INFO: "INFO",
+        logging.WARNING: "WARNING", logging.ERROR: "ERROR",
+        logging.CRITICAL: "CRITICAL",
+    }
+    def format(self, record: logging.LogRecord) -> str:
+        entry: dict = {
+            "severity": self._SEV.get(record.levelno, "DEFAULT"),
+            "message": record.getMessage(),
+            "logger": record.name,
+        }
+        if record.exc_info:
+            entry["exception"] = self.formatException(record.exc_info)
+        try:
+            return json.dumps(entry, ensure_ascii=False)
+        except Exception:
+            return str(entry)
+
+_log_handler = logging.StreamHandler()
+_log_handler.setFormatter(_GCPFormatter())
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+_root.handlers = [_log_handler]   # reemplaza cualquier handler previo (basicConfig)
 logger = logging.getLogger("BotTractos")
 
 
@@ -773,6 +799,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
             await human_typing_delay()
 
             # === Procesar con IA ===
+            _llm_t0 = time.monotonic()
             try:
                 result = await handle_message(combined_message, bot_state.inventory, state, context, campaign_service=bot_state.campaigns)
             except Exception as e:
@@ -784,6 +811,9 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                     "media_urls": [],
                     "lead_info": None
                 }
+            finally:
+                _llm_ms = int((time.monotonic() - _llm_t0) * 1000)
+                logger.info(f"🤖 LLM | provider={LLM_PRIMARY} | {_llm_ms}ms | jid={remote_jid}")
 
             reply_text = (result.get("reply") or "").strip()
             media_urls = result.get("media_urls") or []
@@ -863,7 +893,9 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                     is_stage_change = (funnel_stage != previous_stage)
                     funnel_key = f"{remote_jid}|{funnel_stage}" if is_stage_change else f"{remote_jid}|name|{current_name}"
                     if funnel_key not in bot_state.processed_lead_ids:
-                        bot_state.processed_lead_ids.add(funnel_key)
+                        # NOTE: processed_lead_ids is added AFTER a successful Monday call.
+                        # If Monday fails, the key stays out of the set so the next message
+                        # will retry — this prevents silent data loss on transient API errors.
 
                         # Get referral source from context (persisted from first message)
                         result_context = result.get("context", context) or {}
@@ -923,9 +955,28 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
 
                         effective_stage = funnel_stage if is_stage_change else None
                         logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - nombre={current_name} - {lead_data.get('interes')}")
-                        monday_item_id = await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
 
-                        # Notify team when appointment is confirmed
+                        # Monday update — only marks dedup key when it succeeds so that
+                        # transient failures are retried on the next incoming message.
+                        monday_item_id = None
+                        try:
+                            monday_item_id = await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
+                            bot_state.processed_lead_ids.add(funnel_key)  # mark only on success
+                            logger.info(
+                                f"✅ MONDAY | stage={effective_stage or 'datos'} | "
+                                f"item={monday_item_id} | phone={lead_data.get('telefono')} | "
+                                f"nombre={lead_data.get('nombre')}"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"❌ MONDAY FAIL | stage={effective_stage or 'datos'} | "
+                                f"phone={lead_data.get('telefono')} | error={e}"
+                            )
+                            # funnel_key intentionally NOT added — next message will retry
+
+                        # Notify team when appointment is confirmed.
+                        # Runs REGARDLESS of Monday status so the team always gets
+                        # the alert even when Monday is temporarily unavailable.
                         if is_stage_change and funnel_stage == "Cita Programada":
                             asyncio.create_task(_notify_appointment_to_team(
                                 bot_state, remote_jid,
@@ -948,14 +999,14 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                                 logger.error(f"⚠️ Error conectando lead a anuncio: {e}")
 
                 except Exception as e:
-                    logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+                    logger.error(f"❌ Error inesperado en funnel V2: {e}")
 
             # === SLOT-BASED INCREMENTAL MONDAY SYNC ===
             # When FSM reports slot changes, sync each changed slot to Monday
             # independently. This ensures granular CRM updates even if the
             # conversation doesn't trigger a full stage change.
             slot_changes = result.get("slot_changes") or []
-            if slot_changes and monday_service:
+            if slot_changes and monday_service and monday_service.board_id:
                 try:
                     phone = remote_jid.split("@")[0]
                     sanitized = monday_service._sanitize_phone(phone)
@@ -1049,7 +1100,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                         if col_vals:
                             try:
                                 import json as _json
-                                mutation = 'mutation ($id: ID!, $vals: JSON!) { change_multiple_column_values(item_id: $id, board_id: %s, column_values: $vals) { id } }' % monday_service.board_id
+                                mutation = 'mutation ($id: ID!, $vals: JSON!) { change_multiple_column_values(item_id: $id, board_id: %s, column_values: $vals, create_labels_if_missing: true) { id } }' % monday_service.board_id
                                 await monday_service._graphql(mutation, {
                                     "id": str(item_id),
                                     "vals": _json.dumps(col_vals),
@@ -1815,7 +1866,16 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
     if not remote_jid:
         return
 
-    logger.info(f"📩 Evento: msg_id={msg_id[:20]}... from_me={from_me}")
+    # Determinar tipo de mensaje para el log de entrada
+    _msg_obj_preview = data.get("message", {}) or {}
+    _msg_type = "text"
+    if "audioMessage" in _msg_obj_preview or "pttMessage" in _msg_obj_preview:
+        _msg_type = "audio"
+    elif any(k in _msg_obj_preview for k in ("imageMessage", "videoMessage")):
+        _msg_type = "image"
+    elif "documentMessage" in _msg_obj_preview:
+        _msg_type = "document"
+    logger.info(f"📩 Webhook | jid={remote_jid} | type={_msg_type} | from_me={from_me} | id={msg_id[:16]}")
 
     # Ignorar grupos/broadcast
     if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
@@ -1870,7 +1930,6 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         # 3. Si NO es del bot Y NO es automático → Es un HUMANO → SILENCIAR
         logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} - silenciando bot por {settings.AUTO_REACTIVATE_MINUTES} min")
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
-        # Handoff team notification disabled — only appointment notifications are sent
         return
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO, AUDIO O IMAGEN) ===
