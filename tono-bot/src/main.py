@@ -863,7 +863,9 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                     is_stage_change = (funnel_stage != previous_stage)
                     funnel_key = f"{remote_jid}|{funnel_stage}" if is_stage_change else f"{remote_jid}|name|{current_name}"
                     if funnel_key not in bot_state.processed_lead_ids:
-                        bot_state.processed_lead_ids.add(funnel_key)
+                        # NOTE: processed_lead_ids is added AFTER a successful Monday call.
+                        # If Monday fails, the key stays out of the set so the next message
+                        # will retry — this prevents silent data loss on transient API errors.
 
                         # Get referral source from context (persisted from first message)
                         result_context = result.get("context", context) or {}
@@ -924,13 +926,15 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                         effective_stage = funnel_stage if is_stage_change else None
                         logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - nombre={current_name} - {lead_data.get('interes')}")
 
-                        # Monday update — has its own error handling so a failure
-                        # does NOT block the appointment notification below.
+                        # Monday update — only marks dedup key when it succeeds so that
+                        # transient failures are retried on the next incoming message.
                         monday_item_id = None
                         try:
                             monday_item_id = await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
+                            bot_state.processed_lead_ids.add(funnel_key)  # mark only on success
                         except Exception as e:
                             logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+                            # funnel_key intentionally NOT added — next message will retry
 
                         # Notify team when appointment is confirmed.
                         # Runs REGARDLESS of Monday status so the team always gets
