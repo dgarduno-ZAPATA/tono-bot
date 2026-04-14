@@ -91,11 +91,37 @@ if settings.SENTRY_DSN and settings.SENTRY_DSN.strip():
     except Exception as e:
         print(f"⚠️ Sentry init failed (invalid DSN?): {e} — continuing without Sentry")
 
-# Logs
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+# ============================================================
+# LOGS — Google Cloud Logging (Cloud Run)
+# Cloud Run captura stdout. Si cada línea es JSON con los campos
+# "severity" y "message", Cloud Logging los parsea como registros
+# estructurados: filtros por severidad, búsqueda por campo, alertas.
+# ============================================================
+class _GCPFormatter(logging.Formatter):
+    """Emite un objeto JSON por línea compatible con Google Cloud Logging."""
+    _SEV = {
+        logging.DEBUG: "DEBUG", logging.INFO: "INFO",
+        logging.WARNING: "WARNING", logging.ERROR: "ERROR",
+        logging.CRITICAL: "CRITICAL",
+    }
+    def format(self, record: logging.LogRecord) -> str:
+        entry: dict = {
+            "severity": self._SEV.get(record.levelno, "DEFAULT"),
+            "message": record.getMessage(),
+            "logger": record.name,
+        }
+        if record.exc_info:
+            entry["exception"] = self.formatException(record.exc_info)
+        try:
+            return json.dumps(entry, ensure_ascii=False)
+        except Exception:
+            return str(entry)
+
+_log_handler = logging.StreamHandler()
+_log_handler.setFormatter(_GCPFormatter())
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+_root.handlers = [_log_handler]   # reemplaza cualquier handler previo (basicConfig)
 logger = logging.getLogger("BotTractos")
 
 
@@ -773,10 +799,14 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
             await human_typing_delay()
 
             # === Procesar con IA ===
+            _llm_t0 = time.monotonic()
             try:
                 result = await handle_message(combined_message, bot_state.inventory, state, context, campaign_service=bot_state.campaigns)
             except Exception as e:
                 logger.error(f"❌ Error IA: {e}")
+            finally:
+                _llm_ms = int((time.monotonic() - _llm_t0) * 1000)
+                logger.info(f"🤖 LLM | provider={LLM_PRIMARY} | {_llm_ms}ms | jid={remote_jid}")
                 result = {
                     "reply": "Dame un momento...",
                     "new_state": state,
@@ -932,8 +962,16 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                         try:
                             monday_item_id = await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
                             bot_state.processed_lead_ids.add(funnel_key)  # mark only on success
+                            logger.info(
+                                f"✅ MONDAY | stage={effective_stage or 'datos'} | "
+                                f"item={monday_item_id} | phone={lead_data.get('telefono')} | "
+                                f"nombre={lead_data.get('nombre')}"
+                            )
                         except Exception as e:
-                            logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+                            logger.error(
+                                f"❌ MONDAY FAIL | stage={effective_stage or 'datos'} | "
+                                f"phone={lead_data.get('telefono')} | error={e}"
+                            )
                             # funnel_key intentionally NOT added — next message will retry
 
                         # Notify team when appointment is confirmed.
@@ -1828,7 +1866,16 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
     if not remote_jid:
         return
 
-    logger.info(f"📩 Evento: msg_id={msg_id[:20]}... from_me={from_me}")
+    # Determinar tipo de mensaje para el log de entrada
+    _msg_obj_preview = data.get("message", {}) or {}
+    _msg_type = "text"
+    if "audioMessage" in _msg_obj_preview or "pttMessage" in _msg_obj_preview:
+        _msg_type = "audio"
+    elif any(k in _msg_obj_preview for k in ("imageMessage", "videoMessage")):
+        _msg_type = "image"
+    elif "documentMessage" in _msg_obj_preview:
+        _msg_type = "document"
+    logger.info(f"📩 Webhook | jid={remote_jid} | type={_msg_type} | from_me={from_me} | id={msg_id[:16]}")
 
     # Ignorar grupos/broadcast
     if remote_jid.endswith("@g.us") or "broadcast" in remote_jid:
