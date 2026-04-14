@@ -2425,6 +2425,7 @@ async def handle_message(
     _has_campaign_instructions = False
     _is_special_campaign_no_instructions = False
     _matched_campaign = None
+    _tracking_matches_interest = True  # Assume match until cross-validated below
     tracking_id = context.get("tracking_id")
     if tracking_id and campaign_service:
         try:
@@ -2627,7 +2628,15 @@ async def handle_message(
         tracking_data = context.get("tracking_data") or {}
         tracking_vehicle = tracking_data.get("vehicle_label", "")
         campaign_type_label = tracking_data.get("campaign_type_label", "Anuncio")
-        if _has_campaign_instructions and _matched_campaign:
+        if not _tracking_matches_interest:
+            # Vehicle interest has switched away from the ad vehicle.
+            # Don't inject stale campaign instructions — just note the ad origin.
+            tracking_context = (
+                f"ORIGEN: Este cliente llegó por un anuncio (Tracking: {tracking_id}) "
+                f"pero ahora pregunta por {last_interest or 'otro vehículo'}. "
+                f"Atiéndelo desde el inventario general sin restricciones de campaña.\n"
+            ) if tracking_vehicle else ""
+        elif _has_campaign_instructions and _matched_campaign:
             # Inyectar instrucciones de campaña DIRECTAMENTE en el tracking context.
             # Esto es mucho más efectivo que depender de un bloque genérico de campañas
             # porque GPT ve las instrucciones justo al lado del origen del cliente.
@@ -2656,11 +2665,15 @@ async def handle_message(
         else:
             campaign_type_code = (tracking_data.get("campaign_type") or "A").upper()
             _is_special_campaign = campaign_type_code in ("SU", "LQ", "PR", "EV")
-            if _is_special_campaign:
-                # Cliente llegó por campaña especial (Mejor Precio, Liquidación, Promoción,
-                # Evento) pero NO hay instrucciones de campaña cargadas en Google Sheets.
-                # El bot NO debe dar precios de inventario general porque la campaña tiene
-                # condiciones especiales que no conocemos. Mejor recolectar datos.
+            # Only activate no-instructions campaign mode when the CAMPAIGNS_CSV_URL is NOT
+            # configured — in that case we genuinely don't know if the campaign is still active,
+            # so we conservatively collect datos.
+            # If the CSV IS configured but the campaign isn't found, it has been deactivated/
+            # expired: fall back to regular ad mode so the bot doesn't keep asking for
+            # "registro en la dinámica" forever after a campaign ends.
+            _csv_configured = bool(campaign_service and campaign_service.csv_url)
+            if _is_special_campaign and not _csv_configured:
+                # Campaign service not configured → unknown if active → collect datos
                 _is_special_campaign_no_instructions = True
                 logger.warning(
                     f"⚠️ Tracking {tracking_id} tipo={campaign_type_code} ({campaign_type_label}) "
@@ -2686,6 +2699,13 @@ async def handle_message(
                     f"NO cotizar desde inventario.\n"
                 )
             else:
+                # Expired campaign (CSV configured but not found), regular Anuncio, or
+                # campaign with no special instructions → treat as regular ad
+                if _is_special_campaign and _csv_configured:
+                    logger.info(
+                        f"📢 Tracking {tracking_id} tipo={campaign_type_code} ({campaign_type_label}) "
+                        f"— campaña vencida o sin instrucciones; atendiendo como cliente regular"
+                    )
                 tracking_context = (
                     f"ORIGEN: Este cliente llegó por {campaign_type_label} de {tracking_vehicle} "
                     f"(Tracking: {tracking_id}). Sabemos su modelo de interés. "
