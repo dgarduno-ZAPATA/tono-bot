@@ -923,9 +923,18 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
 
                         effective_stage = funnel_stage if is_stage_change else None
                         logger.info(f"📊 FUNNEL V2 [{funnel_stage}]: {lead_data.get('telefono')} - nombre={current_name} - {lead_data.get('interes')}")
-                        monday_item_id = await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
 
-                        # Notify team when appointment is confirmed
+                        # Monday update — has its own error handling so a failure
+                        # does NOT block the appointment notification below.
+                        monday_item_id = None
+                        try:
+                            monday_item_id = await monday_service.create_or_update_lead(lead_data, stage=effective_stage, add_note=note)
+                        except Exception as e:
+                            logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+
+                        # Notify team when appointment is confirmed.
+                        # Runs REGARDLESS of Monday status so the team always gets
+                        # the alert even when Monday is temporarily unavailable.
                         if is_stage_change and funnel_stage == "Cita Programada":
                             asyncio.create_task(_notify_appointment_to_team(
                                 bot_state, remote_jid,
@@ -948,7 +957,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                                 logger.error(f"⚠️ Error conectando lead a anuncio: {e}")
 
                 except Exception as e:
-                    logger.error(f"❌ Error actualizando funnel en Monday: {e}")
+                    logger.error(f"❌ Error inesperado en funnel V2: {e}")
 
             # === SLOT-BASED INCREMENTAL MONDAY SYNC ===
             # When FSM reports slot changes, sync each changed slot to Monday
@@ -1870,7 +1879,7 @@ async def process_single_event(bot_state: GlobalState, data: Dict[str, Any]):
         # 3. Si NO es del bot Y NO es automático → Es un HUMANO → SILENCIAR
         logger.info(f"🤐 HUMANO DETECTADO en {remote_jid} - silenciando bot por {settings.AUTO_REACTIVATE_MINUTES} min")
         bot_state.silenced_users[remote_jid] = time.time() + (settings.AUTO_REACTIVATE_MINUTES * 60)
-        # Handoff team notification disabled — only appointment notifications are sent
+        asyncio.create_task(_notify_handoff_to_team(bot_state, remote_jid))
         return
 
     # === EXTRACCIÓN DE MENSAJE (TEXTO, AUDIO O IMAGEN) ===
