@@ -968,7 +968,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
             # independently. This ensures granular CRM updates even if the
             # conversation doesn't trigger a full stage change.
             slot_changes = result.get("slot_changes") or []
-            if slot_changes and monday_service:
+            if slot_changes and monday_service and monday_service.board_id:
                 try:
                     phone = remote_jid.split("@")[0]
                     sanitized = monday_service._sanitize_phone(phone)
@@ -1062,7 +1062,7 @@ async def _process_accumulated_messages(bot_state: GlobalState, remote_jid: str)
                         if col_vals:
                             try:
                                 import json as _json
-                                mutation = 'mutation ($id: ID!, $vals: JSON!) { change_multiple_column_values(item_id: $id, board_id: %s, column_values: $vals) { id } }' % monday_service.board_id
+                                mutation = 'mutation ($id: ID!, $vals: JSON!) { change_multiple_column_values(item_id: $id, board_id: %s, column_values: $vals, create_labels_if_missing: true) { id } }' % monday_service.board_id
                                 await monday_service._graphql(mutation, {
                                     "id": str(item_id),
                                     "vals": _json.dumps(col_vals),

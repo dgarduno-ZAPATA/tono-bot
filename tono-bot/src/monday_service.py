@@ -445,6 +445,11 @@ class MondayService:
                 data = resp.json()
                 if "errors" in data:
                     logger.error(f"Monday API Error: {data['errors']}")
+                    # Raise so callers know the call failed and can retry.
+                    # Only raise when there is no usable data (complete failure).
+                    # Partial success (data + errors) is returned as-is.
+                    if not data.get("data"):
+                        raise RuntimeError(f"Monday GraphQL error: {data['errors']}")
                 return data
 
             except (httpx.TimeoutException, httpx.RequestError) as e:
