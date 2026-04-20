@@ -587,10 +587,22 @@ def _safe_log_payload(prefix: str, obj: Any) -> None:
 
 
 async def _evo_post(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Response:
-    """POST a Evolution API con retry automático en 429 (rate limit)."""
+    """POST a Evolution API con retry automático en 429 (rate limit) y errores de red (DNS/timeout)."""
     _MAX_RETRIES = 3
+    response: httpx.Response | None = None
     for _attempt in range(_MAX_RETRIES):
-        response = await client.post(url, **kwargs)
+        try:
+            response = await client.post(url, **kwargs)
+        except httpx.RequestError as e:
+            if _attempt < _MAX_RETRIES - 1:
+                backoff = 2 ** (_attempt + 1)
+                logger.warning(
+                    f"⚠️ Evolution network retry {_attempt + 1}/{_MAX_RETRIES} tras {backoff}s: "
+                    f"{type(e).__name__}: {e}"
+                )
+                await asyncio.sleep(backoff)
+                continue
+            raise
         if response.status_code == 429 and _attempt < _MAX_RETRIES - 1:
             retry_after = response.headers.get("retry-after")
             backoff = int(retry_after) if retry_after and retry_after.isdigit() else 2 ** (_attempt + 1)
@@ -598,7 +610,7 @@ async def _evo_post(client: httpx.AsyncClient, url: str, **kwargs) -> httpx.Resp
             await asyncio.sleep(backoff)
             continue
         return response
-    return response
+    return response  # type: ignore[return-value]
 
 
 # === 5. DETECCIÓN DE MENSAJES HUMANOS ===

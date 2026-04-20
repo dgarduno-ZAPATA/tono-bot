@@ -2205,6 +2205,14 @@ async def handle_message(
         saved_phone = _phone_match.group(0)
         logger.info(f"📱 Teléfono detectado: {saved_phone}")
 
+    # On the first message of a tracked ad lead, skip pattern-based city extraction:
+    # ad responses like "me interesa la Miller 2024" trigger "de la Miller" → city,
+    # because vehicle-name misspellings (Miller/Miler, Prostar, Freightliner) escape
+    # _city_noise. The contextual block below (bot asked for city) stays active.
+    _skip_city_pattern = bool(tracking_id) and turn_count == 1
+    if _skip_city_pattern:
+        logger.info(f"🏙️ Skip city pattern match (tracking_id={tracking_id}, turn=1)")
+
     # City extraction: detect common Mexican city patterns
     _city_patterns = [
         r'\b(?:de|en|desde|vivo en|soy de|ciudad)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:[,\s]+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,3})',
@@ -2248,8 +2256,8 @@ async def handle_message(
                         saved_city = _city_line
                         logger.info(f"🏙️ Ciudad detectada por contexto: {saved_city}")
                         break
-    # Also check explicit patterns
-    if not saved_city:
+    # Also check explicit patterns (skipped on first turn of a tracked lead)
+    if not saved_city and not _skip_city_pattern:
         for _cp in _city_patterns:
             _cm = re.search(_cp, user_message, re.IGNORECASE)
             if _cm:
