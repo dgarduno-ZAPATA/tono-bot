@@ -53,7 +53,7 @@ class InventoryService:
             row = { _clean_cell(k): _clean_cell(v) for k, v in (row or {}).items() }
 
             status = (row.get("status", "") or "").strip().lower()
-            if status and status not in ["disponible", "available", "1", "si", "sí", "yes"]:
+            if status and status not in ["disponible", "available", "1", "si", "sí", "yes", "true"]:
                 continue
 
             # Filtrar unidades agotadas (Cantidad = 0)
