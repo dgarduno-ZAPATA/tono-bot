@@ -2232,6 +2232,9 @@ async def handle_message(
         "calidad", "baratos", "barato", "nuevo", "nuevos", "usado", "usados",
         "mejor", "grande", "chico", "bueno", "buenos", "bonito",
         "padrino", "jefe", "amigo", "compa",
+        # Pronouns and comparatives that match "de X" patterns
+        "otra", "otro", "otras", "otros", "una", "uno", "ella", "ellas", "ellos",
+        "ahi", "aqui", "alla", "aca", "igual", "similar", "mismo", "misma",
     }
     _last_bot = ""
     # Direct city reply: if bot asked for city and reply is short with no numbers
@@ -2799,7 +2802,7 @@ async def handle_message(
     if saved_phone:
         _collected_items.append(f"TELÉFONO: {saved_phone} (ya lo tienes, NO lo pidas)")
     if saved_city:
-        _collected_items.append(f"CIUDAD: {saved_city}")
+        _collected_items.append(f"CIUDAD DEL CLIENTE: {saved_city} (ciudad donde está el cliente, NO la ubicación del vehículo)")
     _collected_section = ""
     if _collected_items:
         _collected_section = (
