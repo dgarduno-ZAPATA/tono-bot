@@ -2799,7 +2799,7 @@ async def handle_message(
     if saved_phone:
         _collected_items.append(f"TELÉFONO: {saved_phone} (ya lo tienes, NO lo pidas)")
     if saved_city:
-        _collected_items.append(f"CIUDAD: {saved_city}")
+        _collected_items.append(f"CIUDAD DEL CLIENTE: {saved_city} (ciudad donde está el cliente, NO la ubicación del vehículo)")
     _collected_section = ""
     if _collected_items:
         _collected_section = (
