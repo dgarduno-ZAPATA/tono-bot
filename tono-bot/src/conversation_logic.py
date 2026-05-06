@@ -2232,6 +2232,9 @@ async def handle_message(
         "calidad", "baratos", "barato", "nuevo", "nuevos", "usado", "usados",
         "mejor", "grande", "chico", "bueno", "buenos", "bonito",
         "padrino", "jefe", "amigo", "compa",
+        # Pronouns and comparatives that match "de X" patterns
+        "otra", "otro", "otras", "otros", "una", "uno", "ella", "ellas", "ellos",
+        "ahi", "aqui", "alla", "aca", "igual", "similar", "mismo", "misma",
     }
     _last_bot = ""
     # Direct city reply: if bot asked for city and reply is short with no numbers
